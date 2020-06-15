@@ -1,0 +1,14 @@
+auth_method: [anonymous]
+anonymous_protocol: login_anon
+
+hosts:
+  - "localhost"
+
+listen:
+  -
+    port: 1883
+    module: mod_mqtt
+    backlog: 1000
+
+modules:
+  mod_mqtt: {}
