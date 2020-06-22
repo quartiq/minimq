@@ -14,6 +14,7 @@ $ cargo test      # run all the tests
 
 ## Todo/NYI
 
+- Should communicate `PACKET_MAX` to broker in *CONNECT* properties
 - SUBACK/QoS=1 for inbound messages
 - Batch SUBSCRIBE
 - Keepalive/timeouts
