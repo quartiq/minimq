@@ -1,5 +1,5 @@
 [package]
-name = "nanomq"
+name = "minimq"
 version = "0.1.0"
 authors = ["Max Rottenkolber <max@mr.gy>"]
 edition = "2018"

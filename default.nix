@@ -14,7 +14,7 @@ let
 in
   with nixpkgs;
   stdenv.mkDerivation {
-    name = "nanomq-${version}";
+    name = "minimq-${version}";
     #src = lib.cleanSource (lib.sourceByRegex source ["target/*"]);
 
     # build time dependencies targeting the build platform

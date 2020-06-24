@@ -1,4 +1,4 @@
-use nanomq;
+use minimq;
 
 use std::io;
 use std::io::prelude::*;
@@ -34,7 +34,7 @@ fn str(b: &[u8]) -> String { String::from_utf8(b.to_vec()).unwrap() }
 
 #[test]
 fn main() -> std::io::Result<()> {
-    let mut mqtt = nanomq::Protocol::new();
+    let mut mqtt = minimq::Protocol::new();
 
     println!("Connecting to MQTT broker at 127.0.0.1:1883");
     let mut stream = connect("127.0.0.1:1883")?;
@@ -66,7 +66,7 @@ fn main() -> std::io::Result<()> {
                          str(payload),
                          str(req.cd.unwrap().get()));
                 if req.sid == Some(sub_req) {
-                    let mut res = nanomq::PubInfo::new();
+                    let mut res = minimq::PubInfo::new();
                     res.topic = req.response.unwrap();
                     res.cd = req.cd;
                     write(&mut stream, mqtt.publish(&res, "Pong".as_bytes()))?;
@@ -76,23 +76,23 @@ fn main() -> std::io::Result<()> {
             }
 
             if subscribed_req && subscribed_res {
-                if !published && mqtt.state() == nanomq::ProtocolState::Ready {
+                if !published && mqtt.state() == minimq::ProtocolState::Ready {
                     println!("PUBLISH request");
-                    let mut req = nanomq::PubInfo::new();
-                    req.topic = nanomq::Meta::new("request".as_bytes());
-                    req.response = Some(nanomq::Meta::new("response".as_bytes()));
-                    req.cd = Some(nanomq::Meta::new("foo".as_bytes()));
+                    let mut req = minimq::PubInfo::new();
+                    req.topic = minimq::Meta::new("request".as_bytes());
+                    req.response = Some(minimq::Meta::new("response".as_bytes()));
+                    req.cd = Some(minimq::Meta::new("foo".as_bytes()));
                     write(&mut stream, mqtt.publish(&req, "Ping".as_bytes()))?;
                     published = true;
                 }
             }
 
-            if !subscribed_req && mqtt.state() == nanomq::ProtocolState::Ready {
+            if !subscribed_req && mqtt.state() == minimq::ProtocolState::Ready {
                 println!("SUBSCRIBE request");
                 write(&mut stream, mqtt.subscribe("request".as_bytes(), sub_req))?;
                 subscribed_req = true;
             }
-            if !subscribed_res && mqtt.state() == nanomq::ProtocolState::Ready {
+            if !subscribed_res && mqtt.state() == minimq::ProtocolState::Ready {
                 println!("SUBSCRIBE response");
                 write(&mut stream, mqtt.subscribe("response".as_bytes(), sub_res))?;
                 subscribed_res = true;

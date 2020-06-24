@@ -1,4 +1,4 @@
-# nanomq
+# minimq
 
 Minimal no_std MQTT v5.0 client implementation.
 
