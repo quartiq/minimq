@@ -11,7 +11,7 @@ use crate::properties::{
 use core::cmp::min;
 
 // Maximum supported packet size
-const PACKET_MAX: usize = 9000;
+const PACKET_MAX: usize = 900;
 
 struct Packet {
     data: [u8; PACKET_MAX],

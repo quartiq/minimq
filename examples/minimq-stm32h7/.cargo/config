@@ -1,0 +1,11 @@
+[target.thumbv7m-none-eabi]
+
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "gdb-multiarch -q -x openocd.gdb"
+
+rustflags = [
+  "-C", "link-arg=-Tlink.x",
+]
+
+[build]
+target = "thumbv7em-none-eabihf" # Cortex-M4F and Cortex-M7F (with FPU)
