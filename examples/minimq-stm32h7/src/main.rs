@@ -12,9 +12,16 @@ use stm32h7xx_hal::{
     prelude::*
 };
 
+use heapless::{
+    String,
+    consts,
+};
+use si7021::Si7021;
+
 use cortex_m;
 
 use panic_halt as _;
+use serde::{Deserialize, Serialize};
 
 use rtic::cyccnt::{Instant, U32Ext};
 
@@ -37,6 +44,11 @@ static mut NET_STORE: NetStorage = NetStorage {
 
 #[link_section=".sram3.eth"]
 static mut DES_RING: ethernet::DesRing = ethernet::DesRing::new();
+
+#[derive(Serialize, Deserialize)]
+struct Temperature {
+    temperature_c: f32,
+}
 
 type NetworkInterface = net::iface::EthernetInterface<'static, 'static, 'static,
      ethernet::EthernetDMA<'static>>;
@@ -83,6 +95,7 @@ const APP: () = {
 
     struct Resources {
         net_interface: NetworkInterface,
+        si7021: Si7021<stm32h7xx_hal::i2c::I2c<stm32h7xx_hal::stm32::I2C2>>,
     }
 
     #[init]
@@ -111,6 +124,7 @@ const APP: () = {
         let gpioa = c.device.GPIOA.split(ccdr.peripheral.GPIOA);
         let gpiob = c.device.GPIOB.split(ccdr.peripheral.GPIOB);
         let gpioc = c.device.GPIOC.split(ccdr.peripheral.GPIOC);
+        let gpiof = c.device.GPIOF.split(ccdr.peripheral.GPIOF);
         let gpiog = c.device.GPIOG.split(ccdr.peripheral.GPIOG);
 
         // Configure ethernet IO
@@ -152,6 +166,16 @@ const APP: () = {
                 .finalize()
         };
 
+        // Configure I2C
+        let si7021 = {
+            let i2c_sda = gpiof.pf0.into_open_drain_output().into_alternate_af4();
+            let i2c_scl = gpiof.pf1.into_open_drain_output().into_alternate_af4();
+            let i2c = c.device.I2C2.i2c((i2c_scl, i2c_sda), 100.khz(), ccdr.peripheral.I2C2,
+                    &ccdr.clocks);
+
+            Si7021::new(i2c)
+        };
+
         cp.SCB.enable_icache();
 
         let mut delay = stm32h7xx_hal::delay::Delay::new(cp.SYST, ccdr.clocks);
@@ -159,10 +183,11 @@ const APP: () = {
 
         init::LateResources {
             net_interface: net_interface,
+            si7021: si7021,
         }
     }
 
-    #[idle(resources=[net_interface])]
+    #[idle(resources=[net_interface, si7021])]
     fn idle(c: idle::Context) -> ! {
 
         let mut time: u32 = 0;
@@ -188,6 +213,12 @@ const APP: () = {
 
             if tick && (time % 1000) == 0 {
                 client.publish("nucleo", "Hello, World!".as_bytes()).unwrap();
+
+                let temperature = Temperature {
+                    temperature_c: c.resources.si7021.temperature_celsius().unwrap()
+                };
+                let temperature: String<consts::U256> = serde_json_core::to_string(&temperature).unwrap();
+                client.publish("temperature", &temperature.into_bytes()).unwrap();
             }
 
             client.poll(|topic, message| {
