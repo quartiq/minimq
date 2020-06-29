@@ -74,7 +74,7 @@ fn write_two_byte_integer(n: u16, dst: &mut Packet) {
 fn write_four_byte_integer(n: u32, dst: &mut Packet){
     dst.push(4);
     dst.buf()[0] = ((n >> 24) & 0xFF) as u8;
-    dst.buf()[1] = ((n >> 26) & 0xFF) as u8;
+    dst.buf()[1] = ((n >> 16) & 0xFF) as u8;
     dst.buf()[2] = ((n >> 8)  & 0xFF) as u8;
     dst.buf()[3] = ((n >> 0)  & 0xFF) as u8;
 }
@@ -139,12 +139,6 @@ fn read_utf8_encoded_string(src: &mut Packet) -> Result<&[u8],()> {
     read_binary_data(src)
 }
 
-fn read_utf8_string_pair(src: &mut Packet) -> Result<(),()> {
-    read_utf8_encoded_string(src)?;
-    read_utf8_encoded_string(src)?;
-    Ok(()) // XXX
-}
-
 fn read_variable_byte_integer(src: &mut Packet) -> Result<usize,()> {
     if let Some((i, b)) = parse_variable_byte_integer(src.buf()) {
         src.pop(b);
@@ -191,6 +185,11 @@ const CLIENT_ID_MAX: usize = 23;
 const CONNECT: u8 = 1;
 const CONNACK: u8 = 2;
 fn msg_connect(flags: u8, keep_alive: u16, client_id: &[u8]) -> Packet {
+    for i in 0..client_id.len() {
+        assert!(client_id[i] - 0x30 <=  9 || // 0-9
+                client_id[i] - 0x41 <= 25 || // A-Z
+                client_id[i] - 0x61 <= 25);  // a-z
+    }
     let mut p = Packet::new(PACKET_MAX, PACKET_MAX);
     assert!(client_id.len() <= CLIENT_ID_MAX);
     write_binary_data(client_id, &mut p); // Payload
@@ -345,7 +344,8 @@ fn skip_property(property: usize, p: &mut Packet) -> Result<(),()>{
         Some(Data::VariableByteInteger) => { read_variable_byte_integer(p)?; }
         Some(Data::BinaryData)          => { read_binary_data(p)?;           }
         Some(Data::UTF8EncodedString)   => { read_utf8_encoded_string(p)?;   }
-        Some(Data::UTF8StringPair)      => { read_utf8_string_pair(p)?;      }
+        Some(Data::UTF8StringPair)      => { read_utf8_encoded_string(p)?;
+                                             read_utf8_encoded_string(p)?;   }
         None => return Err(())
     }
     Ok(())
@@ -441,7 +441,7 @@ impl Protocol {
         self.p = msg_connect(
             0b10, // Clean Start
             keep_alive,
-            &client_id[..CLIENT_ID_MAX]
+            client_id
         );
         self.s = ProtocolState::Connect;
         self.p.buf()
@@ -460,6 +460,37 @@ impl Protocol {
         self.p = msg_subscribe(topic, 0, self.pid, sid); // XXX QoS
         self.s = ProtocolState::Subscribe;
         self.p.buf()
+    }
+
+    pub fn receive(&mut self, stream: &[u8]) -> Result<(usize,Option<&[u8]>),()> {
+        if self.r_need_reset {
+            self.r.reset();
+            self.r_need_reset = false;
+        }
+        match self.r.slurp(stream) {
+            Ok((read, complete)) => {
+                if !complete { return Ok((read,None)) }
+                self.r_need_reset = true;
+                match self.fsm() {
+                    Ok(reply) => Ok((read,reply)),
+                    Err(_) => Err(())
+                }
+            }
+            Err(_) => {
+                self.r_need_reset = true;
+                Err(())
+            }
+        }
+    }
+
+    pub fn handle(&mut self) -> Option<(&PubInfo, &[u8])> {
+        match self.s {
+            ProtocolState::Handle => {
+                self.s = ProtocolState::Ready;
+                Some((&self.pi, self.r.packet().buf()))
+            }
+            _ => None
+        }
     }
 
     fn fsm(&mut self) -> Result<Option<&[u8]>,()> {
@@ -497,38 +528,6 @@ impl Protocol {
             ProtocolState::Handle => return Err(()),
         }
         Ok(reply)
-    }
-
-    pub fn receive(&mut self, stream: &[u8]) -> Result<(usize,Option<&[u8]>),()> {
-        if self.r_need_reset {
-            self.r.reset();
-            self.r_need_reset = false;
-        } 
-        match self.r.slurp(stream) {
-            Ok((read, complete)) => {
-                if !complete { return Ok((read,None)) }
-                self.r_need_reset = true;
-                let reply_or_err = self.fsm();
-                match reply_or_err {
-                    Ok(reply) => Ok((read,reply)),
-                    Err(_) => Err(())
-                }
-            }
-            Err(_) => {
-                self.r.reset();
-                Err(())
-            }
-        }
-    }
-
-    pub fn handle(&mut self) -> Option<(&PubInfo, &[u8])> {
-        match self.s {
-            ProtocolState::Handle => {
-                self.s = ProtocolState::Ready;
-                Some((&self.pi, self.r.packet().buf()))
-            }
-            _ => None
-        }
     }
 
 }
