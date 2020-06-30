@@ -43,6 +43,7 @@ fn main() -> std::io::Result<()> {
     let id = "01234567890123456789012".as_bytes();
     write(&mut stream, mqtt.connect(id, 10))?;
 
+    let mut buffer: [u8; 9000] = [0; 9000];
     let (sub_req, sub_res) = (1, 2);
     let (mut subscribed_req, mut subscribed_res) = (false, false);
     let mut published = false;
@@ -69,7 +70,8 @@ fn main() -> std::io::Result<()> {
                     let mut res = minimq::PubInfo::new();
                     res.topic = req.response.unwrap();
                     res.cd = req.cd;
-                    write(&mut stream, mqtt.publish(&res, "Pong".as_bytes()))?;
+                    let len = mqtt.publish(&mut buffer, &res, "Ping".as_bytes()).unwrap();
+                    write(&mut stream, &buffer[..len])?;
                 } else {
                     std::process::exit(0);
                 }
@@ -82,7 +84,8 @@ fn main() -> std::io::Result<()> {
                     req.topic = minimq::Meta::new("request".as_bytes());
                     req.response = Some(minimq::Meta::new("response".as_bytes()));
                     req.cd = Some(minimq::Meta::new("foo".as_bytes()));
-                    write(&mut stream, mqtt.publish(&req, "Ping".as_bytes()))?;
+                    let len = mqtt.publish(&mut buffer, &req, "Ping".as_bytes()).unwrap();
+                    write(&mut stream, &buffer[..len])?;
                     published = true;
                 }
             }

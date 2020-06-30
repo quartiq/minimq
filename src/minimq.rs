@@ -13,6 +13,115 @@ use core::cmp::min;
 // Maximum supported packet size
 const PACKET_MAX: usize = 9000;
 
+#[derive(Debug, Copy, Clone)]
+pub enum Error {
+    Bounds,
+    DataSize,
+    EmptyPacket,
+}
+
+enum MqttMessageType {
+    Publish = 3,
+}
+
+struct PacketBuffer<'a> {
+    buffer: &'a mut [u8],
+    index: usize,
+}
+
+impl<'a> PacketBuffer<'a> {
+    pub fn new(data: &'a mut [u8]) -> Self {
+        PacketBuffer {
+            buffer: data,
+            index: 0,
+        }
+    }
+
+    pub fn write(&mut self, data: &[u8]) -> Result<(), Error> {
+        if self.index + data.len() > self.buffer.len() {
+            return Err(Error::Bounds);
+        }
+
+        self.buffer[self.index..self.index + data.len()].copy_from_slice(data);
+        self.index += data.len();
+
+        Ok(())
+    }
+
+    pub fn write_binary_data(&mut self, data: &[u8]) -> Result<(), Error> {
+        if data.len() > u16::max as usize {
+            return Err(Error::DataSize);
+        }
+
+        // Write the data length into the buffer.
+        self.write(&(data.len() as u16).to_be_bytes())?;
+
+        // Write the data into the buffer.
+        self.write(data)
+    }
+
+    pub fn write_utf8_string<'b>(&mut self, string: &'b str) -> Result<(), Error> {
+        self.write_binary_data(string.as_bytes())
+    }
+
+    pub fn write_variable_length_integer(&mut self, value: usize) -> Result<(), Error> {
+        // The variable length integer can only support 28 bits.
+        if value > 0x0FFF_FFFF {
+            return Err(Error::DataSize);
+        }
+
+        if value & (0b0111_1111 << 21) > 0 {
+            let data: [u8; 4] = [
+                (value >> 21) as u8 & 0x7F,
+                (value >> 14) as u8 | 0x80,
+                (value >> 7) as u8 | 0x80,
+                (value >> 0) as u8 | 0x80,
+            ];
+
+            self.write(&data)
+        } else if value & (0b0111_1111 << 14) > 0 {
+            let data: [u8; 3] = [
+                (value >> 14) as u8 & 0x7F,
+                (value >> 7) as u8 | 0x80,
+                (value >> 0) as u8 | 0x80,
+            ];
+
+            self.write(&data)
+        } else if value & (0b0111_1111 << 7) > 0 {
+            let data: [u8; 2] = [
+                (value >> 7) as u8 & 0x7F,
+                (value >> 0) as u8 | 0x80,
+            ];
+
+            self.write(&data)
+        } else {
+            let data: [u8; 1] = [
+                (value >> 0) as u8 & 0x7F,
+            ];
+
+            self.write(&data)
+        }
+    }
+
+    pub fn write_fixed_header(&mut self, typ: MqttMessageType, flags: u8, len: usize) -> Result<(), Error> {
+
+        // Write the control byte.
+        let header: u8 = ((typ as u8) << 4) & 0xF0 | (flags & 0x0F);
+        self.write(&[header])?;
+
+        // Write the remaining packet length.
+        self.write_variable_length_integer(len)
+    }
+
+    pub fn finalize(self) -> Result<usize, Error> {
+        if self.index == 0 {
+            Err(Error::EmptyPacket)
+        } else {
+            Ok(self.index)
+        }
+    }
+}
+
 struct Packet {
     data: [u8; PACKET_MAX],
     start: usize,
@@ -291,6 +400,7 @@ fn read_suback(p: &mut Packet) -> Result<(u16, u8),()> {
 
 pub struct PubInfo {
     pub sid: Option<usize>,
+
     pub topic: Meta,
     pub response: Option<Meta>,
     pub cd: Option<Meta>
@@ -299,6 +409,50 @@ pub struct PubInfo {
 impl PubInfo {
     pub fn new() -> PubInfo {
         PubInfo {sid: None, topic: Meta::new(&[]), response: None, cd: None}
+    }
+
+    fn variable_header_length(&self) -> usize {
+        let mut length = self.topic.get().len() + 2;
+
+        // TODO: Handle sender ID for QoS 1 or 2.
+
+        if let Some(response) = &self.response {
+            // The length of this entry is 2 bytes for the string length encoding and the string
+            // data.
+            length += response.get().len() + 2;
+        }
+
+        if let Some(cd) = &self.cd {
+            length += cd.get().len() + 2;
+        }
+
+        // TODO: Handle additional properties.
+
+        length
+    }
+
+    fn write_variable_header(&self, packet: &mut PacketBuffer) -> Result<(), Error> {
+
+        // Write the topic name.
+        packet.write_binary_data(self.topic.get())?;
+
+        // TODO: Handle the sender ID.
+
+        // TODO: Properties below should have a unique identifier denoting the property.
+
+        // Write the response topic property.
+        if let Some(meta) = &self.response {
+            packet.write_binary_data(meta.get())?;
+        }
+
+        // Write the correlation data.
+        if let Some(meta) = &self.cd {
+            packet.write_binary_data(meta.get())?;
+        }
+
+        // TODO: Handle additional properties.
+
+        Ok(())
     }
 }
 
@@ -447,10 +601,24 @@ impl Protocol {
         self.p.buf()
     }
 
-    pub fn publish(&mut self, info: &PubInfo, payload: &[u8]) -> &[u8] {
+    pub fn publish(&self, mut dest: &mut [u8], info: &PubInfo, payload: &[u8]) -> Result<usize, Error> {
         assert!(self.s == ProtocolState::Ready);
-        self.p = msg_publish(info, payload);
-        self.p.buf()
+
+        // Calculate the length of the packet and variable length header.
+        let variable_header_length = info.variable_header_length();
+
+        let mut packet = PacketBuffer::new(&mut dest);
+
+        // Write the fixed length header.
+        packet.write_fixed_header(MqttMessageType::Publish, 0, variable_header_length + payload.len())?;
+
+        // Write the variable header into the packet.
+        info.write_variable_header(&mut packet)?;
+
+        // Write the payload into the packet.
+        packet.write(payload)?;
+
+        packet.finalize()
     }
 
     pub fn subscribe(&mut self, topic: &[u8], sid: usize) -> &[u8] {
@@ -611,9 +779,10 @@ mod tests {
             assert_eq!(pi.cd.as_ref().unwrap().get(), "foo".as_bytes());
             i.topic.set(pi.response.as_ref().unwrap().get()).unwrap();
             assert_eq!(pl, payload);
-            let response = proto.publish(&i, "OK".as_bytes());
-            let (read, done) = r.slurp(response).unwrap();
-            assert_eq!(read, response.len());
+            let mut response: [u8; 9000] = [0; 9000];
+            let len = proto.publish(&mut response, &i, "OK".as_bytes()).unwrap();
+            let (read, done) = r.slurp(&response[..len]).unwrap();
+            assert_eq!(read, len);
             assert_eq!(done, true);
             r.reset();
             assert_eq!(proto.state(), ProtocolState::Ready);
