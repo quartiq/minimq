@@ -1,403 +1,66 @@
 // Minimal MQTT v5.0 client implementation
 
-use crate::properties::{
-    Data,
-    property_data,
-    SUBSCRIPTION_IDENTIFIER,
-    RESPONSE_TOPIC,
-    CORRELATION_DATA
+use enum_iterator::IntoEnumIterator;
+
+use crate::{
+    packet_writer::PacketWriter,
+    packet_reader::PacketReader,
+    serialize,
+    deserialize::{self, ReceivedPacket},
 };
 
-use core::cmp::min;
+const CLIENT_ID_MAX: usize = 23;
 
-// Maximum supported packet size
-const PACKET_MAX: usize = 9000;
-
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Error {
     Bounds,
     DataSize,
+    Invalid,
+    PacketSize,
     EmptyPacket,
+    Failed,
+    PartialPacket,
+    InvalidState,
+    MalformedPacket,
+    MalformedInteger,
+    UnknownProperty,
+    UnsupportedPacket,
 }
 
-enum MqttMessageType {
+#[derive(IntoEnumIterator, Copy, Clone, PartialEq, Debug)]
+pub enum MessageType {
+    Invalid = -1,
+
+    Reserved = 0,
+    Connect = 1,
+    ConnAck = 2,
     Publish = 3,
+    PubAck = 4,
+    PubRec = 5,
+    PubRel = 6,
+    PubComp = 7,
+    Subscribe = 8,
+    SubAck = 9,
+    Unsubscribe = 10,
+    UnsubAck = 11,
+    PingReq = 12,
+    PingResp = 13,
+    Disconnect = 14,
+    Auth = 15,
 }
 
-struct PacketBuffer<'a> {
-    buffer: &'a mut [u8],
-    index: usize,
-}
-
-impl<'a> PacketBuffer<'a> {
-    pub fn new(data: &'a mut [u8]) -> Self {
-        PacketBuffer {
-            buffer: data,
-            index: 0,
-        }
-    }
-
-    pub fn write(&mut self, data: &[u8]) -> Result<(), Error> {
-        if self.index + data.len() > self.buffer.len() {
-            return Err(Error::Bounds);
-        }
-
-        self.buffer[self.index..self.index + data.len()].copy_from_slice(data);
-        self.index += data.len();
-
-        Ok(())
-    }
-
-    pub fn write_binary_data(&mut self, data: &[u8]) -> Result<(), Error> {
-        if data.len() > u16::max as usize {
-            return Err(Error::DataSize);
-        }
-
-        // Write the data length into the buffer.
-        self.write(&(data.len() as u16).to_be_bytes())?;
-
-        // Write the data into the buffer.
-        self.write(data)
-    }
-
-    pub fn write_utf8_string<'b>(&mut self, string: &'b str) -> Result<(), Error> {
-        self.write_binary_data(string.as_bytes())
-    }
-
-    pub fn write_variable_length_integer(&mut self, value: usize) -> Result<(), Error> {
-        // The variable length integer can only support 28 bits.
-        if value > 0x0FFF_FFFF {
-            return Err(Error::DataSize);
-        }
-
-        if value & (0b0111_1111 << 21) > 0 {
-            let data: [u8; 4] = [
-                (value >> 21) as u8 & 0x7F,
-                (value >> 14) as u8 | 0x80,
-                (value >> 7) as u8 | 0x80,
-                (value >> 0) as u8 | 0x80,
-            ];
-
-            self.write(&data)
-        } else if value & (0b0111_1111 << 14) > 0 {
-            let data: [u8; 3] = [
-                (value >> 14) as u8 & 0x7F,
-                (value >> 7) as u8 | 0x80,
-                (value >> 0) as u8 | 0x80,
-            ];
-
-            self.write(&data)
-        } else if value & (0b0111_1111 << 7) > 0 {
-            let data: [u8; 2] = [
-                (value >> 7) as u8 & 0x7F,
-                (value >> 0) as u8 | 0x80,
-            ];
-
-            self.write(&data)
-        } else {
-            let data: [u8; 1] = [
-                (value >> 0) as u8 & 0x7F,
-            ];
-
-            self.write(&data)
-        }
-    }
-
-    pub fn write_fixed_header(&mut self, typ: MqttMessageType, flags: u8, len: usize) -> Result<(), Error> {
-
-        // Write the control byte.
-        let header: u8 = ((typ as u8) << 4) & 0xF0 | (flags & 0x0F);
-        self.write(&[header])?;
-
-        // Write the remaining packet length.
-        self.write_variable_length_integer(len)
-    }
-
-    pub fn finalize(self) -> Result<usize, Error> {
-        if self.index == 0 {
-            Err(Error::EmptyPacket)
-        } else {
-            Ok(self.index)
-        }
-    }
-}
-
-struct Packet {
-    data: [u8; PACKET_MAX],
-    start: usize,
-    end: usize
-}
-
-impl Packet {
-
-    fn new(start: usize, end: usize) -> Packet {
-        assert!(start <= PACKET_MAX);
-        assert!(end <= PACKET_MAX);
-        assert!(start <= end);
-        Packet {data: [0; PACKET_MAX], start: start, end: end}
-    }
-
-    fn push(&mut self, n: usize) {
-        assert!(self.start >= n);
-        self.start -= n;
-    }
-
-    fn pop(&mut self, n: usize) -> &[u8] {
-        assert!(self.start + n <= self.end);
-        let prev = self.start;
-        self.start += n;
-        &self.data[prev..self.start]
-    }
-
-    fn truncate(&mut self, n: usize) {
-        assert!(self.start + n <= PACKET_MAX);
-        self.end = self.start + n;
-    }
-
-    fn buf(&mut self) -> &mut [u8] {
-        &mut self.data[self.start..self.end]
-    }
-
-    fn len(&self) -> usize {
-        self.end - self.start
-    }
-
-    fn typ(&mut self) -> u8 {
-        (self.buf()[0] >> 4) & 0x0F
-    }
-
-}
-
-
-fn write_byte(b: u8, dst: &mut Packet) {
-    dst.push(1);
-    dst.buf()[0] = b;
-}
-
-fn write_two_byte_integer(n: u16, dst: &mut Packet) {
-    dst.push(2);
-    dst.buf()[0] = ((n >> 8) & 0xFF) as u8;
-    dst.buf()[1] = ((n >> 0) & 0xFF) as u8;
-}
-
-fn write_four_byte_integer(n: u32, dst: &mut Packet){
-    dst.push(4);
-    dst.buf()[0] = ((n >> 24) & 0xFF) as u8;
-    dst.buf()[1] = ((n >> 16) & 0xFF) as u8;
-    dst.buf()[2] = ((n >> 8)  & 0xFF) as u8;
-    dst.buf()[3] = ((n >> 0)  & 0xFF) as u8;
-}
-
-fn write_utf8_encoded_string(s: &[u8], dst: &mut Packet) {
-    write_binary_data(s, dst);
-}
-
-fn write_variable_byte_integer(n: usize, dst: &mut Packet) {
-    assert!(n <= 0x0FFF_FFFF); // 28 bits, up to four 7-bit fragments
-    if n & (0b0111_1111 << 21) > 0 {
-        write_byte((n >> 21) as u8 & 0b0111_1111, dst);
-        write_byte((n >> 14) as u8 | 0b1000_0000, dst);
-        write_byte((n >> 07) as u8 | 0b1000_0000, dst);
-        write_byte((n >> 00) as u8 | 0b1000_0000, dst);
-    } else if n & (0b0111_1111 << 14) > 0 {
-        write_byte((n >> 14) as u8 & 0b0111_1111, dst);
-        write_byte((n >> 07) as u8 | 0b1000_0000, dst);
-        write_byte((n >> 00) as u8 | 0b1000_0000, dst);
-    } else if n & (0b0111_1111 << 7) > 0 {
-        write_byte((n >> 07) as u8 & 0b0111_1111, dst);
-        write_byte((n >> 00) as u8 | 0b1000_0000, dst);
-    } else {
-        write_byte((n >> 00) as u8 & 0b0111_1111, dst);
-    }
-}
-
-fn write_binary_data(b: &[u8], dst: &mut Packet) {
-    dst.push(b.len());
-    dst.buf()[..b.len()].copy_from_slice(b);
-    write_two_byte_integer(b.len() as u16, dst);
-}
-
-fn write_fixed_header(typ: u8, flags: u8, dst: &mut Packet) {
-    write_variable_byte_integer(dst.len(), dst);
-    write_byte(((typ << 4) & 0xF0) | ((flags << 0) & 0x0F), dst);
-}
-
-
-fn read_byte(src: &mut Packet) -> Result<u8,()> {
-    if src.len() < 1 { return Err(()) }
-    Ok(src.pop(1)[0])
-}
-
-fn read_two_byte_integer(src: &mut Packet) -> Result<u16,()> {
-    if src.len() < 2 { return Err(()) }
-    let i = src.pop(2);
-    Ok((i[0] as u16) << 8 |
-       (i[1] as u16) << 0)
-}
-
-fn read_four_byte_integer(src: &mut Packet) -> Result<u32,()> {
-    if src.len() < 4 { return Err(()) }
-    let i = src.pop(4);
-    Ok((i[0] as u32) << 24 |
-       (i[1] as u32) << 16 |
-       (i[2] as u32) <<  8 |
-       (i[3] as u32) <<  0)
-}
-
-fn read_utf8_encoded_string(src: &mut Packet) -> Result<&[u8],()> {
-    read_binary_data(src)
-}
-
-fn read_variable_byte_integer(src: &mut Packet) -> Result<usize,()> {
-    if let Some((i, b)) = parse_variable_byte_integer(src.buf()) {
-        src.pop(b);
-        return Ok(i)
-    }
-    Err(())
-}
-
-fn read_binary_data(src: &mut Packet) -> Result<&[u8],()> {
-    let len = read_two_byte_integer(src)? as usize;
-    if src.len() >= len {
-        Ok(src.pop(len))
-    } else {
-        Err(())
-    }
-}
-
-fn read_fixed_header(src: &mut Packet) -> Result<(u8, u8, usize),()> {
-    let typ_flags = read_byte(src)?;
-    let typ   = (typ_flags >> 4) & 0x0F;
-    let flags = (typ_flags >> 0) & 0x0F;
-    if let Ok(rlen) = read_variable_byte_integer(src) {
-        Ok((typ, flags, rlen))
-    } else {
-        Err(())
-    }
-}
-
-
-fn parse_variable_byte_integer(int: &[u8]) -> Option<(usize, usize)> {
-    let len = if int.len() >= 1 && (int[0] & 0b1000_0000) == 0 { 1 }
-         else if int.len() >= 2 && (int[1] & 0b1000_0000) == 0 { 2 }
-         else if int.len() >= 3 && (int[2] & 0b1000_0000) == 0 { 3 }
-         else if int.len() >= 4 && (int[3] & 0b1000_0000) == 0 { 4 }
-         else { return None };
-    let mut acc = 0;
-    for i in 0..len { acc += ((int[i] & 0b0111_1111) as usize) << i*7; }
-    Some((acc, len))
-}
-
-
-const CLIENT_ID_MAX: usize = 23;
-
-const CONNECT: u8 = 1;
-const CONNACK: u8 = 2;
-fn msg_connect(flags: u8, keep_alive: u16, client_id: &[u8]) -> Packet {
-    for i in 0..client_id.len() {
-        assert!(client_id[i] - 0x30 <=  9 || // 0-9
-                client_id[i] - 0x41 <= 25 || // A-Z
-                client_id[i] - 0x61 <= 25);  // a-z
-    }
-    let mut p = Packet::new(PACKET_MAX, PACKET_MAX);
-    assert!(client_id.len() <= CLIENT_ID_MAX);
-    write_binary_data(client_id, &mut p); // Payload
-    write_variable_byte_integer(0, &mut p); // No properties
-    write_two_byte_integer(keep_alive, &mut p);
-    write_byte(flags & 0b11111110, &mut p); // Bit 0 reserved
-    write_byte(5, &mut p); // Version 5
-    write_utf8_encoded_string("MQTT".as_bytes(), &mut p);
-    write_fixed_header(CONNECT, 0, &mut p);
-    p
-}
-
-fn read_connack(p: &mut Packet) -> Result<u8,()> {
-    let (typ, _, _) = read_fixed_header(p)?;
-    if typ != CONNACK { return Err(()) }
-    let _ = read_byte(p)?; // ACK flags
-    let reason_code = read_byte(p)?;
-    Ok(reason_code)
-}
-
-
-const PUBLISH: u8 = 3;
-
-fn msg_publish(info: &PubInfo, payload: &[u8]) -> Packet {
-    let mut p = Packet::new(PACKET_MAX, PACKET_MAX);
-    p.push(payload.len());
-    p.buf().copy_from_slice(payload);
-    if let Some(meta) = &info.cd {
-        write_binary_data(meta.get(), &mut p);
-        write_variable_byte_integer(CORRELATION_DATA, &mut p);
-    }
-    if let Some(meta) = &info.response {
-        write_utf8_encoded_string(meta.get(), &mut p);
-        write_variable_byte_integer(RESPONSE_TOPIC, &mut p);
-    }
-    write_variable_byte_integer(p.len() - payload.len(), &mut p); // Prop. len.
-    write_utf8_encoded_string(info.topic.get(), &mut p);
-    write_fixed_header(PUBLISH, 0, &mut p);
-    p
-}
-
-fn read_publish(p: &mut Packet) -> Result<PubInfo,()> {
-    let (typ, _, _) = read_fixed_header(p)?;
-    if typ != PUBLISH { return Err(()) }
-    let mut info = PubInfo::new();
-    info.topic.set(read_utf8_encoded_string(p)?)?;
-    let plen = read_variable_byte_integer(p)?;
-    let payload = p.len() - plen;
-    while p.len() > payload {
-        match read_variable_byte_integer(p)? {
-            SUBSCRIPTION_IDENTIFIER => {
-                info.sid = Some(read_variable_byte_integer(p)?);
+impl From<u8> for MessageType {
+    fn from(val: u8) -> Self {
+        for entry in Self::into_enum_iter() {
+            if entry as u8 == val {
+                return entry;
             }
-            RESPONSE_TOPIC => {
-                let mut response_topic = Meta::new(&[]);
-                response_topic.set(read_utf8_encoded_string(p)?)?;
-                info.response = Some(response_topic);
-            }
-            CORRELATION_DATA => {
-                let mut cd = Meta::new(&[]);
-                cd.set(read_binary_data(p)?)?;
-                info.cd = Some(cd);
-            }
-            x => { skip_property(x, p)?; }
         }
+
+        return MessageType::Invalid;
     }
-    if p.len() != payload { return Err(()) }
-    Ok(info)
 }
 
-
-const SUBSCRIBE: u8 = 8;
-const SUBACK: u8 = 9;
-
-fn msg_subscribe(topic: &[u8], options: u8, id: u16, sid: usize) -> Packet {
-    let mut p = Packet::new(PACKET_MAX, PACKET_MAX);
-    write_byte(options & 0b00111111, &mut p); // Bit 6-7 reserved
-    write_utf8_encoded_string(topic, &mut p);
-    let pend = p.len();
-    write_variable_byte_integer(sid, &mut p);
-    write_variable_byte_integer(SUBSCRIPTION_IDENTIFIER, &mut p);
-    write_variable_byte_integer(p.len()-pend, &mut p); // Property length
-    write_two_byte_integer(id, &mut p);
-    write_fixed_header(SUBSCRIBE, 0b0010, &mut p); // [MQTT-3.8.1-1]
-    p
-}
-
-fn read_suback(p: &mut Packet) -> Result<(u16, u8),()> {
-    let (typ, _, _) = read_fixed_header(p)?;
-    if typ != SUBACK { return Err(()) }
-    let id = read_two_byte_integer(p)?;
-    let plen = read_variable_byte_integer(p)?;
-    if plen > p.len() { return Err(()) }
-    p.pop(plen); // Discard properties.
-    let reason_code = read_byte(p)?;
-    Ok((id, reason_code))
-}
-
-
 pub struct PubInfo {
     pub sid: Option<usize>,
 
@@ -411,10 +74,13 @@ impl PubInfo {
         PubInfo {sid: None, topic: Meta::new(&[]), response: None, cd: None}
     }
 
-    fn variable_header_length(&self) -> usize {
+    pub fn variable_header_length(&self) -> usize {
         let mut length = self.topic.get().len() + 2;
 
         // TODO: Handle sender ID for QoS 1 or 2.
+
+        // Include length of the properties field.
+        length += 2;
 
         if let Some(response) = &self.response {
             // The length of this entry is 2 bytes for the string length encoding and the string
@@ -431,7 +97,7 @@ impl PubInfo {
         length
     }
 
-    fn write_variable_header(&self, packet: &mut PacketBuffer) -> Result<(), Error> {
+    pub fn write_variable_header(&self, packet: &mut PacketWriter) -> Result<(), Error> {
 
         // Write the topic name.
         packet.write_binary_data(self.topic.get())?;
@@ -456,13 +122,12 @@ impl PubInfo {
     }
 }
 
-
 const META_MAX: usize = 64;
 
 #[derive(Clone,Copy)]
 pub struct Meta {
-    buf: [u8; META_MAX],
-    len: usize
+    pub buf: [u8; META_MAX],
+    pub len: usize
 }
 
 impl Meta {
@@ -486,221 +151,156 @@ impl Meta {
             Err(())
         }
     }
-
 }
 
-
-fn skip_property(property: usize, p: &mut Packet) -> Result<(),()>{
-    match property_data(property) {
-        Some(Data::Byte)                => { read_byte(p)?;                  }
-        Some(Data::TwoByteInteger)      => { read_two_byte_integer(p)?;      }
-        Some(Data::FourByteInteger)     => { read_four_byte_integer(p)?;     }
-        Some(Data::VariableByteInteger) => { read_variable_byte_integer(p)?; }
-        Some(Data::BinaryData)          => { read_binary_data(p)?;           }
-        Some(Data::UTF8EncodedString)   => { read_utf8_encoded_string(p)?;   }
-        Some(Data::UTF8StringPair)      => { read_utf8_encoded_string(p)?;
-                                             read_utf8_encoded_string(p)?;   }
-        None => return Err(())
-    }
-    Ok(())
-}
-
-
-const FIXED_HEADER_MAX: usize = 5; // type/flags + remaining length
-
-struct PacketReader {
-    p: Packet,
-    read: usize,
-    have_fixed_header: bool
-}
-
-impl PacketReader {
-
-    fn new() -> PacketReader {
-        PacketReader {p: Packet::new(0, PACKET_MAX),
-                      read: 0, have_fixed_header: false}
-    }
-
-    fn packet(&mut self) -> &mut Packet {
-        &mut self.p
-    }
-
-    fn reset(&mut self) {
-        self.p = Packet::new(0, PACKET_MAX);
-        self.read = 0;
-        self.have_fixed_header = false;
-    }
-
-    fn fill(&mut self, stream: &[u8]) -> usize {
-        let read = min(stream.len(), self.p.len() - self.read);
-        self.p.buf()[self.read..][..read].copy_from_slice(&stream[..read]);
-        self.read += read;
-        read
-    }
-
-    fn slurp(&mut self, stream: &[u8]) -> Result<(usize, bool), ()> {
-        let prev_read = self.read;
-        let read = self.fill(stream);
-        if !self.have_fixed_header {
-            if let Some(total_len) = self.probe_fixed_header() {
-                if total_len > PACKET_MAX { return Err(()) }
-                self.p.truncate(total_len);
-                self.read = min(self.read, total_len);
-                self.have_fixed_header = true;
-            } else if self.read >= FIXED_HEADER_MAX { return Err(()) }
-        }
-        let read = min(read, self.read - prev_read);
-        let complete = self.read == self.p.len();
-        return Ok((read, complete))
-    }
-
-    fn probe_fixed_header(&mut self) -> Option<usize> {
-        if self.read <= 1 { return None }
-        match parse_variable_byte_integer(&self.p.buf()[..self.read][1..]) {
-            Some((rlen, nbytes)) => Some(1 + nbytes + rlen),
-            None => None
-        }
-    }
-
-}
-
-
 #[derive(PartialEq,Clone,Copy,Debug)]
-pub enum ProtocolState {Close, Connect, Subscribe, Ready, Handle}
+pub enum ProtocolState {
+    Close,
+    Connect,
+    Subscribe,
+    Ready,
+    Handle,
+}
 
-pub struct Protocol {
-    p: Packet,
+pub struct Protocol<'a> {
     pi: PubInfo,
-    r: PacketReader,
-    r_need_reset: bool,
-    s: ProtocolState,
+    packet_reader: PacketReader<'a>,
+    state: ProtocolState,
     pid: u16
 }
 
-impl Protocol {
+impl<'a> Protocol<'a> {
 
-    pub fn new() -> Protocol {
-        Protocol { p: Packet::new(PACKET_MAX, PACKET_MAX),
-                   pi: PubInfo::new(),
-                   r: PacketReader::new(),
-                   r_need_reset: false,
-                   s: ProtocolState::Close,
-                   pid: 0 }
+    pub fn new(rx_buffer: &'a mut [u8]) -> Protocol {
+        Protocol {
+            pi: PubInfo::new(),
+            packet_reader: PacketReader::new(rx_buffer),
+            state: ProtocolState::Close,
+            pid: 0
+        }
     }
 
-    pub fn state(&self) -> ProtocolState { self.s }
-
-    pub fn connect(&mut self, client_id: &[u8], keep_alive: u16) -> &[u8] {
-        assert!(self.s == ProtocolState::Close);
-        self.p = msg_connect(
-            0b10, // Clean Start
-            keep_alive,
-            client_id
-        );
-        self.s = ProtocolState::Connect;
-        self.p.buf()
+    pub fn state(&self) -> ProtocolState {
+        self.state
     }
 
-    pub fn publish(&self, mut dest: &mut [u8], info: &PubInfo, payload: &[u8]) -> Result<usize, Error> {
-        assert!(self.s == ProtocolState::Ready);
+    pub fn connect(&self, dest: &mut [u8], client_id: &[u8], keep_alive: u16) -> Result<usize, Error> {
+        if self.state != ProtocolState::Close {
+            return Err(Error::InvalidState);
+        }
 
-        // Calculate the length of the packet and variable length header.
-        let variable_header_length = info.variable_header_length();
-
-        let mut packet = PacketBuffer::new(&mut dest);
-
-        // Write the fixed length header.
-        packet.write_fixed_header(MqttMessageType::Publish, 0, variable_header_length + payload.len())?;
-
-        // Write the variable header into the packet.
-        info.write_variable_header(&mut packet)?;
-
-        // Write the payload into the packet.
-        packet.write(payload)?;
-
-        packet.finalize()
+        serialize::connect_message(dest, client_id, keep_alive)
     }
 
-    pub fn subscribe(&mut self, topic: &[u8], sid: usize) -> &[u8] {
-        assert!(sid > 0 && sid <= 0x0F_FF_FF_FF); // (28 bits)
-        assert!(self.s == ProtocolState::Ready);
+    pub fn publish(&self, dest: &mut [u8], info: &PubInfo, payload: &[u8]) -> Result<usize, Error> {
+        if self.state != ProtocolState::Ready {
+            return Err(Error::InvalidState);
+        }
+
+        serialize::publish_message(dest, info, payload)
+    }
+
+    pub fn subscribe<'b>(&mut self, dest: &mut [u8], topic: &'b str, sid: usize) -> Result<usize, Error> {
+        if self.state != ProtocolState::Ready {
+            return Err(Error::InvalidState);
+        }
+
+        let size = serialize::subscribe_message(dest, topic, sid, self.pid)?;
+
         self.pid += 1;
-        self.p = msg_subscribe(topic, 0, self.pid, sid); // XXX QoS
-        self.s = ProtocolState::Subscribe;
-        self.p.buf()
+
+        Ok(size)
     }
 
-    pub fn receive(&mut self, stream: &[u8]) -> Result<(usize,Option<&[u8]>),()> {
-        if self.r_need_reset {
-            self.r.reset();
-            self.r_need_reset = false;
-        }
-        match self.r.slurp(stream) {
-            Ok((read, complete)) => {
-                if !complete { return Ok((read,None)) }
-                self.r_need_reset = true;
-                match self.fsm() {
-                    Ok(reply) => Ok((read,reply)),
-                    Err(_) => Err(())
-                }
-            }
-            Err(_) => {
-                self.r_need_reset = true;
-                Err(())
-            }
+    pub fn receive(&mut self, stream: &[u8]) -> Result<usize, Error> {
+        match self.packet_reader.slurp(stream) {
+            Err(error) => {
+                // If we got a generic error, reset the packet reader.
+                self.packet_reader.reset();
+
+                Err(error)
+            },
+            x => x,
         }
     }
 
-    pub fn handle(&mut self) -> Option<(&PubInfo, &[u8])> {
-        match self.s {
-            ProtocolState::Handle => {
-                self.s = ProtocolState::Ready;
-                Some((&self.pi, self.r.packet().buf()))
+    pub fn handle<F>(&mut self, data_handler: F) -> Result<(), Error>
+    where
+        F: FnOnce(&[u8], &[u8])
+    {
+        // If there is a packet available for processing, handle it now, potentially updating our
+        // internal state.
+        if self.packet_reader.packet_available() {
+            if let Some(publish_info) = self.state_machine()? {
+                // Call a handler function to deal with the received data.
+                let payload = self.packet_reader.payload()?;
+                data_handler(publish_info.topic.get(), payload);
             }
-            _ => None
+
+            self.packet_reader.pop_packet()?;
         }
+
+        Ok(())
     }
 
-    fn fsm(&mut self) -> Result<Option<&[u8]>,()> {
-        let mut reply = None;
-        let state = self.s;
-        self.s = ProtocolState::Close;
+    fn state_machine(&mut self) -> Result<Option<PubInfo>, Error> {
+        let state = self.state;
+        self.state = ProtocolState::Close;
+
+        let packet = deserialize::parse_message(&mut self.packet_reader)?;
+
         match state {
-            ProtocolState::Close => return Err(()),
             ProtocolState::Connect => {
-                let reason_code = read_connack(self.r.packet())?;
-                if reason_code != 0 { return Err(()) }
-                self.s = ProtocolState::Ready;
-            }
-            ProtocolState::Subscribe => {
-                match self.r.packet().typ() {
-                    PUBLISH => {
-                        // Discard incoming publications while not Ready
-                        read_publish(self.r.packet())?;
-                        self.s = ProtocolState::Subscribe;
+                if let ReceivedPacket::ConnAck(acknowledge) = packet {
+                    if acknowledge.reason_code != 0 {
+                        return Err(Error::Failed);
                     }
-                    SUBACK => {
-                        let (id, reason_code) = read_suback(self.r.packet())?;
-                        if id != self.pid { return Err(()) }
-                        if reason_code != 0 { return Err(()) }
-                        self.s = ProtocolState::Ready;
-                    }
-                    _ => return Err(())
-                }
-            }
-            ProtocolState::Ready => {
-                self.pi = read_publish(self.r.packet())?;
-                self.s = ProtocolState::Handle;
-                reply = None // XXX - PUBACK
-            }
-            ProtocolState::Handle => return Err(()),
-        }
-        Ok(reply)
-    }
 
+                    self.state = ProtocolState::Ready;
+                    Ok(None)
+                } else {
+                    // TODO: Handle something other than a connect acknowledge?
+                    Err(Error::Invalid)
+                }
+            },
+
+            ProtocolState::Subscribe => {
+                match packet {
+                    ReceivedPacket::Publish(_) => {
+                        // Discard incoming publications while not Ready
+                        self.state = ProtocolState::Subscribe;
+                        Ok(None)
+                    },
+                    ReceivedPacket::SubAck(subscribe_acknowledge) => {
+                        if subscribe_acknowledge.packet_identifier != self.pid {
+                            return Err(Error::Invalid)
+                        }
+
+                        if subscribe_acknowledge.reason_code != 0 {
+                            return Err(Error::Failed)
+                        }
+
+                        self.state = ProtocolState::Ready;
+                        Ok(None)
+                    },
+                    _ => Err(Error::UnsupportedPacket)
+                }
+            },
+
+            ProtocolState::Ready => {
+                if let ReceivedPacket::Publish(publish_info) = packet {
+                    // TODO: Send a PUBACK
+                    self.state = ProtocolState::Ready;
+                    Ok(Some(publish_info))
+                } else {
+                    Err(Error::UnsupportedPacket)
+                }
+            },
+            _ => Err(Error::InvalidState)
+        }
+    }
 }
 
-
 #[cfg(test)]
 mod tests {
 
@@ -708,7 +308,8 @@ mod tests {
 
     #[test]
     fn protocol() {
-        let mut proto = Protocol::new();
+        let mut buffer = [0u8; 900];
+        let mut proto = Protocol::new(&mut buffer);
         let mut r = PacketReader::new();
 
         // Initial CONNECT
@@ -728,7 +329,7 @@ mod tests {
         let err = proto.receive(p.buf());
         assert_eq!(err, Err(()));
         assert_eq!(proto.state(), ProtocolState::Close);
-        proto.s = ProtocolState::Connect;
+        proto.state = ProtocolState::Connect;
 
         // CONNACK with reason code > 0 is an error.
         let mut p = Packet::new(PACKET_MAX, PACKET_MAX);
@@ -738,7 +339,7 @@ mod tests {
         let err = proto.receive(p.buf());
         assert_eq!(err, Err(()));
         assert_eq!(proto.state(), ProtocolState::Close);
-        proto.s = ProtocolState::Connect;
+        proto.state = ProtocolState::Connect;
 
         // CONNACK with reason code 0 transitions to Ready state.
         let mut p = Packet::new(PACKET_MAX, PACKET_MAX);
@@ -755,7 +356,7 @@ mod tests {
         let err = proto.receive(p.buf());
         assert_eq!(err, Err(()));
         assert_eq!(proto.state(), ProtocolState::Close);
-        proto.s = ProtocolState::Ready;
+        proto.state = ProtocolState::Ready;
 
         // Inbound PUBLISH during Ready state need to be handled.
         let payload = "Hello, World!".as_bytes();
@@ -821,36 +422,42 @@ mod tests {
 
         // Any other inbound message while in Subscribe state is an error.
         // Reason Code > 0
-        proto.s = ProtocolState::Subscribe;
+        proto.state = ProtocolState::Subscribe;
         let mut p = Packet::new(PACKET_MAX, PACKET_MAX);
         write_byte(1, &mut p); // Reason code
         write_variable_byte_integer(0, &mut p); // No properties
         write_two_byte_integer(proto.pid, &mut p); // Id
         write_fixed_header(SUBACK, 0, &mut p);
         let err = proto.receive(p.buf());
-        assert_eq!(err, Err(()));
+        assert_eq!(err, Err(Error::Invalid));
         assert_eq!(proto.state(), ProtocolState::Close);
         // Wrong Packet ID
-        proto.s = ProtocolState::Subscribe;
+        proto.state = ProtocolState::Subscribe;
         let mut p = Packet::new(PACKET_MAX, PACKET_MAX);
         write_byte(1, &mut p); // Reason code
         write_variable_byte_integer(0, &mut p); // No properties
         write_two_byte_integer(0, &mut p); // Id
         write_fixed_header(SUBACK, 0, &mut p);
         let err = proto.receive(p.buf());
-        assert_eq!(err, Err(()));
+        assert_eq!(err, Err(Error::Invalid));
         assert_eq!(proto.state(), ProtocolState::Close);
         // Bogus message
-        proto.s = ProtocolState::Subscribe;
+        proto.state = ProtocolState::Subscribe;
         let mut p = msg_subscribe("test".as_bytes(), 0, 42, 12);
         let err = proto.receive(p.buf());
-        assert_eq!(err, Err(()));
+        assert_eq!(err, Err(Error::Invalid));
         assert_eq!(proto.state(), ProtocolState::Close);
     }
 
     #[test]
     fn connect() {
-        let mut p = msg_connect(0b10, 10, "foobar42".as_bytes());
+        let mut buffer = [0u8; 900];
+        let mut proto = Protocol::new(&mut buffer);
+
+        let mut packet_buffer = [0u8; 900];
+        let len = proto.connect(&mut packet_buffer, "foobar".as_bytes(), 10).unwrap();
+
+
         assert_eq!(p.typ(), CONNECT);
         let (typ, flags, rlen) = read_fixed_header(&mut p).unwrap();
         assert_eq!(typ, CONNECT);
@@ -923,34 +530,29 @@ mod tests {
 
     #[test]
     fn slurp() {
-        let mut r = PacketReader::new();
-        let (read, done) = r.slurp(&[0b1000_0001]).unwrap();
+        let mut buffer = [0_u8; 900];
+        let mut r = PacketReader::new(&mut buffer);
+        let read = r.slurp(&[0b1000_0001]).unwrap();
         assert_eq!(read, 1);
-        assert_eq!(done, false);
-        let (read, done) = r.slurp(&[2, 1, 2, 3, 4, 5]).unwrap();
+        assert!(!r.packet_available());
+        let read = r.slurp(&[2, 1, 2, 3, 4, 5]).unwrap();
         assert_eq!(read, 3);
-        assert_eq!(done, true);
-        assert_eq!(r.p.typ(), 0b1000);
-        assert_eq!(r.p.len(), 4);
-        assert_eq!(r.p.buf()[0], 0b1000_0001);
-        assert_eq!(r.p.buf()[1], 2);
-        assert_eq!(r.p.buf()[2], 1);
-        assert_eq!(r.p.buf()[3], 2);
-        let (read, done) = r.slurp(&[6]).unwrap();
+        assert!(r.packet_available());
+        assert_eq!(r.message_type(), MessageType::Connect);
+        assert_eq!(r.len().unwrap(), 4);
+        let read = r.slurp(&[6]).unwrap();
         assert_eq!(read, 0);
-        assert_eq!(done, true);
+        assert!(r.packet_available());
         r.reset();
-        let (read, done) = r.slurp(&[0, 0b1000_0000, 0b1000_0000]).unwrap();
+        let read = r.slurp(&[0, 0b1000_0000, 0b1000_0000]).unwrap();
         assert_eq!(read, 3);
-        assert_eq!(done, false);
-        let (read, done) = r.slurp(&[0b1000_0000]).unwrap();
+        let read = r.slurp(&[0b1000_0000]).unwrap();
         assert_eq!(read, 1);
-        assert_eq!(done, false);
         let err = r.slurp(&[0b1000_0000]);
-        assert_eq!(err, Err(()));
+        assert_eq!(err, Err(Error::DataSize));
         r.reset();
         let err = r.slurp(&[0, 0b1111_1111, 0b0111_1111]);
-        assert_eq!(err, Err(()));
+        assert_eq!(err, Err(Error::DataSize));
     }
 
     #[test]
