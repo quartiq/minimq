@@ -34,15 +34,19 @@ fn str(b: &[u8]) -> String { String::from_utf8(b.to_vec()).unwrap() }
 
 #[test]
 fn main() -> std::io::Result<()> {
-    let mut mqtt = minimq::Protocol::new();
+    let mut buffer = [0u8; 900];
+    let mut mqtt = minimq::Protocol::new(&mut buffer);
 
     println!("Connecting to MQTT broker at 127.0.0.1:1883");
     let mut stream = connect("127.0.0.1:1883")?;
 
     println!("Sending CONNECT");
     let id = "01234567890123456789012".as_bytes();
-    write(&mut stream, mqtt.connect(id, 10))?;
+    let mut packet_buffer = [0u8; 900];
+    let len = mqtt.connect(&mut packet_buffer, id, 10).unwrap();
+    write(&mut stream, &packet_buffer[..len])?;
 
+    let mut buffer: [u8; 9000] = [0; 9000];
     let (sub_req, sub_res) = (1, 2);
     let (mut subscribed_req, mut subscribed_res) = (false, false);
     let mut published = false;
@@ -51,15 +55,10 @@ fn main() -> std::io::Result<()> {
         let received = read(&mut stream, &mut buf)?;
         let mut processed = 0;
         while processed < received {
-            let (read, reply) = mqtt.receive(&buf[processed..]).unwrap();
+            let read = mqtt.receive(&buf[processed..received]).unwrap();
             processed += read;
 
-            if let Some(reply) = reply {
-                println!("Sending reply");
-                write(&mut stream, reply)?;
-            }
-
-            if let Some((req, payload)) = mqtt.handle() {
+            mqtt.handle(|mqtt, req, payload| {
                 println!("{}:{} < {} [cd:{}]",
                          req.sid.unwrap_or(0),
                          str(req.topic.get()),
@@ -69,11 +68,12 @@ fn main() -> std::io::Result<()> {
                     let mut res = minimq::PubInfo::new();
                     res.topic = req.response.unwrap();
                     res.cd = req.cd;
-                    write(&mut stream, mqtt.publish(&res, "Pong".as_bytes()))?;
+                    let len = mqtt.publish(&mut buffer, &res, "Ping".as_bytes()).unwrap();
+                    write(&mut stream, &buffer[..len]).unwrap();
                 } else {
                     std::process::exit(0);
                 }
-            }
+            }).unwrap();
 
             if subscribed_req && subscribed_res {
                 if !published && mqtt.state() == minimq::ProtocolState::Ready {
@@ -82,19 +82,22 @@ fn main() -> std::io::Result<()> {
                     req.topic = minimq::Meta::new("request".as_bytes());
                     req.response = Some(minimq::Meta::new("response".as_bytes()));
                     req.cd = Some(minimq::Meta::new("foo".as_bytes()));
-                    write(&mut stream, mqtt.publish(&req, "Ping".as_bytes()))?;
+                    let len = mqtt.publish(&mut buffer, &req, "Ping".as_bytes()).unwrap();
+                    write(&mut stream, &buffer[..len])?;
                     published = true;
                 }
             }
 
             if !subscribed_req && mqtt.state() == minimq::ProtocolState::Ready {
                 println!("SUBSCRIBE request");
-                write(&mut stream, mqtt.subscribe("request".as_bytes(), sub_req))?;
+                let len = mqtt.subscribe(&mut packet_buffer, "request", sub_req).unwrap();
+                write(&mut stream, &packet_buffer[..len])?;
                 subscribed_req = true;
             }
             if !subscribed_res && mqtt.state() == minimq::ProtocolState::Ready {
                 println!("SUBSCRIBE response");
-                write(&mut stream, mqtt.subscribe("response".as_bytes(), sub_res))?;
+                let len = mqtt.subscribe(&mut packet_buffer, "response", sub_res).unwrap();
+                write(&mut stream, &packet_buffer[..len])?;
                 subscribed_res = true;
             }
         }
