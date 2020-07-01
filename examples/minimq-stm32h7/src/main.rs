@@ -178,8 +178,8 @@ const APP: () = {
 
         cp.SCB.enable_icache();
 
-        let mut delay = stm32h7xx_hal::delay::Delay::new(cp.SYST, ccdr.clocks);
-        delay.delay_ms(1000_u16);
+        //let mut delay = stm32h7xx_hal::delay::Delay::new(cp.SYST, ccdr.clocks);
+        //delay.delay_ms(1000_u16);
 
         init::LateResources {
             net_interface: net_interface,
@@ -225,11 +225,21 @@ const APP: () = {
                 client.publish("temperature", &temperature.into_bytes()).unwrap();
             }
 
-            client.poll(|topic, message| {
+            match client.poll(|topic, message| {
                 match topic {
                     _ => info!("On '{:?}', received: {:?}", topic, message),
                 }
-            }).unwrap();
+            }) {
+                Ok(_) => {
+                    // Nothing to do.
+                }
+                Err(minimq::mqtt_client::Error::Disconnected) => {
+                    // Resubscribe to any relevant topics.
+                }
+                Err(e) => {
+                    info!("{:?}", e);
+                }
+            };
 
             // Update the TCP stack.
             let sleep = client.network_stack.update(time);

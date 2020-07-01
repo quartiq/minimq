@@ -53,9 +53,14 @@ impl<'a, 'b, 'c, 'n> NetworkStack<'a, 'b, 'c, 'n> {
 
     fn get_ephemeral_port(&self) -> u16 {
         // Get the next ephemeral port
-        let current_port = self.next_port.borrow_mut().clone();
+        let current_port = self.next_port.borrow().clone();
 
-        *self.next_port.borrow_mut() += 1;
+        let (next, wrap) = self.next_port.borrow().overflowing_add(1);
+        *self.next_port.borrow_mut() = if wrap {
+            49152
+        } else {
+            next
+        };
 
         return current_port;
     }
@@ -69,7 +74,14 @@ impl<'a, 'b, 'c, 'n> embedded_nal::TcpStack for NetworkStack<'a, 'b, 'c, 'n> {
 
         // TODO: Handle mode?
         match self.unused_handles.borrow_mut().pop() {
-            Some(handle) => Ok(handle),
+            Some(handle) => {
+                // Abort any active connections on the handle.
+                let mut sockets = self.sockets.borrow_mut();
+                let internal_socket: &mut net::socket::TcpSocket = &mut *sockets.get(handle);
+                internal_socket.abort();
+
+                Ok(handle)
+            },
             None => Err(NetworkError::NoSocket),
         }
     }
@@ -79,6 +91,11 @@ impl<'a, 'b, 'c, 'n> embedded_nal::TcpStack for NetworkStack<'a, 'b, 'c, 'n> {
 
         let mut sockets = self.sockets.borrow_mut();
         let internal_socket: &mut net::socket::TcpSocket = &mut *sockets.get(socket);
+
+        // If we're already in the process of connecting, ignore the request silently.
+        if internal_socket.is_open() {
+            return Ok(socket);
+        }
 
         match remote.ip() {
             embedded_nal::IpAddr::V4(addr) => {
@@ -107,7 +124,7 @@ impl<'a, 'b, 'c, 'n> embedded_nal::TcpStack for NetworkStack<'a, 'b, 'c, 'n> {
         let mut sockets = self.sockets.borrow_mut();
         let socket: &mut net::socket::TcpSocket = &mut *sockets.get(*socket);
 
-        Ok(socket.may_send() || socket.may_recv())
+        Ok(socket.may_send() && socket.may_recv())
     }
 
     fn write(&self, socket: &mut Self::TcpSocket, buffer: &[u8]) -> nb::Result<usize, Self::Error> {
@@ -140,6 +157,10 @@ impl<'a, 'b, 'c, 'n> embedded_nal::TcpStack for NetworkStack<'a, 'b, 'c, 'n> {
 
     fn close(&self, socket: Self::TcpSocket) -> Result<(), Self::Error> {
         // TODO: Free the ephemeral port in use by the socket.
+
+        let mut sockets = self.sockets.borrow_mut();
+        let internal_socket: &mut net::socket::TcpSocket = &mut *sockets.get(socket);
+        internal_socket.close();
 
         self.unused_handles.borrow_mut().push(socket).unwrap();
         Ok(())
