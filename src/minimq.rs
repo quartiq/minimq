@@ -9,7 +9,7 @@ use crate::{
     deserialize::{self, ReceivedPacket},
 };
 
-use crate::properties::{CORRELATION_DATA, RESPONSE_TOPIC};
+use crate::properties;
 
 const CLIENT_ID_MAX: usize = 23;
 
@@ -96,12 +96,12 @@ impl PubInfo {
         if let Some(response) = &self.response {
             // The length of this entry is 2 bytes for the string length encoding and the string
             // data.
-            property_length += integer_size(RESPONSE_TOPIC);
+            property_length += integer_size(properties::RESPONSE_TOPIC);
             property_length += response.get().len() + 2;
         }
 
         if let Some(cd) = &self.cd {
-            property_length += integer_size(CORRELATION_DATA);
+            property_length += integer_size(properties::CORRELATION_DATA);
             property_length += cd.get().len() + 2;
         }
 
@@ -120,13 +120,13 @@ impl PubInfo {
 
         // Write the response topic property.
         if let Some(meta) = &self.response {
-            packet.write_variable_length_integer(RESPONSE_TOPIC)?;
+            packet.write_variable_length_integer(properties::RESPONSE_TOPIC)?;
             packet.write_binary_data(meta.get())?;
         }
 
         // Write the correlation data.
         if let Some(meta) = &self.cd {
-            packet.write_variable_length_integer(CORRELATION_DATA)?;
+            packet.write_variable_length_integer(properties::CORRELATION_DATA)?;
             packet.write_binary_data(meta.get())?;
         }
 
@@ -334,7 +334,6 @@ impl<'a> Protocol<'a> {
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
 
@@ -342,49 +341,31 @@ mod tests {
 
     #[test]
     fn protocol() {
+        let mut protocol_buffer = [0u8; 900];
+        let mut proto = Protocol::new(&mut protocol_buffer);
         let mut buffer = [0u8; 900];
-        let mut proto = Protocol::new(&mut buffer);
-        let mut r = PacketReader::new();
 
         // Initial CONNECT
         let id = "01234567890123456789012".as_bytes();
-        let connect = proto.connect(id, 10);
-        let (read, done) = r.slurp(connect).unwrap();
-        assert_eq!(read, connect.len());
-        assert_eq!(done, true);
-        assert_eq!(r.packet().typ(), CONNECT);
+        let _ = proto.connect(&mut buffer, id, 10).unwrap();
         assert_eq!(proto.state(), ProtocolState::Connect);
-        r.reset();
 
-        // Inbound PUBLISH during in Connect state is an error.
-        let mut i = PubInfo::new();
-        i.topic = Meta::new("test".as_bytes());
-        let mut p = msg_publish(&i, "Hello, World!".as_bytes());
-        let err = proto.receive(p.buf());
-        assert_eq!(err, Err(()));
+        // Inbound PUBLISH while in Connect state is an error.
+        let mut info = PubInfo::new();
+        info.topic = Meta::new("test".as_bytes());
+        let len = serialize::publish_message(&mut buffer, &info, "Hello, World".as_bytes()).unwrap();
+
+        let receive_length = proto.receive(&buffer[..len]).unwrap();
+        assert_eq!(len, receive_length);
+
+        let err = proto.handle(|_mqtt, _info, _payload| {});
+        assert_eq!(err, Err(Error::Invalid));
         assert_eq!(proto.state(), ProtocolState::Close);
         proto.state = ProtocolState::Connect;
 
-        // CONNACK with reason code > 0 is an error.
-        let mut p = Packet::new(PACKET_MAX, PACKET_MAX);
-        write_byte(42, &mut p); // Reason code
-        write_byte(0, &mut p);  // Ack flags
-        write_fixed_header(CONNACK, 0, &mut p);
-        let err = proto.receive(p.buf());
-        assert_eq!(err, Err(()));
-        assert_eq!(proto.state(), ProtocolState::Close);
-        proto.state = ProtocolState::Connect;
+        // TODO: Refactor the following unit tests.
 
-        // CONNACK with reason code 0 transitions to Ready state.
-        let mut p = Packet::new(PACKET_MAX, PACKET_MAX);
-        write_byte(0, &mut p); // Reason code
-        write_byte(0, &mut p);  // Ack flags
-        write_fixed_header(CONNACK, 0, &mut p);
-        let (read, reply) = proto.receive(p.buf()).unwrap();
-        assert_eq!(read, p.len());
-        assert_eq!(reply, None);
-        assert_eq!(proto.state(), ProtocolState::Ready);
-
+        /*
         // Inbound messages other that PUBLISH during Ready state are errors.
         let mut p = msg_subscribe("test".as_bytes(), 0, 42, 12);
         let err = proto.receive(p.buf());
@@ -481,121 +462,14 @@ mod tests {
         let err = proto.receive(p.buf());
         assert_eq!(err, Err(Error::Invalid));
         assert_eq!(proto.state(), ProtocolState::Close);
-    }
-
-    #[test]
-    fn connect() {
-        let mut buffer = [0u8; 900];
-        let mut proto = Protocol::new(&mut buffer);
-
-        let mut packet_buffer = [0u8; 900];
-        let len = proto.connect(&mut packet_buffer, "foobar".as_bytes(), 10).unwrap();
-
-
-        assert_eq!(p.typ(), CONNECT);
-        let (typ, flags, rlen) = read_fixed_header(&mut p).unwrap();
-        assert_eq!(typ, CONNECT);
-        assert_eq!(flags, 0);
-        assert_eq!(rlen, p.len());
-        let magic = read_utf8_encoded_string(&mut p).unwrap();
-        assert_eq!(magic, "MQTT".as_bytes());
-        let version = read_byte(&mut p).unwrap();
-        assert_eq!(version, 5);
-        let flags = read_byte(&mut p).unwrap();
-        assert_eq!(flags, 0b10);
-        let keep_alive = read_two_byte_integer(&mut p).unwrap();
-        assert_eq!(keep_alive, 10);
-        let prop_len = read_variable_byte_integer(&mut p).unwrap();
-        assert_eq!(prop_len, 0);
-        let client_id = read_binary_data(&mut p).unwrap();
-        assert_eq!(client_id, "foobar42".as_bytes());
-
-        let mut p = Packet::new(PACKET_MAX, PACKET_MAX);
-        write_byte(42, &mut p); // Reason code
-        write_byte(0, &mut p);  // Ack flags
-        write_fixed_header(CONNACK, 0, &mut p);
-        let reason_code = read_connack(&mut p).unwrap();
-        assert_eq!(reason_code, 42);
-    }
-
-    #[test]
-    fn publish() {
-        let mut i = PubInfo::new();
-        i.topic = Meta::new("test".as_bytes());
-        i.cd = Some(Meta::new("foobar".as_bytes()));
-        let mut p = msg_publish(&i, "Hello, World!".as_bytes());
-        let i = read_publish(&mut p).unwrap();
-        assert_eq!(i.sid, None);
-        assert_eq!(i.response.is_none(), true);
-        assert_eq!(i.cd.unwrap().get(), "foobar".as_bytes());
-        assert_eq!(p.buf(), "Hello, World!".as_bytes());
-    }
-
-    #[test]
-    fn subscribe() {
-        let mut p = msg_subscribe("test".as_bytes(), 0b11111111, 42, 12);
-        let (typ, flags, rlen) = read_fixed_header(&mut p).unwrap();
-        assert_eq!(typ, SUBSCRIBE);
-        assert_eq!(flags, 0b0010);
-        assert_eq!(rlen, p.len());
-        let id = read_two_byte_integer(&mut p).unwrap();
-        assert_eq!(id, 42);
-        let plen = read_variable_byte_integer(&mut p).unwrap();
-        assert_eq!(plen, 2);
-        let prop = read_variable_byte_integer(&mut p).unwrap();
-        assert_eq!(prop, SUBSCRIPTION_IDENTIFIER);
-        let sid = read_variable_byte_integer(&mut p).unwrap();
-        assert_eq!(sid, 12);
-        let topic = read_utf8_encoded_string(&mut p).unwrap();
-        assert_eq!(topic, "test".as_bytes());
-        let options = read_byte(&mut p).unwrap();
-        assert_eq!(options, 0b00111111);
-
-        let mut p = Packet::new(PACKET_MAX, PACKET_MAX);
-        write_byte(1, &mut p); // Reason code
-        p.push(13);
-        write_variable_byte_integer(13, &mut p); // Bogus properties
-        write_two_byte_integer(42, &mut p); // Id
-        write_fixed_header(SUBACK, 0, &mut p);
-        let (id, reason_code) = read_suback(&mut p).unwrap();
-        assert_eq!(id, 42);
-        assert_eq!(reason_code, 1);
-    }
-
-    #[test]
-    fn slurp() {
-        let mut buffer = [0_u8; 900];
-        let mut r = PacketReader::new(&mut buffer);
-        let read = r.slurp(&[0b1000_0001]).unwrap();
-        assert_eq!(read, 1);
-        assert!(!r.packet_available());
-        let read = r.slurp(&[2, 1, 2, 3, 4, 5]).unwrap();
-        assert_eq!(read, 3);
-        assert!(r.packet_available());
-        assert_eq!(r.message_type(), MessageType::Connect);
-        assert_eq!(r.len().unwrap(), 4);
-        let read = r.slurp(&[6]).unwrap();
-        assert_eq!(read, 0);
-        assert!(r.packet_available());
-        r.reset();
-        let read = r.slurp(&[0, 0b1000_0000, 0b1000_0000]).unwrap();
-        assert_eq!(read, 3);
-        let read = r.slurp(&[0b1000_0000]).unwrap();
-        assert_eq!(read, 1);
-        let err = r.slurp(&[0b1000_0000]);
-        assert_eq!(err, Err(Error::DataSize));
-        r.reset();
-        let err = r.slurp(&[0, 0b1111_1111, 0b0111_1111]);
-        assert_eq!(err, Err(Error::DataSize));
+        */
     }
 
     #[test]
     fn property() {
-        let data = property_data(SUBSCRIPTION_IDENTIFIER);
-        assert_eq!(data.unwrap(), Data::VariableByteInteger);
-        let none = property_data(0);
+        let data = properties::property_data(properties::SUBSCRIPTION_IDENTIFIER);
+        assert_eq!(data.unwrap(), properties::Data::VariableByteInteger);
+        let none = properties::property_data(0);
         assert_eq!(none, None);
     }
-
 }
-*/
