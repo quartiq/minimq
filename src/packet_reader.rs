@@ -34,6 +34,20 @@ impl<'a> PacketReader<'a> {
         }
     }
 
+    pub fn from_serialized(buffer: &'a mut [u8]) -> PacketReader {
+        let len = buffer.len();
+        let mut reader = PacketReader {
+            buffer: buffer,
+            read_bytes: len,
+            packet_length: None,
+            index: 0,
+        };
+
+        reader.probe_fixed_header();
+
+        reader
+    }
+
     pub fn payload(&self) -> Result<&[u8], Error> {
         Ok(&self.buffer[self.index..self.packet_length()?])
     }
@@ -86,7 +100,7 @@ impl<'a> PacketReader<'a> {
         let header = self.read_u8()?;
         let packet_length = self.read_variable_length_integer()?;
 
-        Ok((MessageType::from(header.get_bits(4..7)), header.get_bits(0..3), packet_length))
+        Ok((MessageType::from(header.get_bits(4..=7)), header.get_bits(0..=3), packet_length))
     }
 
     pub fn read_utf8_string(&mut self, buf: &mut [u8]) -> Result<usize, Error> {

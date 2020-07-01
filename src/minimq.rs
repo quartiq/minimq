@@ -5,9 +5,11 @@ use enum_iterator::IntoEnumIterator;
 use crate::{
     packet_writer::PacketWriter,
     packet_reader::PacketReader,
-    serialize,
+    serialize::{self, integer_size},
     deserialize::{self, ReceivedPacket},
 };
+
+use crate::properties::{CORRELATION_DATA, RESPONSE_TOPIC};
 
 const CLIENT_ID_MAX: usize = 23;
 
@@ -75,26 +77,35 @@ impl PubInfo {
     }
 
     pub fn variable_header_length(&self) -> usize {
+
+        // Include the length of the mandatory topic name field in the variable header.
         let mut length = self.topic.get().len() + 2;
 
         // TODO: Handle sender ID for QoS 1 or 2.
 
-        // Include length of the properties field.
-        length += 2;
+        let property_length = self.get_property_length();
 
+        // Include length of the properties field.
+        length += property_length + integer_size(property_length);
+
+        length
+    }
+
+    fn get_property_length(&self) -> usize {
+        let mut property_length = 0;
         if let Some(response) = &self.response {
             // The length of this entry is 2 bytes for the string length encoding and the string
             // data.
-            length += response.get().len() + 2;
+            property_length += integer_size(RESPONSE_TOPIC);
+            property_length += response.get().len() + 2;
         }
 
         if let Some(cd) = &self.cd {
-            length += cd.get().len() + 2;
+            property_length += integer_size(CORRELATION_DATA);
+            property_length += cd.get().len() + 2;
         }
 
-        // TODO: Handle additional properties.
-
-        length
+        property_length
     }
 
     pub fn write_variable_header(&self, packet: &mut PacketWriter) -> Result<(), Error> {
@@ -104,15 +115,18 @@ impl PubInfo {
 
         // TODO: Handle the sender ID.
 
-        // TODO: Properties below should have a unique identifier denoting the property.
+        // Write the length of the properties list.
+        packet.write_variable_length_integer(self.get_property_length())?;
 
         // Write the response topic property.
         if let Some(meta) = &self.response {
+            packet.write_variable_length_integer(RESPONSE_TOPIC)?;
             packet.write_binary_data(meta.get())?;
         }
 
         // Write the correlation data.
         if let Some(meta) = &self.cd {
+            packet.write_variable_length_integer(CORRELATION_DATA)?;
             packet.write_binary_data(meta.get())?;
         }
 
@@ -124,7 +138,7 @@ impl PubInfo {
 
 const META_MAX: usize = 64;
 
-#[derive(Clone,Copy)]
+#[derive(Clone, Copy)]
 pub struct Meta {
     pub buf: [u8; META_MAX],
     pub len: usize
@@ -176,7 +190,9 @@ impl<'a> Protocol<'a> {
             pi: PubInfo::new(),
             packet_reader: PacketReader::new(rx_buffer),
             state: ProtocolState::Close,
-            pid: 0
+
+            // Only non-zero packet identifiers are allowed.
+            pid: 1
         }
     }
 
@@ -184,11 +200,12 @@ impl<'a> Protocol<'a> {
         self.state
     }
 
-    pub fn connect(&self, dest: &mut [u8], client_id: &[u8], keep_alive: u16) -> Result<usize, Error> {
+    pub fn connect(&mut self, dest: &mut [u8], client_id: &[u8], keep_alive: u16) -> Result<usize, Error> {
         if self.state != ProtocolState::Close {
             return Err(Error::InvalidState);
         }
 
+        self.state = ProtocolState::Connect;
         serialize::connect_message(dest, client_id, keep_alive)
     }
 
@@ -205,9 +222,9 @@ impl<'a> Protocol<'a> {
             return Err(Error::InvalidState);
         }
 
-        let size = serialize::subscribe_message(dest, topic, sid, self.pid)?;
+        self.state = ProtocolState::Subscribe;
 
-        self.pid += 1;
+        let size = serialize::subscribe_message(dest, topic, sid, self.pid)?;
 
         Ok(size)
     }
@@ -226,21 +243,35 @@ impl<'a> Protocol<'a> {
 
     pub fn handle<F>(&mut self, data_handler: F) -> Result<(), Error>
     where
-        F: FnOnce(&[u8], &[u8])
+        F: FnOnce(&Self, &PubInfo, &[u8])
     {
+        if self.state == ProtocolState::Close {
+        }
         // If there is a packet available for processing, handle it now, potentially updating our
         // internal state.
         if self.packet_reader.packet_available() {
             if let Some(publish_info) = self.state_machine()? {
                 // Call a handler function to deal with the received data.
                 let payload = self.packet_reader.payload()?;
-                data_handler(publish_info.topic.get(), payload);
+                data_handler(&self, &publish_info, payload);
             }
 
             self.packet_reader.pop_packet()?;
         }
 
         Ok(())
+    }
+
+
+    fn increment_packet_identifier(&mut self) {
+        let (result, overflow) = self.pid.overflowing_add(1);
+
+        // Packet identifiers must always be non-zero.
+        if overflow {
+            self.pid = 1;
+        } else {
+            self.pid = result;
+        }
     }
 
     fn state_machine(&mut self) -> Result<Option<PubInfo>, Error> {
@@ -280,10 +311,12 @@ impl<'a> Protocol<'a> {
                             return Err(Error::Failed)
                         }
 
+                        self.increment_packet_identifier();
+
                         self.state = ProtocolState::Ready;
                         Ok(None)
                     },
-                    _ => Err(Error::UnsupportedPacket)
+                    _ => Err(Error::UnsupportedPacket),
                 }
             },
 
@@ -301,6 +334,7 @@ impl<'a> Protocol<'a> {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
 
@@ -564,3 +598,4 @@ mod tests {
     }
 
 }
+*/

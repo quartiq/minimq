@@ -55,17 +55,10 @@ fn main() -> std::io::Result<()> {
         let received = read(&mut stream, &mut buf)?;
         let mut processed = 0;
         while processed < received {
-            let read = mqtt.receive(&buf[processed..]).unwrap();
+            let read = mqtt.receive(&buf[processed..received]).unwrap();
             processed += read;
 
-            // TODO: Re-enable
-            let reply = None;
-            if let Some(reply) = reply {
-                println!("Sending reply");
-                write(&mut stream, reply)?;
-            }
-
-            if let Some((req, payload)) = mqtt.handle().unwrap() {
+            mqtt.handle(|mqtt, req, payload| {
                 println!("{}:{} < {} [cd:{}]",
                          req.sid.unwrap_or(0),
                          str(req.topic.get()),
@@ -76,11 +69,11 @@ fn main() -> std::io::Result<()> {
                     res.topic = req.response.unwrap();
                     res.cd = req.cd;
                     let len = mqtt.publish(&mut buffer, &res, "Ping".as_bytes()).unwrap();
-                    write(&mut stream, &buffer[..len])?;
+                    write(&mut stream, &buffer[..len]).unwrap();
                 } else {
                     std::process::exit(0);
                 }
-            }
+            }).unwrap();
 
             if subscribed_req && subscribed_res {
                 if !published && mqtt.state() == minimq::ProtocolState::Ready {
@@ -97,12 +90,14 @@ fn main() -> std::io::Result<()> {
 
             if !subscribed_req && mqtt.state() == minimq::ProtocolState::Ready {
                 println!("SUBSCRIBE request");
-                write(&mut stream, mqtt.subscribe("request".as_bytes(), sub_req))?;
+                let len = mqtt.subscribe(&mut packet_buffer, "request", sub_req).unwrap();
+                write(&mut stream, &packet_buffer[..len])?;
                 subscribed_req = true;
             }
             if !subscribed_res && mqtt.state() == minimq::ProtocolState::Ready {
                 println!("SUBSCRIBE response");
-                write(&mut stream, mqtt.subscribe("response".as_bytes(), sub_res))?;
+                let len = mqtt.subscribe(&mut packet_buffer, "response", sub_res).unwrap();
+                write(&mut stream, &packet_buffer[..len])?;
                 subscribed_res = true;
             }
         }

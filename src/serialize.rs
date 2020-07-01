@@ -2,7 +2,7 @@ use crate::packet_writer::PacketWriter;
 use crate::minimq::{Error, MessageType, PubInfo};
 use crate::properties::SUBSCRIPTION_IDENTIFIER;
 
-fn integer_size(value: usize) -> usize {
+pub fn integer_size(value: usize) -> usize {
     if value < 0x80 {
         1
     } else if value < 0x7FFF {
@@ -28,7 +28,7 @@ pub fn connect_message(dest: &mut [u8], client_id: &[u8], keep_alive: u16) -> Re
 
     // Calculate the lengths
     let payload_length = client_id.len() + 2;
-    let properties_length = 2;
+    let properties_length = 1;
     let variable_header_length = properties_length + 10;
     let packet_length = variable_header_length + payload_length;
 
@@ -76,8 +76,8 @@ pub fn subscribe_message<'b>(dest: &mut [u8], topic: &'b str, sender_id: usize, 
 
     let mut packet = PacketWriter::new(dest);
 
-    let property_length = integer_size(sender_id) + 2;
-    let variable_header_length = property_length + 2;
+    let property_length = integer_size(sender_id) + integer_size(SUBSCRIPTION_IDENTIFIER);
+    let variable_header_length = property_length + integer_size(property_length) + 2;
     let payload_size = 3 + topic.len();
     let packet_length = variable_header_length + payload_size;
 
@@ -87,8 +87,8 @@ pub fn subscribe_message<'b>(dest: &mut [u8], topic: &'b str, sender_id: usize, 
     packet.write_u16(packet_id)?;
 
     // Write properties.
-    packet.write_u16(property_length as u16)?;
-    packet.write_u16(SUBSCRIPTION_IDENTIFIER as u16)?;
+    packet.write_variable_length_integer(property_length)?;
+    packet.write_variable_length_integer(SUBSCRIPTION_IDENTIFIER)?;
     packet.write_variable_length_integer(sender_id)?;
 
     // Write the payload (topic)

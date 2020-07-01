@@ -28,7 +28,7 @@ pub fn parse_message<'a>(packet_reader: &'a mut PacketReader) -> Result<Received
     let (message_type, _flags, remaining_length) = packet_reader.read_fixed_header()?;
 
     // Validate packet length.
-    if remaining_length == packet_reader.len()? {
+    if remaining_length != packet_reader.len()? {
         return Err(Error::MalformedPacket);
     }
 
@@ -141,4 +141,33 @@ fn skip_property<'a>(property: usize, p: &'a mut PacketReader) -> Result<(), Err
         },
         None => Err(Error::UnknownProperty)
     }
+}
+
+#[test]
+fn deserialize_good_connack() {
+    let mut serialized_connack: [u8; 5] = [
+        0x20,
+        0x03, // Remaining length = 3 bytes
+        0x00, // Connect acknowledge flags - bit 0 clear.
+        0x00, // Connect reason code - 0 (Success)
+        0x00, // Property length = 0
+        // No payload.
+    ];
+
+    let mut reader = PacketReader::from_serialized(&mut serialized_connack);
+    let connack = parse_message(&mut reader).unwrap();
+    match connack {
+        ReceivedPacket::ConnAck(conn_ack) => {
+            assert_eq!(conn_ack.reason_code, 0);
+        },
+        _ => panic!("Invalid message"),
+    }
+}
+
+#[test]
+fn deserialize_good_publish() {
+}
+
+#[test]
+fn deserialize_good_suback() {
 }
