@@ -13,6 +13,7 @@ use stm32h7xx_hal::{
 };
 
 use heapless::{
+    Vec,
     String,
     consts,
 };
@@ -25,10 +26,9 @@ use serde::{Deserialize, Serialize};
 
 use rtic::cyccnt::{Instant, U32Ext};
 
-mod mqtt_client;
 mod tcp_stack;
 
-use mqtt_client::{MqttClient, IpAddr, Ipv4Addr};
+use minimq::mqtt_client::{MqttClient, IpAddr, Ipv4Addr};
 use tcp_stack::NetworkStack;
 
 pub struct NetStorage {
@@ -199,9 +199,13 @@ const APP: () = {
         let mut sockets = net::socket::SocketSet::new(&mut socket_set_entries[..]);
         add_socket!(sockets, rx_storage, tx_storage);
 
+        // Create a static-based buffer for receiving data.
+        let mut client_buffer: Vec<u8, consts::U512> = Vec::new();
+        client_buffer.resize_default(512).unwrap();
+
         let tcp_stack = NetworkStack::new(c.resources.net_interface, sockets);
         let mut client = MqttClient::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), "nucleo",
-                tcp_stack).unwrap();
+                tcp_stack, &mut client_buffer).unwrap();
 
         loop {
             let tick = Instant::now() > next_ms;

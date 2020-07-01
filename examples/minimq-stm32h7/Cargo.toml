@@ -25,7 +25,7 @@ serde-json-core = "0.1"
 path = "../../"
 
 [dependencies.embedded-nal]
-path = "embedded-nal"
+git = "https://github.com/thejpster/embedded-nal"
 
 [dependencies.smoltcp]
 version = "0.6.0"
