@@ -166,8 +166,43 @@ fn deserialize_good_connack() {
 
 #[test]
 fn deserialize_good_publish() {
+    let mut serialized_publish: [u8; 7] = [
+        0x30, // Publish, no QoS
+        0x04, // Remaining length
+        0x00, 0x01, // Topic length (1)
+        0x41,  // Topic name: 'A'
+        0x00, // Properties length
+        0x05, // Payload
+    ];
+
+    let mut reader = PacketReader::from_serialized(&mut serialized_publish);
+    let publish = parse_message(&mut reader).unwrap();
+    match publish {
+        ReceivedPacket::Publish(pub_info) => {
+            assert_eq!(pub_info.topic.get(), "A".as_bytes());
+        },
+        _ => panic!("Invalid message"),
+    }
 }
 
 #[test]
 fn deserialize_good_suback() {
+    let mut serialized_suback: [u8; 6] = [
+        0x90, // SubAck
+        0x04, // Remaining length
+        0x00, 0x05, // Identifier
+        0x00, // Properties length
+        0x02, // Response Code
+    ];
+
+    let mut reader = PacketReader::from_serialized(&mut serialized_suback);
+    let suback = parse_message(&mut reader).unwrap();
+    match suback {
+        ReceivedPacket::SubAck(sub_ack) => {
+            assert_eq!(sub_ack.reason_code, 2);
+            assert_eq!(sub_ack.packet_identifier, 5);
+        },
+        _ => panic!("Invalid message"),
+    }
+
 }
