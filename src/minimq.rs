@@ -170,6 +170,7 @@ impl Meta {
 #[derive(PartialEq,Clone,Copy,Debug)]
 pub enum ProtocolState {
     Close,
+    Init,
     Connect,
     Subscribe,
     Ready,
@@ -189,7 +190,7 @@ impl<'a> Protocol<'a> {
         Protocol {
             pi: PubInfo::new(),
             packet_reader: PacketReader::new(rx_buffer),
-            state: ProtocolState::Close,
+            state: ProtocolState::Init,
 
             // Only non-zero packet identifiers are allowed.
             pid: 1
@@ -201,12 +202,18 @@ impl<'a> Protocol<'a> {
     }
 
     pub fn connect(&mut self, dest: &mut [u8], client_id: &[u8], keep_alive: u16) -> Result<usize, Error> {
-        if self.state != ProtocolState::Close {
+        if self.state != ProtocolState::Init {
             return Err(Error::InvalidState);
         }
 
         self.state = ProtocolState::Connect;
         serialize::connect_message(dest, client_id, keep_alive)
+    }
+
+    pub fn reset(&mut self) {
+        self.state = ProtocolState::Init;
+        self.packet_reader.reset();
+        self.pid = 1;
     }
 
     pub fn publish(&self, dest: &mut [u8], info: &PubInfo, payload: &[u8]) -> Result<usize, Error> {
@@ -235,6 +242,7 @@ impl<'a> Protocol<'a> {
                 // If we got a generic error, reset the packet reader.
                 self.packet_reader.reset();
 
+                // TODO: We should only forward the error if we can't recover from it.
                 Err(error)
             },
             x => x,
@@ -245,8 +253,6 @@ impl<'a> Protocol<'a> {
     where
         F: FnOnce(&Self, &PubInfo, &[u8])
     {
-        if self.state == ProtocolState::Close {
-        }
         // If there is a packet available for processing, handle it now, potentially updating our
         // internal state.
         if self.packet_reader.packet_available() {
