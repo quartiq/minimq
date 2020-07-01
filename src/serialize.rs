@@ -16,7 +16,6 @@ pub fn integer_size(value: usize) -> usize {
     }
 }
 
-
 pub fn connect_message(dest: &mut [u8], client_id: &[u8], keep_alive: u16) -> Result<usize, Error> {
     for i in 0..client_id.len() {
         if !(client_id[i] - 0x30 <=  9 || // 0-9
@@ -98,4 +97,61 @@ pub fn subscribe_message<'b>(dest: &mut [u8], topic: &'b str, sender_id: usize, 
     packet.write(&[0])?;
 
     packet.finalize()
+}
+
+#[test]
+pub fn serialize_publish() {
+    let good_publish: [u8; 10] = [
+        0x30, // Publish message
+        0x08, // Remaining length (8)
+        0x00, 0x03, 0x41, 0x42, 0x43, // Topic: ABC
+        0x00, // Properties length
+        0xAB, 0xCD, // Payload
+    ];
+
+    let mut info = PubInfo::new();
+    info.topic.set("ABC".as_bytes()).unwrap();
+
+    let mut buffer: [u8; 900] = [0; 900];
+    let payload: [u8; 2] = [0xAB, 0xCD];
+    let length = publish_message(&mut buffer, &info, &payload).unwrap();
+
+    assert_eq!(buffer[..length], good_publish);
+}
+
+#[test]
+fn serialize_subscribe() {
+    let good_subscribe: [u8; 13] = [
+        0x82, // Subscribe request
+        0x0b, // Remaining length (11)
+        0x00, 0x10, // Packet identifier (16)
+        0x02, // Property length
+        0x0b, 0x0a, // Property: Subscription Identifier = 10
+        0x00, 0x03, 0x41, 0x42, 0x43, // Topic: ABC
+        0x00, // Options byte = 0
+    ];
+
+    let mut buffer: [u8; 900] = [0; 900];
+    let length = subscribe_message(&mut buffer, "ABC", 10, 16).unwrap();
+
+    assert_eq!(buffer[..length], good_subscribe);
+}
+
+#[test]
+fn serialize_connect() {
+    let good_serialized_connect: [u8; 18] = [
+        0x10, // Connect
+        0x10, // Remaining length (16)
+        0x00, 0x04, 0x4d, 0x51, 0x54, 0x54, 0x05, // MQTT5 header
+        0x02, // Flags (Clean start)
+        0x00, 0x0a, // Keep-alive (10)
+        0x00, // Properties length
+        0x00, 0x03, 0x41, 0x42, 0x43, // ABC client ID
+    ];
+
+    let mut buffer: [u8; 900] = [0; 900];
+    let client_id = "ABC".as_bytes();
+    let length = connect_message(&mut buffer, client_id, 10).unwrap();
+
+    assert_eq!(buffer[..length], good_serialized_connect)
 }
