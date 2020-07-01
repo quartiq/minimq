@@ -139,8 +139,8 @@ where
         };
 
         // Connect to the broker's TCP port with a new socket.
-        // TODO: We should ignore errors if we're still trying to connect
-        let socket = self.network_stack.connect(socket, SocketAddr::new(self.broker, 1883)).unwrap();
+        // TODO: Limit the time between connect attempts to prevent network spam.
+        let socket = self.network_stack.connect(socket, SocketAddr::new(self.broker, 1883))?;
 
         // Store the new socket for future use.
         socket_ref.replace(socket);
