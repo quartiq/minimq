@@ -438,10 +438,16 @@ impl Protocol {
 
     pub fn connect(&mut self, client_id: &[u8], keep_alive: u16) -> &[u8] {
         assert!(self.s == ProtocolState::Close);
+        let client = if client_id.len() > CLIENT_ID_MAX {
+            &client_id[..CLIENT_ID_MAX]
+        } else {
+            client_id
+        };
+
         self.p = msg_connect(
             0b10, // Clean Start
             keep_alive,
-            client_id
+            &client,
         );
         self.s = ProtocolState::Connect;
         self.p.buf()
