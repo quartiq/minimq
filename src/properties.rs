@@ -28,7 +28,7 @@ pub const SHARED_SUBSCRIPTION_AVAILABLE: usize = 42; // Shared Subscription Avai
 
 const PROPERTY_MAX: usize = 43;
 
-#[derive(Clone,Copy,PartialEq,Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Data {
     Byte,
     TwoByteInteger,
@@ -36,20 +36,20 @@ pub enum Data {
     VariableByteInteger,
     BinaryData,
     UTF8EncodedString,
-    UTF8StringPair
+    UTF8StringPair,
 }
 
 const PROPERTY_DATA: [Option<Data>; PROPERTY_MAX] = [
     None,
-    Some(Data::Byte), // Payload Format Indicator
-    Some(Data::FourByteInteger), // Message Expiry Interval
+    Some(Data::Byte),              // Payload Format Indicator
+    Some(Data::FourByteInteger),   // Message Expiry Interval
     Some(Data::UTF8EncodedString), // Content Type
     None,
     None,
     None,
     None,
     Some(Data::UTF8EncodedString), // Response Topic
-    Some(Data::BinaryData), // Correlation Data
+    Some(Data::BinaryData),        // Correlation Data
     None,
     Some(Data::VariableByteInteger), // Subscription Identifier
     None,
@@ -57,15 +57,15 @@ const PROPERTY_DATA: [Option<Data>; PROPERTY_MAX] = [
     None,
     None,
     None,
-    Some(Data::FourByteInteger), // Session Expiry Interval
+    Some(Data::FourByteInteger),   // Session Expiry Interval
     Some(Data::UTF8EncodedString), // Assigned Client Identifier
-    Some(Data::TwoByteInteger), // Server Keep Alive
+    Some(Data::TwoByteInteger),    // Server Keep Alive
     None,
     Some(Data::UTF8EncodedString), // Authentication Method
-    Some(Data::BinaryData), // Authentication Data
-    Some(Data::Byte), // Request Problem Information
-    Some(Data::FourByteInteger), // Will Delay Interval
-    Some(Data::Byte), // Request Response Information
+    Some(Data::BinaryData),        // Authentication Data
+    Some(Data::Byte),              // Request Problem Information
+    Some(Data::FourByteInteger),   // Will Delay Interval
+    Some(Data::Byte),              // Request Response Information
     Some(Data::UTF8EncodedString), // Response Information
     None,
     Some(Data::UTF8EncodedString), // Server Reference
@@ -73,16 +73,16 @@ const PROPERTY_DATA: [Option<Data>; PROPERTY_MAX] = [
     None,
     Some(Data::UTF8EncodedString), // Reason String
     None,
-    Some(Data::TwoByteInteger), // Receive Maximum
-    Some(Data::TwoByteInteger), // Topic Alias Maximum
-    Some(Data::TwoByteInteger), // Topic Alias
-    Some(Data::Byte), // Maximum QoS
-    Some(Data::Byte), // Retain Available
-    Some(Data::UTF8StringPair), // User Property
+    Some(Data::TwoByteInteger),  // Receive Maximum
+    Some(Data::TwoByteInteger),  // Topic Alias Maximum
+    Some(Data::TwoByteInteger),  // Topic Alias
+    Some(Data::Byte),            // Maximum QoS
+    Some(Data::Byte),            // Retain Available
+    Some(Data::UTF8StringPair),  // User Property
     Some(Data::FourByteInteger), // Maximum Packet Size
-    Some(Data::Byte), // Wildcard Subscription Available
-    Some(Data::Byte), // Subscription Identifier Available
-    Some(Data::Byte), // Shared Subscription Available
+    Some(Data::Byte),            // Wildcard Subscription Available
+    Some(Data::Byte),            // Subscription Identifier Available
+    Some(Data::Byte),            // Shared Subscription Available
 ];
 
 pub fn property_data(property: usize) -> Option<Data> {

@@ -68,23 +68,22 @@ impl<'a> PacketWriter<'a> {
 
             self.write(&data)
         } else if value & (0b0111_1111 << 7) > 0 {
-            let data: [u8; 2] = [
-                (value >> 7) as u8 & 0x7F,
-                (value >> 0) as u8 | 0x80,
-            ];
+            let data: [u8; 2] = [(value >> 7) as u8 & 0x7F, (value >> 0) as u8 | 0x80];
 
             self.write(&data)
         } else {
-            let data: [u8; 1] = [
-                (value >> 0) as u8 & 0x7F,
-            ];
+            let data: [u8; 1] = [(value >> 0) as u8 & 0x7F];
 
             self.write(&data)
         }
     }
 
-    pub fn write_fixed_header(&mut self, typ: MessageType, flags: u8, len: usize) -> Result<(), Error> {
-
+    pub fn write_fixed_header(
+        &mut self,
+        typ: MessageType,
+        flags: u8,
+        len: usize,
+    ) -> Result<(), Error> {
         // Write the control byte.
         let header: u8 = ((typ as u8) << 4) & 0xF0 | (flags & 0x0F);
         self.write(&[header])?;

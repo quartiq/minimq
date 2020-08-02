@@ -1,15 +1,12 @@
 use crate::minimq;
 
-use embedded_nal::{
-    Mode,
-    SocketAddr,
-};
+use embedded_nal::{Mode, SocketAddr};
 
 use nb;
 
 use core::cell::RefCell;
 pub use embedded_nal::{IpAddr, Ipv4Addr};
-use heapless::{Vec, String, consts};
+use heapless::{consts, String, Vec};
 
 pub struct MqttClient<'a, N>
 where
@@ -31,8 +28,7 @@ pub enum Error<E> {
     Disconnected,
 }
 
-impl<E> From<E> for Error<E>
-{
+impl<E> From<E> for Error<E> {
     fn from(e: E) -> Error<E> {
         Error::Network(e)
     }
@@ -42,8 +38,12 @@ impl<'a, N> MqttClient<'a, N>
 where
     N: embedded_nal::TcpStack,
 {
-    pub fn new<'b>(broker: IpAddr, client_id: &'b str, network_stack: N, receive_buffer: &'a mut [u8]) -> Result<Self,
-    Error<N::Error>> {
+    pub fn new<'b>(
+        broker: IpAddr,
+        client_id: &'b str,
+        network_stack: N,
+        receive_buffer: &'a mut [u8],
+    ) -> Result<Self, Error<N::Error>> {
         // Connect to the broker's TCP port.
         let socket = network_stack.open(Mode::NonBlocking)?;
 
@@ -76,7 +76,7 @@ where
         Ok(read)
     }
 
-    fn write(&self, buf: & [u8]) -> Result<(), Error<N::Error>> {
+    fn write(&self, buf: &[u8]) -> Result<(), Error<N::Error>> {
         let mut socket_ref = self.socket.borrow_mut();
         let mut socket = socket_ref.take().unwrap();
         let written = nb::block!(self.network_stack.write(&mut socket, &buf)).unwrap();
@@ -103,8 +103,9 @@ where
         pub_info.topic = minimq::Meta::new(topic.as_bytes());
 
         let protocol = self.protocol.borrow_mut();
-        let len = protocol.publish(&mut self.transmit_buffer, &pub_info, data).map_err(|e|
-                Error::Protocol(e))?;
+        let len = protocol
+            .publish(&mut self.transmit_buffer, &pub_info, data)
+            .map_err(|e| Error::Protocol(e))?;
         self.write(&self.transmit_buffer[..len])
     }
 
@@ -140,7 +141,9 @@ where
 
         // Connect to the broker's TCP port with a new socket.
         // TODO: Limit the time between connect attempts to prevent network spam.
-        let socket = self.network_stack.connect(socket, SocketAddr::new(self.broker, 1883))?;
+        let socket = self
+            .network_stack
+            .connect(socket, SocketAddr::new(self.broker, 1883))?;
 
         // Store the new socket for future use.
         socket_ref.replace(socket);
@@ -152,7 +155,6 @@ where
     where
         F: Fn(&[u8], &[u8]),
     {
-
         // If the socket is not connected, we can't do anything.
         if self.socket_is_connected()? == false {
             self.connect_socket(false)?;
@@ -172,7 +174,9 @@ where
         if self.protocol.borrow().state() == minimq::ProtocolState::Init {
             // Connect to the MQTT broker.
             let mut protocol = self.protocol.borrow_mut();
-            let len = protocol.connect(&mut self.transmit_buffer, self.id.as_bytes(), 10).map_err(|e| Error::Protocol(e))?;
+            let len = protocol
+                .connect(&mut self.transmit_buffer, self.id.as_bytes(), 10)
+                .map_err(|e| Error::Protocol(e))?;
             self.write(&self.transmit_buffer[..len])?;
         }
 
@@ -196,9 +200,12 @@ where
 
             // TODO: Expose the client to the user handler to allow them to easily publish within
             // the closure.
-            let result = self.protocol.borrow_mut().handle(|_protocol, publish_info, payload| {
-                f(publish_info.topic.get(), payload);
-            });
+            let result = self
+                .protocol
+                .borrow_mut()
+                .handle(|_protocol, publish_info, payload| {
+                    f(publish_info.topic.get(), payload);
+                });
 
             if let Err(_) = result {
                 // If we got an error during packet processing, reset the connection with the broker.

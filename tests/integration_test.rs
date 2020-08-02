@@ -13,24 +13,30 @@ fn connect(addr: &str) -> io::Result<TcpStream> {
 fn read(stream: &mut TcpStream, data: &mut [u8]) -> io::Result<usize> {
     loop {
         match stream.read(data) {
-            Ok(read) => { return Ok(read); }
-            _ => ()
+            Ok(read) => {
+                return Ok(read);
+            }
+            _ => (),
         }
     }
 }
 
 fn write(stream: &mut TcpStream, data: &[u8]) -> io::Result<()> {
     let mut written = 0;
-    while written < data.len()  {
+    while written < data.len() {
         match stream.write(&data[written..]) {
-            Ok(n) => { written += n; }
-            _ => ()
+            Ok(n) => {
+                written += n;
+            }
+            _ => (),
         }
     }
     Ok(())
 }
 
-fn str(b: &[u8]) -> String { String::from_utf8(b.to_vec()).unwrap() }
+fn str(b: &[u8]) -> String {
+    String::from_utf8(b.to_vec()).unwrap()
+}
 
 #[test]
 fn main() -> std::io::Result<()> {
@@ -59,11 +65,13 @@ fn main() -> std::io::Result<()> {
             processed += read;
 
             mqtt.handle(|mqtt, req, payload| {
-                println!("{}:{} < {} [cd:{}]",
-                         req.sid.unwrap_or(0),
-                         str(req.topic.get()),
-                         str(payload),
-                         str(req.cd.unwrap().get()));
+                println!(
+                    "{}:{} < {} [cd:{}]",
+                    req.sid.unwrap_or(0),
+                    str(req.topic.get()),
+                    str(payload),
+                    str(req.cd.unwrap().get())
+                );
                 if req.sid == Some(sub_req) {
                     let mut res = minimq::PubInfo::new();
                     res.topic = req.response.unwrap();
@@ -73,7 +81,8 @@ fn main() -> std::io::Result<()> {
                 } else {
                     std::process::exit(0);
                 }
-            }).unwrap();
+            })
+            .unwrap();
 
             if subscribed_req && subscribed_res {
                 if !published && mqtt.state() == minimq::ProtocolState::Ready {
@@ -90,13 +99,17 @@ fn main() -> std::io::Result<()> {
 
             if !subscribed_req && mqtt.state() == minimq::ProtocolState::Ready {
                 println!("SUBSCRIBE request");
-                let len = mqtt.subscribe(&mut packet_buffer, "request", sub_req).unwrap();
+                let len = mqtt
+                    .subscribe(&mut packet_buffer, "request", sub_req)
+                    .unwrap();
                 write(&mut stream, &packet_buffer[..len])?;
                 subscribed_req = true;
             }
             if !subscribed_res && mqtt.state() == minimq::ProtocolState::Ready {
                 println!("SUBSCRIBE response");
-                let len = mqtt.subscribe(&mut packet_buffer, "response", sub_res).unwrap();
+                let len = mqtt
+                    .subscribe(&mut packet_buffer, "response", sub_res)
+                    .unwrap();
                 write(&mut stream, &packet_buffer[..len])?;
                 subscribed_res = true;
             }

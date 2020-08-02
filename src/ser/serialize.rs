@@ -1,6 +1,6 @@
-use crate::packet_writer::PacketWriter;
 use crate::minimq::{Error, MessageType, PubInfo};
 use crate::properties::SUBSCRIPTION_IDENTIFIER;
+use crate::ser::PacketWriter;
 
 pub fn integer_size(value: usize) -> usize {
     if value < 0x80 {
@@ -20,7 +20,9 @@ pub fn connect_message(dest: &mut [u8], client_id: &[u8], keep_alive: u16) -> Re
     for i in 0..client_id.len() {
         if !(client_id[i] - 0x30 <=  9 || // 0-9
              client_id[i] - 0x41 <= 25 || // A-Z
-             client_id[i] - 0x61 <= 25) { // a-z
+             client_id[i] - 0x61 <= 25)
+        {
+            // a-z
             return Err(Error::Bounds);
         }
     }
@@ -56,7 +58,11 @@ pub fn publish_message(dest: &mut [u8], info: &PubInfo, payload: &[u8]) -> Resul
     let mut packet = PacketWriter::new(dest);
 
     // Write the fixed length header.
-    packet.write_fixed_header(MessageType::Publish, 0, variable_header_length + payload.len())?;
+    packet.write_fixed_header(
+        MessageType::Publish,
+        0,
+        variable_header_length + payload.len(),
+    )?;
 
     // Write the variable header into the packet.
     info.write_variable_header(&mut packet)?;
@@ -67,8 +73,12 @@ pub fn publish_message(dest: &mut [u8], info: &PubInfo, payload: &[u8]) -> Resul
     packet.finalize()
 }
 
-pub fn subscribe_message<'b>(dest: &mut [u8], topic: &'b str, sender_id: usize, packet_id: u16) -> Result<usize, Error>
-{
+pub fn subscribe_message<'b>(
+    dest: &mut [u8],
+    topic: &'b str,
+    sender_id: usize,
+    packet_id: u16,
+) -> Result<usize, Error> {
     if !(sender_id > 0 && sender_id <= 0x0F_FF_FF_FF) {
         return Err(Error::Bounds);
     }

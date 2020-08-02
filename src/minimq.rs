@@ -3,13 +3,16 @@
 use enum_iterator::IntoEnumIterator;
 
 use crate::{
-    packet_writer::PacketWriter,
-    packet_reader::PacketReader,
-    serialize::{self, integer_size},
-    deserialize::{self, ReceivedPacket},
+    de::{
+        deserialize::{self, ReceivedPacket},
+        PacketReader,
+    },
+    properties,
+    ser::{
+        serialize::{self, integer_size},
+        PacketWriter,
+    },
 };
-
-use crate::properties;
 
 const CLIENT_ID_MAX: usize = 23;
 
@@ -68,16 +71,20 @@ pub struct PubInfo {
 
     pub topic: Meta,
     pub response: Option<Meta>,
-    pub cd: Option<Meta>
+    pub cd: Option<Meta>,
 }
 
 impl PubInfo {
     pub fn new() -> PubInfo {
-        PubInfo {sid: None, topic: Meta::new(&[]), response: None, cd: None}
+        PubInfo {
+            sid: None,
+            topic: Meta::new(&[]),
+            response: None,
+            cd: None,
+        }
     }
 
     pub fn variable_header_length(&self) -> usize {
-
         // Include the length of the mandatory topic name field in the variable header.
         let mut length = self.topic.get().len() + 2;
 
@@ -109,7 +116,6 @@ impl PubInfo {
     }
 
     pub fn write_variable_header(&self, packet: &mut PacketWriter) -> Result<(), Error> {
-
         // Write the topic name.
         packet.write_binary_data(self.topic.get())?;
 
@@ -141,13 +147,15 @@ const META_MAX: usize = 64;
 #[derive(Clone, Copy)]
 pub struct Meta {
     pub buf: [u8; META_MAX],
-    pub len: usize
+    pub len: usize,
 }
 
 impl Meta {
-
     pub fn new(data: &[u8]) -> Meta {
-        let mut meta = Meta { buf: [0; META_MAX], len: data.len() };
+        let mut meta = Meta {
+            buf: [0; META_MAX],
+            len: data.len(),
+        };
         meta.set(data).unwrap();
         meta
     }
@@ -156,7 +164,7 @@ impl Meta {
         &self.buf[..self.len]
     }
 
-    pub fn set(&mut self, data: &[u8]) -> Result<(),()> {
+    pub fn set(&mut self, data: &[u8]) -> Result<(), ()> {
         if data.len() <= META_MAX {
             self.len = data.len();
             self.buf[..self.len].copy_from_slice(data);
@@ -167,7 +175,7 @@ impl Meta {
     }
 }
 
-#[derive(PartialEq,Clone,Copy,Debug)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum ProtocolState {
     Close,
     Init,
@@ -181,11 +189,10 @@ pub struct Protocol<'a> {
     pi: PubInfo,
     packet_reader: PacketReader<'a>,
     state: ProtocolState,
-    pid: u16
+    pid: u16,
 }
 
 impl<'a> Protocol<'a> {
-
     pub fn new(rx_buffer: &'a mut [u8]) -> Protocol {
         Protocol {
             pi: PubInfo::new(),
@@ -193,7 +200,7 @@ impl<'a> Protocol<'a> {
             state: ProtocolState::Init,
 
             // Only non-zero packet identifiers are allowed.
-            pid: 1
+            pid: 1,
         }
     }
 
@@ -201,7 +208,12 @@ impl<'a> Protocol<'a> {
         self.state
     }
 
-    pub fn connect(&mut self, dest: &mut [u8], client_id: &[u8], keep_alive: u16) -> Result<usize, Error> {
+    pub fn connect(
+        &mut self,
+        dest: &mut [u8],
+        client_id: &[u8],
+        keep_alive: u16,
+    ) -> Result<usize, Error> {
         if self.state != ProtocolState::Init {
             return Err(Error::InvalidState);
         }
@@ -224,7 +236,12 @@ impl<'a> Protocol<'a> {
         serialize::publish_message(dest, info, payload)
     }
 
-    pub fn subscribe<'b>(&mut self, dest: &mut [u8], topic: &'b str, sid: usize) -> Result<usize, Error> {
+    pub fn subscribe<'b>(
+        &mut self,
+        dest: &mut [u8],
+        topic: &'b str,
+        sid: usize,
+    ) -> Result<usize, Error> {
         if self.state != ProtocolState::Ready {
             return Err(Error::InvalidState);
         }
@@ -244,14 +261,14 @@ impl<'a> Protocol<'a> {
 
                 // TODO: We should only forward the error if we can't recover from it.
                 Err(error)
-            },
+            }
             x => x,
         }
     }
 
     pub fn handle<F>(&mut self, data_handler: F) -> Result<(), Error>
     where
-        F: FnOnce(&Self, &PubInfo, &[u8])
+        F: FnOnce(&Self, &PubInfo, &[u8]),
     {
         // If there is a packet available for processing, handle it now, potentially updating our
         // internal state.
@@ -267,7 +284,6 @@ impl<'a> Protocol<'a> {
 
         Ok(())
     }
-
 
     fn increment_packet_identifier(&mut self) {
         let (result, overflow) = self.pid.overflowing_add(1);
@@ -299,7 +315,7 @@ impl<'a> Protocol<'a> {
                     // TODO: Handle something other than a connect acknowledge?
                     Err(Error::Invalid)
                 }
-            },
+            }
 
             ProtocolState::Subscribe => {
                 match packet {
@@ -307,24 +323,24 @@ impl<'a> Protocol<'a> {
                         // Discard incoming publications while not Ready
                         self.state = ProtocolState::Subscribe;
                         Ok(None)
-                    },
+                    }
                     ReceivedPacket::SubAck(subscribe_acknowledge) => {
                         if subscribe_acknowledge.packet_identifier != self.pid {
-                            return Err(Error::Invalid)
+                            return Err(Error::Invalid);
                         }
 
                         if subscribe_acknowledge.reason_code != 0 {
-                            return Err(Error::Failed)
+                            return Err(Error::Failed);
                         }
 
                         self.increment_packet_identifier();
 
                         self.state = ProtocolState::Ready;
                         Ok(None)
-                    },
+                    }
                     _ => Err(Error::UnsupportedPacket),
                 }
-            },
+            }
 
             ProtocolState::Ready => {
                 if let ReceivedPacket::Publish(publish_info) = packet {
@@ -334,8 +350,8 @@ impl<'a> Protocol<'a> {
                 } else {
                     Err(Error::UnsupportedPacket)
                 }
-            },
-            _ => Err(Error::InvalidState)
+            }
+            _ => Err(Error::InvalidState),
         }
     }
 }
@@ -359,7 +375,8 @@ mod tests {
         // Inbound PUBLISH while in Connect state is an error.
         let mut info = PubInfo::new();
         info.topic = Meta::new("test".as_bytes());
-        let len = serialize::publish_message(&mut buffer, &info, "Hello, World".as_bytes()).unwrap();
+        let len =
+            serialize::publish_message(&mut buffer, &info, "Hello, World".as_bytes()).unwrap();
 
         let receive_length = proto.receive(&buffer[..len]).unwrap();
         assert_eq!(len, receive_length);

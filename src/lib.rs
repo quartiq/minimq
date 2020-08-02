@@ -1,12 +1,10 @@
 #![no_std]
 #![allow(dead_code)]
 
+pub(crate) mod de;
 mod minimq;
-mod properties;
-mod packet_writer;
-mod packet_reader;
-mod serialize;
-mod deserialize;
 pub mod mqtt_client;
+mod properties;
+pub(crate) mod ser;
 
 pub use self::minimq::*;
