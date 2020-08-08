@@ -107,6 +107,7 @@ where
             }
         }
 
+        log::warn!("Encountered invalid variable integer");
         Err(Error::MalformedInteger)
     }
 
@@ -195,6 +196,10 @@ where
 
         // Reset the reader index.
         self.index = 0;
+
+        // Probe the fixed header to update the length in case a packet still exists to be
+        // processed.
+        self.probe_fixed_header();
 
         Ok(())
     }

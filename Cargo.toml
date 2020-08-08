@@ -12,6 +12,10 @@ enum-iterator = "0.6.0"
 nb = "0.1.2"
 heapless = "0.5.5"
 generic-array = "0.14.3"
+log = "0.4"
+
+[dev-dependencies]
+env_logger = "0.7"
 
 [dependencies.embedded-nal]
 git = "https://github.com/thejpster/embedded-nal"

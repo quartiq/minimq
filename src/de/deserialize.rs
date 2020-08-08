@@ -9,16 +9,19 @@ use crate::properties::{
     property_data, Data, CORRELATION_DATA, RESPONSE_TOPIC, SUBSCRIPTION_IDENTIFIER,
 };
 
+#[derive(Debug)]
 pub struct ConnAck {
     pub session_present: bool,
     pub reason_code: u8,
 }
 
+#[derive(Debug)]
 pub struct SubAck {
     pub packet_identifier: u16,
     pub reason_code: u8,
 }
 
+#[derive(Debug)]
 pub enum ReceivedPacket {
     ConnAck(ConnAck),
     Publish(PubInfo),

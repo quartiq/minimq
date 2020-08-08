@@ -43,6 +43,7 @@ impl From<u8> for MessageType {
     }
 }
 
+#[derive(Debug)]
 pub struct PubInfo {
     pub sid: Option<usize>,
 
@@ -120,6 +121,13 @@ impl PubInfo {
 }
 
 const META_MAX: usize = 64;
+
+impl core::fmt::Debug for Meta {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+        self.buf[..].fmt(formatter)?;
+        self.len.fmt(formatter)
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct Meta {

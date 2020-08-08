@@ -8,6 +8,7 @@ use crate::{
     session_state::SessionState,
 };
 pub use crate::properties::Property;
+use log::{debug, info, warn, error};
 
 use embedded_nal::{Mode, SocketAddr};
 
@@ -132,6 +133,7 @@ where
 
         match self.write(&buffer[..len]) {
             Ok(_) => {
+                info!("Subscribing to `{}`: {}", topic, packet_id);
                 self.state.pending_subscriptions.push(packet_id).map_err(|_| Error::Unsupported)?;
                 self.state.increment_packet_identifier();
                 Ok(())
@@ -141,7 +143,7 @@ where
     }
 
     pub fn subscriptions_pending(&self) -> bool {
-        self.state.pending_subscriptions.len() == 0
+        self.state.pending_subscriptions.len() != 0
     }
 
     pub fn publish<'a, 'b>(&self, topic: &'a str, data: &[u8], qos: QoS, properties: &[Property<'a>]) -> Result<(), Error<N::Error>> {
@@ -161,6 +163,8 @@ where
                 Property::ResponseTopic(topic) => pub_info.response = Some(Meta::new(topic.as_bytes())),
             }
         }
+
+        info!("Publishing to `{}`: {:?}", topic, data);
 
         let mut buffer = self.transmit_buffer.borrow_mut();
         let len = serialize::publish_message(&mut buffer, &pub_info, data)
@@ -234,8 +238,6 @@ where
                 if acknowledge.session_present {
                     // We do not currently support saved session state.
                     return Err(Error::Unsupported);
-                } else {
-                    self.state.reset();
                 }
 
                 self.state.connected = true;
@@ -246,6 +248,7 @@ where
             } else {
                 // It is a protocol error to receive anything else when not connected.
                 // TODO: Verify it is a protocol error.
+                error!("Received invalid packet outside of connected state: {:?}", packet);
                 return Err(Error::Protocol(ProtocolError::Invalid));
             }
         }
@@ -266,7 +269,10 @@ where
                 match self.state.pending_subscriptions.iter().position(
                         |v| *v == subscribe_acknowledge.packet_identifier)
                 {
-                    None => return Err(Error::Protocol(ProtocolError::Invalid)),
+                    None => {
+                        error!("Got bad suback: {:?}", subscribe_acknowledge);
+                        return Err(Error::Protocol(ProtocolError::Invalid))
+                    },
                     Some(index) => self.state.pending_subscriptions.swap_remove(index),
                 };
 
@@ -285,9 +291,12 @@ where
     where
         F: Fn(&Self, &PubInfo, &[u8]),
     {
+        debug!("Polling MQTT interface");
+
         // If the socket is not connected, we can't do anything.
         if self.socket_is_connected()? == false {
             // TODO: Handle a session timeout.
+            warn!("Socket disconnected");
             self.reset()?;
 
             return Ok(());
@@ -295,10 +304,15 @@ where
 
         let mut buf: [u8; 1024] = [0; 1024];
         let received = self.read(&mut buf)?;
+        debug!("Received {} bytes", received);
+
         let mut processed = 0;
         while processed < received {
             match self.packet_reader.slurp(&buf[processed..received]) {
-                Ok(count) => processed += count,
+                Ok(count) => {
+                    debug!("Processed {} bytes", count);
+                    processed += count
+                },
 
                 Err(_) => {
                     // TODO: We should handle recoverable errors better.
@@ -308,10 +322,12 @@ where
             }
 
             // Handle any received packets.
-            if self.packet_reader.packet_available() {
+            while self.packet_reader.packet_available() {
                 // TODO: Handle deserialize errors properly.
                 let packet = deserialize::parse_message(&mut self.packet_reader)
                     .map_err(|e| Error::Protocol(e))?;
+
+                debug!("Received {:?}", packet);
                 self.packet_reader
                     .pop_packet()
                     .map_err(|e| Error::Protocol(e))?;

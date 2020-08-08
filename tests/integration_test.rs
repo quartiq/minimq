@@ -74,7 +74,13 @@ impl embedded_nal::TcpStack for StandardStack {
             Some(stream) => {
                 match stream.write(buffer) {
                     Ok(len) => Ok(len),
-                    Err(e) => Err(nb::Error::Other(e)),
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            Err(nb::Error::WouldBlock)
+                        } else {
+                            Err(nb::Error::Other(e))
+                        }
+                    }
                 }
             },
             None => Ok(0),
@@ -86,7 +92,13 @@ impl embedded_nal::TcpStack for StandardStack {
             Some(stream) => {
                 match stream.read(buffer) {
                     Ok(len) => Ok(len),
-                    Err(e) => Err(nb::Error::Other(e)),
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            Err(nb::Error::WouldBlock)
+                        } else {
+                            Err(nb::Error::Other(e))
+                        }
+                    }
                 }
             },
             None => Ok(0),
@@ -102,16 +114,19 @@ impl embedded_nal::TcpStack for StandardStack {
 
 #[test]
 fn main() -> std::io::Result<()> {
+    env_logger::init();
+
     let stack = StandardStack::new();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
     let mut client = MqttClient::<_, consts::U256>::new(localhost, "IntegrationTest", stack).unwrap();
 
-    client.subscribe("response", &[]).unwrap();
     let mut published = false;
+    client.subscribe("response", &[]).unwrap();
+    client.subscribe("request", &[]).unwrap();
 
     loop {
-        client.poll(|mqtt, req, payload| {
 
+        client.poll(|mqtt, req, payload| {
             if req.cd.is_some() {
                 println!(
                     "{}:{} < {} [cd:{}]",
