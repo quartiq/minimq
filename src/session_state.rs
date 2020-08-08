@@ -1,5 +1,5 @@
-use heapless::{String, consts};
-pub use embedded_nal::{IpAddr};
+pub use embedded_nal::IpAddr;
+use heapless::{consts, String, Vec};
 
 pub struct SessionState {
     pub connected: bool,
@@ -7,6 +7,7 @@ pub struct SessionState {
     pub keep_alive_interval: u16,
     pub broker: IpAddr,
     pub client_id: String<consts::U32>,
+    pub pending_subscriptions: Vec<u16, consts::U32>,
     packet_id: u16,
 }
 
@@ -19,12 +20,16 @@ impl SessionState {
             client_id: String::from(id),
             packet_id: 1,
             keep_alive_interval: 0,
+            pending_subscriptions: Vec::new(),
         }
     }
 
     pub fn reset(&mut self) {
         self.connected = false;
         self.packet_id = 1;
+        self.session_expiry_interval = 0;
+        self.keep_alive_interval = 0;
+        self.pending_subscriptions.clear();
     }
 
     pub fn get_packet_identifier(&mut self) -> u16 {
@@ -42,4 +47,3 @@ impl SessionState {
         }
     }
 }
-

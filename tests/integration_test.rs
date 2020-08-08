@@ -1,117 +1,151 @@
-use minimq;
+use minimq::mqtt_client::{MqttClient, QoS, Property, consts};
 
-use std::io;
-use std::io::prelude::*;
-use std::net::TcpStream;
+use std::io::{self, Write, Read};
+use std::net::{self, TcpStream};
+use std::cell::RefCell;
+use nb;
 
-fn connect(addr: &str) -> io::Result<TcpStream> {
-    let stream = TcpStream::connect(addr)?;
-    stream.set_nonblocking(true)?;
-    Ok(stream)
+use embedded_nal::{self, IpAddr, Ipv4Addr, SocketAddr};
+
+struct StandardStack {
+    stream: RefCell<Option<TcpStream>>,
+    mode: RefCell<embedded_nal::Mode>,
 }
 
-fn read(stream: &mut TcpStream, data: &mut [u8]) -> io::Result<usize> {
-    loop {
-        match stream.read(data) {
-            Ok(read) => {
-                return Ok(read);
-            }
-            _ => (),
+impl StandardStack {
+    pub fn new() -> StandardStack {
+        StandardStack {
+            stream: RefCell::new(None),
+            mode: RefCell::new(embedded_nal::Mode::Blocking)
         }
     }
 }
 
-fn write(stream: &mut TcpStream, data: &[u8]) -> io::Result<()> {
-    let mut written = 0;
-    while written < data.len() {
-        match stream.write(&data[written..]) {
-            Ok(n) => {
-                written += n;
+impl embedded_nal::TcpStack for StandardStack {
+
+    type Error = io::Error;
+
+    type TcpSocket = ();
+
+    fn open(&self, mode: embedded_nal::Mode) -> Result<Self::TcpSocket, Self::Error> {
+        self.mode.replace(mode);
+        Ok(())
+    }
+
+    fn connect(&self, _socket: Self::TcpSocket, remote: SocketAddr) -> Result<Self::TcpSocket, Self::Error> {
+        let ip = match remote.ip() {
+            IpAddr::V4(addr) => net::IpAddr::V4(net::Ipv4Addr::new(addr.octets()[0],
+                                                                   addr.octets()[1],
+                                                                   addr.octets()[2],
+                                                                   addr.octets()[3])),
+            IpAddr::V6(addr) => net::IpAddr::V6(net::Ipv6Addr::new(addr.segments()[0],
+                                                                   addr.segments()[1],
+                                                                   addr.segments()[2],
+                                                                   addr.segments()[3],
+                                                                   addr.segments()[4],
+                                                                   addr.segments()[5],
+                                                                   addr.segments()[6],
+                                                                   addr.segments()[7])),
+        };
+
+        let remote = net::SocketAddr::new(ip, remote.port());
+
+        let stream = TcpStream::connect(remote).unwrap();
+
+        match *self.mode.borrow() {
+            embedded_nal::Mode::NonBlocking => stream.set_nonblocking(true)?,
+            embedded_nal::Mode::Blocking => stream.set_nonblocking(false)?,
+            embedded_nal::Mode::Timeout(t) => {
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(t.into())))?;
+                stream.set_write_timeout(Some(std::time::Duration::from_secs(t.into())))?;
             }
-            _ => (),
+        }
+        self.stream.replace(Some(stream));
+
+        Ok(())
+    }
+
+    fn is_connected(&self, _socket: &Self::TcpSocket) -> Result<bool, Self::Error> {
+        Ok(self.stream.borrow().is_some())
+    }
+
+    fn write(&self, _socket: &mut Self::TcpSocket, buffer: &[u8]) -> nb::Result<usize, Self::Error> {
+        match &mut *self.stream.borrow_mut() {
+            Some(stream) => {
+                match stream.write(buffer) {
+                    Ok(len) => Ok(len),
+                    Err(e) => Err(nb::Error::Other(e)),
+                }
+            },
+            None => Ok(0),
         }
     }
-    Ok(())
-}
 
-fn str(b: &[u8]) -> String {
-    String::from_utf8(b.to_vec()).unwrap()
+    fn read(&self, _socket: &mut Self::TcpSocket, buffer: &mut [u8]) -> nb::Result<usize, Self::Error> {
+        match &mut *self.stream.borrow_mut() {
+            Some(stream) => {
+                match stream.read(buffer) {
+                    Ok(len) => Ok(len),
+                    Err(e) => Err(nb::Error::Other(e)),
+                }
+            },
+            None => Ok(0),
+        }
+    }
+
+    fn close(&self, _socket: Self::TcpSocket) -> Result<(), Self::Error> {
+        self.stream.replace(None).unwrap();
+
+        Ok(())
+    }
 }
 
 #[test]
 fn main() -> std::io::Result<()> {
-    let mut buffer = [0u8; 900];
-    let mut mqtt = minimq::Protocol::new(&mut buffer);
+    let stack = StandardStack::new();
+    let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+    let mut client = MqttClient::<_, consts::U256>::new(localhost, "IntegrationTest", stack).unwrap();
 
-    println!("Connecting to MQTT broker at 127.0.0.1:1883");
-    let mut stream = connect("127.0.0.1:1883")?;
-
-    println!("Sending CONNECT");
-    let id = "01234567890123456789012".as_bytes();
-    let mut packet_buffer = [0u8; 900];
-    let len = mqtt.connect(&mut packet_buffer, id, 10).unwrap();
-    write(&mut stream, &packet_buffer[..len])?;
-
-    let mut buffer: [u8; 9000] = [0; 9000];
-    let (sub_req, sub_res) = (1, 2);
-    let (mut subscribed_req, mut subscribed_res) = (false, false);
+    client.subscribe("response", &[]).unwrap();
     let mut published = false;
-    loop {
-        let mut buf = [0; 1024];
-        let received = read(&mut stream, &mut buf)?;
-        let mut processed = 0;
-        while processed < received {
-            let read = mqtt.receive(&buf[processed..received]).unwrap();
-            processed += read;
 
-            mqtt.handle(|mqtt, req, payload| {
+    loop {
+        client.poll(|mqtt, req, payload| {
+
+            if req.cd.is_some() {
                 println!(
                     "{}:{} < {} [cd:{}]",
                     req.sid.unwrap_or(0),
-                    str(req.topic.get()),
-                    str(payload),
-                    str(req.cd.unwrap().get())
+                    core::str::from_utf8(req.topic.get()).unwrap(),
+                    core::str::from_utf8(payload).unwrap(),
+                    core::str::from_utf8(req.cd.unwrap().get()).unwrap()
                 );
-                if req.sid == Some(sub_req) {
-                    let mut res = minimq::PubInfo::new();
-                    res.topic = req.response.unwrap();
-                    res.cd = req.cd;
-                    let len = mqtt.publish(&mut buffer, &res, "Ping".as_bytes()).unwrap();
-                    write(&mut stream, &buffer[..len]).unwrap();
-                } else {
-                    std::process::exit(0);
-                }
-            })
-            .unwrap();
-
-            if subscribed_req && subscribed_res {
-                if !published && mqtt.state() == minimq::ProtocolState::Ready {
-                    println!("PUBLISH request");
-                    let mut req = minimq::PubInfo::new();
-                    req.topic = minimq::Meta::new("request".as_bytes());
-                    req.response = Some(minimq::Meta::new("response".as_bytes()));
-                    req.cd = Some(minimq::Meta::new("foo".as_bytes()));
-                    let len = mqtt.publish(&mut buffer, &req, "Ping".as_bytes()).unwrap();
-                    write(&mut stream, &buffer[..len])?;
-                    published = true;
-                }
+            } else {
+                println!(
+                    "{}:{} < {}",
+                    req.sid.unwrap_or(0),
+                    core::str::from_utf8(req.topic.get()).unwrap(),
+                    core::str::from_utf8(payload).unwrap(),
+                );
             }
 
-            if !subscribed_req && mqtt.state() == minimq::ProtocolState::Ready {
-                println!("SUBSCRIBE request");
-                let len = mqtt
-                    .subscribe(&mut packet_buffer, "request", sub_req)
-                    .unwrap();
-                write(&mut stream, &packet_buffer[..len])?;
-                subscribed_req = true;
-            }
-            if !subscribed_res && mqtt.state() == minimq::ProtocolState::Ready {
-                println!("SUBSCRIBE response");
-                let len = mqtt
-                    .subscribe(&mut packet_buffer, "response", sub_res)
-                    .unwrap();
-                write(&mut stream, &packet_buffer[..len])?;
-                subscribed_res = true;
+            match req.response {
+                Some(topic) => mqtt.publish(core::str::from_utf8(topic.get()).unwrap(),
+                                            "Pong".as_bytes(),
+                                            QoS::AtMostOnce,
+                                            &[]).unwrap(),
+                None => std::process::exit(0),
+            };
+        })
+        .unwrap();
+
+        if client.subscriptions_pending() == false {
+            if !published {
+                println!("PUBLISH request");
+                let properties = [Property::ResponseTopic("response")];
+                client.publish("request", "Ping".as_bytes(), QoS::AtMostOnce, &properties).unwrap();
+
+                published = true;
             }
         }
     }

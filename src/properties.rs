@@ -26,6 +26,10 @@ pub const WILDCARD_SUBSCRIPTION_AVAILABLE: usize = 40; // Wildcard Subscription 
 pub const SUBSCRIPTION_IDENTIFIER_AVAILABLE: usize = 41; // Subscription Identifier Available
 pub const SHARED_SUBSCRIPTION_AVAILABLE: usize = 42; // Shared Subscription Available
 
+pub enum Property<'a> {
+    ResponseTopic(&'a str),
+}
+
 const PROPERTY_MAX: usize = 43;
 
 #[derive(Clone, Copy, PartialEq, Debug)]

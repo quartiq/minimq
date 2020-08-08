@@ -2,7 +2,7 @@ use crate::minimq::MessageType;
 use crate::mqtt_client::ProtocolError as Error;
 use bit_field::BitField;
 
-use generic_array::{GenericArray, ArrayLength};
+use generic_array::{ArrayLength, GenericArray};
 
 const FIXED_HEADER_MAX: usize = 5; // type/flags + remaining length
 
@@ -47,16 +47,16 @@ where
     }
 
     #[cfg(test)]
-    pub fn from_serialized(buffer: &'a mut [u8]) -> PacketReader<T> {
+    pub fn from_serialized<'a>(buffer: &'a mut [u8]) -> PacketReader<T> {
         let len = buffer.len();
         let mut reader = PacketReader {
-            buffer: GenericArray::Default(),
+            buffer: GenericArray::default(),
             read_bytes: len,
             packet_length: None,
             index: 0,
         };
 
-        reader.buffer.copy_from_slice(&buffer);
+        reader.buffer[..buffer.len()].copy_from_slice(&buffer);
 
         reader.probe_fixed_header();
 

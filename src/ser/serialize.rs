@@ -1,7 +1,6 @@
 use crate::minimq::{MessageType, PubInfo};
-use crate::properties::SUBSCRIPTION_IDENTIFIER;
-use crate::ser::PacketWriter;
 use crate::mqtt_client::ProtocolError as Error;
+use crate::ser::PacketWriter;
 
 pub fn integer_size(value: usize) -> usize {
     if value < 0x80 {
@@ -77,16 +76,11 @@ pub fn publish_message(dest: &mut [u8], info: &PubInfo, payload: &[u8]) -> Resul
 pub fn subscribe_message<'b>(
     dest: &mut [u8],
     topic: &'b str,
-    sender_id: usize,
     packet_id: u16,
 ) -> Result<usize, Error> {
-    if !(sender_id > 0 && sender_id <= 0x0F_FF_FF_FF) {
-        return Err(Error::Bounds);
-    }
-
     let mut packet = PacketWriter::new(dest);
 
-    let property_length = integer_size(sender_id) + integer_size(SUBSCRIPTION_IDENTIFIER);
+    let property_length = 0;
     let variable_header_length = property_length + integer_size(property_length) + 2;
     let payload_size = 3 + topic.len();
     let packet_length = variable_header_length + payload_size;
@@ -98,8 +92,6 @@ pub fn subscribe_message<'b>(
 
     // Write properties.
     packet.write_variable_length_integer(property_length)?;
-    packet.write_variable_length_integer(SUBSCRIPTION_IDENTIFIER)?;
-    packet.write_variable_length_integer(sender_id)?;
 
     // Write the payload (topic)
     packet.write_utf8_string(topic)?;
@@ -132,18 +124,17 @@ pub fn serialize_publish() {
 
 #[test]
 fn serialize_subscribe() {
-    let good_subscribe: [u8; 13] = [
+    let good_subscribe: [u8; 11] = [
         0x82, // Subscribe request
-        0x0b, // Remaining length (11)
+        0x09, // Remaining length (11)
         0x00, 0x10, // Packet identifier (16)
-        0x02, // Property length
-        0x0b, 0x0a, // Property: Subscription Identifier = 10
+        0x00, // Property length
         0x00, 0x03, 0x41, 0x42, 0x43, // Topic: ABC
         0x00, // Options byte = 0
     ];
 
     let mut buffer: [u8; 900] = [0; 900];
-    let length = subscribe_message(&mut buffer, "ABC", 10, 16).unwrap();
+    let length = subscribe_message(&mut buffer, "ABC", 16).unwrap();
 
     assert_eq!(buffer[..length], good_subscribe);
 }

@@ -1,17 +1,18 @@
 use crate::{
-    minimq::{PubInfo, Meta},
-    session_state::SessionState,
-    ser::serialize,
     de::{
-        PacketReader,
         deserialize::{self, ReceivedPacket},
+        PacketReader,
     },
+    minimq::{Meta, PubInfo},
+    ser::serialize,
+    session_state::SessionState,
 };
+pub use crate::properties::Property;
 
 use embedded_nal::{Mode, SocketAddr};
 
-use generic_array::GenericArray;
-pub use generic_array::ArrayLength;
+pub use generic_array::typenum as consts;
+use generic_array::{ArrayLength, GenericArray};
 
 use nb;
 
@@ -27,7 +28,14 @@ where
     pub network_stack: N,
     state: SessionState,
     packet_reader: PacketReader<T>,
-    transmit_buffer: GenericArray<u8, T>,
+    transmit_buffer: RefCell<GenericArray<u8, T>>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum QoS {
+    AtMostOnce,
+    AtLeastOnce,
+    ExactlyOne,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -35,8 +43,8 @@ pub enum Error<E> {
     Network(E),
     WriteFail,
     Disconnected,
-    Invalid,
-    Failed,
+    Unsupported,
+    Failed(u8),
     Protocol(ProtocolError),
 }
 
@@ -49,7 +57,6 @@ pub enum ProtocolError {
     EmptyPacket,
     Failed,
     PartialPacket,
-    InvalidState,
     MalformedPacket,
     MalformedInteger,
     UnknownProperty,
@@ -82,7 +89,7 @@ where
             network_stack: network_stack,
             socket: RefCell::new(Some(socket)),
             state: SessionState::new(broker, client_id),
-            transmit_buffer: GenericArray::default(),
+            transmit_buffer: RefCell::new(GenericArray::default()),
             packet_reader: PacketReader::new(),
         };
 
@@ -117,9 +124,30 @@ where
         }
     }
 
-    // TODO: Add subscribe support.
+    pub fn subscribe<'a, 'b>(&mut self, topic: &'a str, _properties: &[Property<'b>]) -> Result<(), Error<N::Error>> {
 
-    pub fn publish<'b>(&mut self, topic: &'b str, data: &[u8]) -> Result<(), Error<N::Error>> {
+        let packet_id = self.state.get_packet_identifier();
+        let mut buffer = self.transmit_buffer.borrow_mut();
+        let len = serialize::subscribe_message(&mut buffer, topic, packet_id).map_err(|e| Error::Protocol(e))?;
+
+        match self.write(&buffer[..len]) {
+            Ok(_) => {
+                self.state.pending_subscriptions.push(packet_id).map_err(|_| Error::Unsupported)?;
+                self.state.increment_packet_identifier();
+                Ok(())
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn subscriptions_pending(&self) -> bool {
+        self.state.pending_subscriptions.len() == 0
+    }
+
+    pub fn publish<'a, 'b>(&self, topic: &'a str, data: &[u8], qos: QoS, properties: &[Property<'a>]) -> Result<(), Error<N::Error>> {
+        // TODO: QoS support.
+        assert!(qos == QoS::AtMostOnce);
+
         // If the socket is not connected, we can't do anything.
         if self.socket_is_connected()? == false {
             return Ok(());
@@ -128,8 +156,16 @@ where
         let mut pub_info = PubInfo::new();
         pub_info.topic = Meta::new(topic.as_bytes());
 
-        let len = serialize::publish_message(&mut self.transmit_buffer, &pub_info, data).map_err(|e| Error::Protocol(e))?;
-        self.write(&self.transmit_buffer[..len])
+        for property in properties {
+            match property {
+                Property::ResponseTopic(topic) => pub_info.response = Some(Meta::new(topic.as_bytes())),
+            }
+        }
+
+        let mut buffer = self.transmit_buffer.borrow_mut();
+        let len = serialize::publish_message(&mut buffer, &pub_info, data)
+            .map_err(|e| Error::Protocol(e))?;
+        self.write(&buffer[..len])
     }
 
     fn socket_is_connected(&self) -> Result<bool, N::Error> {
@@ -149,8 +185,14 @@ where
         self.state.reset();
         self.packet_reader.reset();
 
-        let len = serialize::connect_message(&mut self.transmit_buffer, self.state.client_id.as_str().as_bytes(), self.state.keep_alive_interval).map_err(|e| Error::Protocol(e))?;
-        self.write(&self.transmit_buffer[..len])?;
+        let mut buffer = self.transmit_buffer.borrow_mut();
+        let len = serialize::connect_message(
+            &mut buffer,
+            self.state.client_id.as_str().as_bytes(),
+            self.state.keep_alive_interval,
+        )
+        .map_err(|e| Error::Protocol(e))?;
+        self.write(&buffer[..len])?;
 
         Ok(())
     }
@@ -181,17 +223,17 @@ where
 
     fn handle_packet<F>(&mut self, packet: ReceivedPacket, f: &F) -> Result<(), Error<N::Error>>
     where
-        F: Fn(&PubInfo, &[u8]),
+        F: Fn(&Self, &PubInfo, &[u8]),
     {
         if !self.state.connected {
             if let ReceivedPacket::ConnAck(acknowledge) = packet {
                 if acknowledge.reason_code != 0 {
-                    return Err(Error::Failed);
+                    return Err(Error::Failed(acknowledge.reason_code));
                 }
 
                 if acknowledge.session_present {
                     // We do not currently support saved session state.
-                    return Err(Error::Failed);
+                    return Err(Error::Unsupported);
                 } else {
                     self.state.reset();
                 }
@@ -210,35 +252,38 @@ where
 
         match packet {
             ReceivedPacket::Publish(info) => {
-
                 // Call a handler function to deal with the received data.
-                let payload = self.packet_reader.payload().map_err(|e| Error::Protocol(e))?;
-                f(&info, payload);
+                let payload = self
+                    .packet_reader
+                    .payload()
+                    .map_err(|e| Error::Protocol(e))?;
+                f(self, &info, payload);
 
                 Ok(())
-            },
+            }
 
             ReceivedPacket::SubAck(subscribe_acknowledge) => {
-                if subscribe_acknowledge.packet_identifier != self.state.get_packet_identifier() {
-                    return Err(Error::Invalid);
-                }
+                match self.state.pending_subscriptions.iter().position(
+                        |v| *v == subscribe_acknowledge.packet_identifier)
+                {
+                    None => return Err(Error::Protocol(ProtocolError::Invalid)),
+                    Some(index) => self.state.pending_subscriptions.swap_remove(index),
+                };
 
                 if subscribe_acknowledge.reason_code != 0 {
-                    return Err(Error::Failed);
+                    return Err(Error::Failed(subscribe_acknowledge.reason_code));
                 }
 
-                self.state.increment_packet_identifier();
-
                 Ok(())
-            },
+            }
 
-            _ => Err(Error::Invalid),
+            _ => Err(Error::Unsupported),
         }
     }
 
     pub fn poll<F>(&mut self, f: F) -> Result<(), Error<N::Error>>
     where
-        F: Fn(&PubInfo, &[u8]),
+        F: Fn(&Self, &PubInfo, &[u8]),
     {
         // If the socket is not connected, we can't do anything.
         if self.socket_is_connected()? == false {
@@ -252,7 +297,6 @@ where
         let received = self.read(&mut buf)?;
         let mut processed = 0;
         while processed < received {
-
             match self.packet_reader.slurp(&buf[processed..received]) {
                 Ok(count) => processed += count,
 
@@ -260,15 +304,17 @@ where
                     // TODO: We should handle recoverable errors better.
                     self.reset()?;
                     return Err(Error::Disconnected);
-                },
+                }
             }
 
             // Handle any received packets.
             if self.packet_reader.packet_available() {
-
                 // TODO: Handle deserialize errors properly.
-                let packet = deserialize::parse_message(&mut self.packet_reader).map_err(|e| Error::Protocol(e))?;
-                self.packet_reader.pop_packet().map_err(|e| Error::Protocol(e))?;
+                let packet = deserialize::parse_message(&mut self.packet_reader)
+                    .map_err(|e| Error::Protocol(e))?;
+                self.packet_reader
+                    .pop_packet()
+                    .map_err(|e| Error::Protocol(e))?;
                 self.handle_packet(packet, &f)?;
             }
         }

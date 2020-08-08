@@ -25,7 +25,9 @@ pub enum ReceivedPacket {
     SubAck(SubAck),
 }
 
-pub fn parse_message<T: ArrayLength<u8>>(packet_reader: &mut PacketReader<T>) -> Result<ReceivedPacket, Error> {
+pub fn parse_message<T: ArrayLength<u8>>(
+    packet_reader: &mut PacketReader<T>,
+) -> Result<ReceivedPacket, Error> {
     let (message_type, flags, remaining_length) = packet_reader.read_fixed_header()?;
 
     // Validate packet length.
@@ -40,11 +42,9 @@ pub fn parse_message<T: ArrayLength<u8>>(packet_reader: &mut PacketReader<T>) ->
             }
 
             Ok(ReceivedPacket::ConnAck(parse_connack(packet_reader)?))
-        },
+        }
 
-        MessageType::Publish => {
-            Ok(ReceivedPacket::Publish(parse_publish(packet_reader)?))
-        },
+        MessageType::Publish => Ok(ReceivedPacket::Publish(parse_publish(packet_reader)?)),
 
         MessageType::SubAck => {
             if flags != 0 {
@@ -52,14 +52,13 @@ pub fn parse_message<T: ArrayLength<u8>>(packet_reader: &mut PacketReader<T>) ->
             }
 
             Ok(ReceivedPacket::SubAck(parse_suback(packet_reader)?))
-        },
+        }
 
         _ => Err(Error::UnsupportedPacket),
     }
 }
 
 fn parse_connack<T: ArrayLength<u8>>(p: &mut PacketReader<T>) -> Result<ConnAck, Error> {
-
     // Read the connect acknowledgement flags.
     let flags = p.read_u8()?;
     if flags != 0 && flags != 1 {
@@ -73,7 +72,7 @@ fn parse_connack<T: ArrayLength<u8>>(p: &mut PacketReader<T>) -> Result<ConnAck,
     Ok(ConnAck {
         reason_code,
         session_present: flags.get_bit(0),
-     })
+    })
 }
 
 fn parse_publish<T: ArrayLength<u8>>(p: &mut PacketReader<T>) -> Result<PubInfo, Error> {
@@ -132,7 +131,10 @@ fn parse_suback<T: ArrayLength<u8>>(p: &mut PacketReader<T>) -> Result<SubAck, E
     })
 }
 
-fn skip_property<T: ArrayLength<u8>>(property: usize, p: &mut PacketReader<T>) -> Result<(), Error> {
+fn skip_property<T: ArrayLength<u8>>(
+    property: usize,
+    p: &mut PacketReader<T>,
+) -> Result<(), Error> {
     match property_data(property) {
         Some(Data::Byte) => {
             p.read_u8()?;
@@ -168,6 +170,9 @@ fn skip_property<T: ArrayLength<u8>>(property: usize, p: &mut PacketReader<T>) -
     }
 }
 
+#[cfg(test)]
+use generic_array::typenum;
+
 #[test]
 fn deserialize_good_connack() {
     let mut serialized_connack: [u8; 5] = [
@@ -178,7 +183,7 @@ fn deserialize_good_connack() {
               // No payload.
     ];
 
-    let mut reader = PacketReader::from_serialized(&mut serialized_connack);
+    let mut reader = PacketReader::<typenum::U32>::from_serialized(&mut serialized_connack);
     let connack = parse_message(&mut reader).unwrap();
     match connack {
         ReceivedPacket::ConnAck(conn_ack) => {
@@ -199,7 +204,7 @@ fn deserialize_good_publish() {
         0x05, // Payload
     ];
 
-    let mut reader = PacketReader::from_serialized(&mut serialized_publish);
+    let mut reader = PacketReader::<typenum::U32>::from_serialized(&mut serialized_publish);
     let publish = parse_message(&mut reader).unwrap();
     match publish {
         ReceivedPacket::Publish(pub_info) => {
@@ -219,7 +224,7 @@ fn deserialize_good_suback() {
         0x02, // Response Code
     ];
 
-    let mut reader = PacketReader::from_serialized(&mut serialized_suback);
+    let mut reader = PacketReader::<typenum::U32>::from_serialized(&mut serialized_suback);
     let suback = parse_message(&mut reader).unwrap();
     match suback {
         ReceivedPacket::SubAck(sub_ack) => {

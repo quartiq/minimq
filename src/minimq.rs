@@ -1,9 +1,9 @@
 // Minimal MQTT v5.0 client implementation
 
-use enum_iterator::IntoEnumIterator;
+use crate::mqtt_client::ProtocolError;
 use crate::ser::serialize::integer_size;
 use crate::ser::PacketWriter;
-use crate::mqtt_client::ProtocolError;
+use enum_iterator::IntoEnumIterator;
 
 use crate::properties;
 
