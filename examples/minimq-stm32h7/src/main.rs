@@ -13,7 +13,6 @@ use stm32h7xx_hal::{
 };
 
 use heapless::{
-    Vec,
     String,
     consts,
 };
@@ -28,7 +27,7 @@ use rtic::cyccnt::{Instant, U32Ext};
 
 mod tcp_stack;
 
-use minimq::mqtt_client::{MqttClient, IpAddr, Ipv4Addr};
+use minimq::mqtt_client::{QoS, MqttClient, IpAddr, Ipv4Addr};
 use tcp_stack::NetworkStack;
 
 pub struct NetStorage {
@@ -199,13 +198,9 @@ const APP: () = {
         let mut sockets = net::socket::SocketSet::new(&mut socket_set_entries[..]);
         add_socket!(sockets, rx_storage, tx_storage);
 
-        // Create a static-based buffer for receiving data.
-        let mut client_buffer: Vec<u8, consts::U512> = Vec::new();
-        client_buffer.resize_default(512).unwrap();
-
         let tcp_stack = NetworkStack::new(c.resources.net_interface, sockets);
-        let mut client = MqttClient::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), "nucleo",
-                tcp_stack, &mut client_buffer).unwrap();
+        let mut client = MqttClient::<_, consts::U256>::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), "nucleo",
+                tcp_stack).unwrap();
 
         loop {
             let tick = Instant::now() > next_ms;
@@ -216,16 +211,16 @@ const APP: () = {
             }
 
             if tick && (time % 1000) == 0 {
-                client.publish("nucleo", "Hello, World!".as_bytes()).unwrap();
+                client.publish("nucleo", "Hello, World!".as_bytes(), QoS::AtMostOnce, &[]).unwrap();
 
                 let temperature = Temperature {
                     temperature_c: c.resources.si7021.temperature_celsius().unwrap()
                 };
                 let temperature: String<consts::U256> = serde_json_core::to_string(&temperature).unwrap();
-                client.publish("temperature", &temperature.into_bytes()).unwrap();
+                client.publish("temperature", &temperature.into_bytes(), QoS::AtMostOnce, &[]).unwrap();
             }
 
-            match client.poll(|topic, message| {
+            match client.poll(|_client, topic, message| {
                 match topic {
                     _ => info!("On '{:?}', received: {:?}", topic, message),
                 }
