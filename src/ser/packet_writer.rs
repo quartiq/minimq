@@ -1,4 +1,5 @@
-use crate::minimq::{Error, MessageType};
+use crate::minimq::MessageType;
+use crate::mqtt_client::ProtocolError as Error;
 
 pub struct PacketWriter<'a> {
     buffer: &'a mut [u8],

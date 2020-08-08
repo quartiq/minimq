@@ -1,6 +1,7 @@
-use crate::minimq::{Error, MessageType, PubInfo};
+use crate::minimq::{MessageType, PubInfo};
 use crate::properties::SUBSCRIPTION_IDENTIFIER;
 use crate::ser::PacketWriter;
+use crate::mqtt_client::ProtocolError as Error;
 
 pub fn integer_size(value: usize) -> usize {
     if value < 0x80 {

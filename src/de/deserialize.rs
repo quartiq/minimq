@@ -1,11 +1,16 @@
 use crate::de::PacketReader;
-use crate::minimq::{Error, MessageType, Meta, PubInfo};
+use crate::minimq::{MessageType, Meta, PubInfo};
+use crate::mqtt_client::ProtocolError as Error;
+use generic_array::ArrayLength;
+
+use bit_field::BitField;
 
 use crate::properties::{
     property_data, Data, CORRELATION_DATA, RESPONSE_TOPIC, SUBSCRIPTION_IDENTIFIER,
 };
 
 pub struct ConnAck {
+    pub session_present: bool,
     pub reason_code: u8,
 }
 
@@ -20,32 +25,58 @@ pub enum ReceivedPacket {
     SubAck(SubAck),
 }
 
-pub fn parse_message<'a>(packet_reader: &'a mut PacketReader) -> Result<ReceivedPacket, Error> {
-    let (message_type, _flags, remaining_length) = packet_reader.read_fixed_header()?;
+pub fn parse_message<T: ArrayLength<u8>>(packet_reader: &mut PacketReader<T>) -> Result<ReceivedPacket, Error> {
+    let (message_type, flags, remaining_length) = packet_reader.read_fixed_header()?;
 
     // Validate packet length.
     if remaining_length != packet_reader.len()? {
         return Err(Error::MalformedPacket);
     }
 
-    // TODO: Validate flags
-
     match message_type {
-        MessageType::ConnAck => Ok(ReceivedPacket::ConnAck(parse_connack(packet_reader)?)),
-        MessageType::Publish => Ok(ReceivedPacket::Publish(parse_publish(packet_reader)?)),
-        MessageType::SubAck => Ok(ReceivedPacket::SubAck(parse_suback(packet_reader)?)),
+        MessageType::ConnAck => {
+            if flags != 0 {
+                return Err(Error::MalformedPacket);
+            }
+
+            Ok(ReceivedPacket::ConnAck(parse_connack(packet_reader)?))
+        },
+
+        MessageType::Publish => {
+            Ok(ReceivedPacket::Publish(parse_publish(packet_reader)?))
+        },
+
+        MessageType::SubAck => {
+            if flags != 0 {
+                return Err(Error::MalformedPacket);
+            }
+
+            Ok(ReceivedPacket::SubAck(parse_suback(packet_reader)?))
+        },
+
         _ => Err(Error::UnsupportedPacket),
     }
 }
 
-fn parse_connack<'a>(p: &'a mut PacketReader) -> Result<ConnAck, Error> {
-    let _ = p.read_u8()?; // ACK flags
+fn parse_connack<T: ArrayLength<u8>>(p: &mut PacketReader<T>) -> Result<ConnAck, Error> {
+
+    // Read the connect acknowledgement flags.
+    let flags = p.read_u8()?;
+    if flags != 0 && flags != 1 {
+        return Err(Error::MalformedPacket);
+    }
+
     let reason_code = p.read_u8()?;
 
-    Ok(ConnAck { reason_code })
+    // TODO: Parse properties.
+
+    Ok(ConnAck {
+        reason_code,
+        session_present: flags.get_bit(0),
+     })
 }
 
-fn parse_publish<'a>(p: &'a mut PacketReader) -> Result<PubInfo, Error> {
+fn parse_publish<T: ArrayLength<u8>>(p: &mut PacketReader<T>) -> Result<PubInfo, Error> {
     let mut info = PubInfo::new();
     info.topic.len = p.read_utf8_string(&mut info.topic.buf)?;
     let properties_length = p.read_variable_length_integer()?;
@@ -80,7 +111,7 @@ fn parse_publish<'a>(p: &'a mut PacketReader) -> Result<PubInfo, Error> {
     Ok(info)
 }
 
-fn parse_suback<'a>(p: &'a mut PacketReader) -> Result<SubAck, Error> {
+fn parse_suback<T: ArrayLength<u8>>(p: &mut PacketReader<T>) -> Result<SubAck, Error> {
     // Read the variable length header.
     let id = p.read_u16()?;
 
@@ -101,7 +132,7 @@ fn parse_suback<'a>(p: &'a mut PacketReader) -> Result<SubAck, Error> {
     })
 }
 
-fn skip_property<'a>(property: usize, p: &'a mut PacketReader) -> Result<(), Error> {
+fn skip_property<T: ArrayLength<u8>>(property: usize, p: &mut PacketReader<T>) -> Result<(), Error> {
     match property_data(property) {
         Some(Data::Byte) => {
             p.read_u8()?;

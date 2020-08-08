@@ -1,5 +1,8 @@
-use crate::minimq::{Error, MessageType};
+use crate::minimq::MessageType;
+use crate::mqtt_client::ProtocolError as Error;
 use bit_field::BitField;
+
+use generic_array::{GenericArray, ArrayLength};
 
 const FIXED_HEADER_MAX: usize = 5; // type/flags + remaining length
 
@@ -23,31 +26,37 @@ fn parse_variable_byte_integer(int: &[u8]) -> Option<(usize, usize)> {
     Some((acc, len))
 }
 
-pub struct PacketReader<'a> {
-    pub buffer: &'a mut [u8],
+pub struct PacketReader<T: ArrayLength<u8>> {
+    pub buffer: GenericArray<u8, T>,
     read_bytes: usize,
     packet_length: Option<usize>,
     index: usize,
 }
 
-impl<'a> PacketReader<'a> {
-    pub fn new(buffer: &'a mut [u8]) -> PacketReader {
+impl<T> PacketReader<T>
+where
+    T: ArrayLength<u8>,
+{
+    pub fn new() -> PacketReader<T> {
         PacketReader {
-            buffer: buffer,
+            buffer: GenericArray::default(),
             read_bytes: 0,
             packet_length: None,
             index: 0,
         }
     }
 
-    pub fn from_serialized(buffer: &'a mut [u8]) -> PacketReader {
+    #[cfg(test)]
+    pub fn from_serialized(buffer: &'a mut [u8]) -> PacketReader<T> {
         let len = buffer.len();
         let mut reader = PacketReader {
-            buffer: buffer,
+            buffer: GenericArray::Default(),
             read_bytes: len,
             packet_length: None,
             index: 0,
         };
+
+        reader.buffer.copy_from_slice(&buffer);
 
         reader.probe_fixed_header();
 

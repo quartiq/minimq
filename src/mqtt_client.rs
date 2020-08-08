@@ -1,31 +1,59 @@
-use crate::minimq;
+use crate::{
+    minimq::{PubInfo, Meta},
+    session_state::SessionState,
+    ser::serialize,
+    de::{
+        PacketReader,
+        deserialize::{self, ReceivedPacket},
+    },
+};
 
 use embedded_nal::{Mode, SocketAddr};
+
+use generic_array::GenericArray;
+pub use generic_array::ArrayLength;
 
 use nb;
 
 use core::cell::RefCell;
 pub use embedded_nal::{IpAddr, Ipv4Addr};
-use heapless::{consts, String, Vec};
 
-pub struct MqttClient<'a, N>
+pub struct MqttClient<N, T>
 where
     N: embedded_nal::TcpStack,
+    T: ArrayLength<u8>,
 {
     socket: RefCell<Option<N::TcpSocket>>,
     pub network_stack: N,
-    protocol: RefCell<minimq::Protocol<'a>>,
-    id: String<consts::U32>,
-    transmit_buffer: Vec<u8, consts::U512>,
-    broker: IpAddr,
+    state: SessionState,
+    packet_reader: PacketReader<T>,
+    transmit_buffer: GenericArray<u8, T>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Error<E> {
     Network(E),
     WriteFail,
-    Protocol(minimq::Error),
     Disconnected,
+    Invalid,
+    Failed,
+    Protocol(ProtocolError),
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum ProtocolError {
+    Bounds,
+    DataSize,
+    Invalid,
+    PacketSize,
+    EmptyPacket,
+    Failed,
+    PartialPacket,
+    InvalidState,
+    MalformedPacket,
+    MalformedInteger,
+    UnknownProperty,
+    UnsupportedPacket,
 }
 
 impl<E> From<E> for Error<E> {
@@ -34,33 +62,31 @@ impl<E> From<E> for Error<E> {
     }
 }
 
-impl<'a, N> MqttClient<'a, N>
+impl<N, T> MqttClient<N, T>
 where
     N: embedded_nal::TcpStack,
+    T: ArrayLength<u8>,
 {
-    pub fn new<'b>(
+    pub fn new<'a>(
         broker: IpAddr,
-        client_id: &'b str,
+        client_id: &'a str,
         network_stack: N,
-        receive_buffer: &'a mut [u8],
     ) -> Result<Self, Error<N::Error>> {
         // Connect to the broker's TCP port.
         let socket = network_stack.open(Mode::NonBlocking)?;
 
         // Next, connect to the broker over MQTT.
-        let protocol = minimq::Protocol::new(receive_buffer);
         let socket = network_stack.connect(socket, SocketAddr::new(broker, 1883))?;
 
         let mut client = MqttClient {
             network_stack: network_stack,
             socket: RefCell::new(Some(socket)),
-            protocol: RefCell::new(protocol),
-            id: String::from(client_id),
-            transmit_buffer: Vec::new(),
-            broker: broker,
+            state: SessionState::new(broker, client_id),
+            transmit_buffer: GenericArray::default(),
+            packet_reader: PacketReader::new(),
         };
 
-        client.transmit_buffer.resize_default(512).unwrap();
+        client.reset()?;
 
         Ok(client)
     }
@@ -99,13 +125,10 @@ where
             return Ok(());
         }
 
-        let mut pub_info = minimq::PubInfo::new();
-        pub_info.topic = minimq::Meta::new(topic.as_bytes());
+        let mut pub_info = PubInfo::new();
+        pub_info.topic = Meta::new(topic.as_bytes());
 
-        let protocol = self.protocol.borrow_mut();
-        let len = protocol
-            .publish(&mut self.transmit_buffer, &pub_info, data)
-            .map_err(|e| Error::Protocol(e))?;
+        let len = serialize::publish_message(&mut self.transmit_buffer, &pub_info, data).map_err(|e| Error::Protocol(e))?;
         self.write(&self.transmit_buffer[..len])
     }
 
@@ -121,8 +144,13 @@ where
     }
 
     fn reset(&mut self) -> Result<(), Error<N::Error>> {
+        // TODO: Handle connection failures?
         self.connect_socket(true)?;
-        self.protocol.borrow_mut().reset();
+        self.state.reset();
+        self.packet_reader.reset();
+
+        let len = serialize::connect_message(&mut self.transmit_buffer, self.state.client_id.as_str().as_bytes(), self.state.keep_alive_interval).map_err(|e| Error::Protocol(e))?;
+        self.write(&self.transmit_buffer[..len])?;
 
         Ok(())
     }
@@ -143,7 +171,7 @@ where
         // TODO: Limit the time between connect attempts to prevent network spam.
         let socket = self
             .network_stack
-            .connect(socket, SocketAddr::new(self.broker, 1883))?;
+            .connect(socket, SocketAddr::new(self.state.broker, 1883))?;
 
         // Store the new socket for future use.
         socket_ref.replace(socket);
@@ -151,66 +179,97 @@ where
         Ok(())
     }
 
+    fn handle_packet<F>(&mut self, packet: ReceivedPacket, f: &F) -> Result<(), Error<N::Error>>
+    where
+        F: Fn(&PubInfo, &[u8]),
+    {
+        if !self.state.connected {
+            if let ReceivedPacket::ConnAck(acknowledge) = packet {
+                if acknowledge.reason_code != 0 {
+                    return Err(Error::Failed);
+                }
+
+                if acknowledge.session_present {
+                    // We do not currently support saved session state.
+                    return Err(Error::Failed);
+                } else {
+                    self.state.reset();
+                }
+
+                self.state.connected = true;
+
+                // TODO: Handle properties in the ConnAck.
+
+                return Ok(());
+            } else {
+                // It is a protocol error to receive anything else when not connected.
+                // TODO: Verify it is a protocol error.
+                return Err(Error::Protocol(ProtocolError::Invalid));
+            }
+        }
+
+        match packet {
+            ReceivedPacket::Publish(info) => {
+
+                // Call a handler function to deal with the received data.
+                let payload = self.packet_reader.payload().map_err(|e| Error::Protocol(e))?;
+                f(&info, payload);
+
+                Ok(())
+            },
+
+            ReceivedPacket::SubAck(subscribe_acknowledge) => {
+                if subscribe_acknowledge.packet_identifier != self.state.get_packet_identifier() {
+                    return Err(Error::Invalid);
+                }
+
+                if subscribe_acknowledge.reason_code != 0 {
+                    return Err(Error::Failed);
+                }
+
+                self.state.increment_packet_identifier();
+
+                Ok(())
+            },
+
+            _ => Err(Error::Invalid),
+        }
+    }
+
     pub fn poll<F>(&mut self, f: F) -> Result<(), Error<N::Error>>
     where
-        F: Fn(&[u8], &[u8]),
+        F: Fn(&PubInfo, &[u8]),
     {
         // If the socket is not connected, we can't do anything.
         if self.socket_is_connected()? == false {
-            self.connect_socket(false)?;
-
-            // If we're in the initialization state, there's nothing to do. We're waiting for an
-            // initial connection. Otherwise, we had an active connection, but it's gone now. We
-            // need to re-open the socket and re-establish a connection with the broker.
-            if self.protocol.borrow().state() != minimq::ProtocolState::Init {
-                self.reset()?;
-            }
+            // TODO: Handle a session timeout.
+            self.reset()?;
 
             return Ok(());
-        }
-
-        // If we're in the initialization state, we need to send a connect packet to connect with
-        // the broker.
-        if self.protocol.borrow().state() == minimq::ProtocolState::Init {
-            // Connect to the MQTT broker.
-            let mut protocol = self.protocol.borrow_mut();
-            let len = protocol
-                .connect(&mut self.transmit_buffer, self.id.as_bytes(), 10)
-                .map_err(|e| Error::Protocol(e))?;
-            self.write(&self.transmit_buffer[..len])?;
         }
 
         let mut buf: [u8; 1024] = [0; 1024];
         let received = self.read(&mut buf)?;
         let mut processed = 0;
         while processed < received {
-            // TODO: Handle this error.
-            let result = self.protocol.borrow_mut().receive(&buf[processed..]);
 
-            let read = match result {
-                Ok(count) => count,
+            match self.packet_reader.slurp(&buf[processed..received]) {
+                Ok(count) => processed += count,
+
                 Err(_) => {
-                    // If we got an error during parsing, reset the connection to the broker.
+                    // TODO: We should handle recoverable errors better.
                     self.reset()?;
                     return Err(Error::Disconnected);
-                }
-            };
+                },
+            }
 
-            processed += read;
+            // Handle any received packets.
+            if self.packet_reader.packet_available() {
 
-            // TODO: Expose the client to the user handler to allow them to easily publish within
-            // the closure.
-            let result = self
-                .protocol
-                .borrow_mut()
-                .handle(|_protocol, publish_info, payload| {
-                    f(publish_info.topic.get(), payload);
-                });
-
-            if let Err(_) = result {
-                // If we got an error during packet processing, reset the connection with the broker.
-                self.reset()?;
-                return Err(Error::Disconnected);
+                // TODO: Handle deserialize errors properly.
+                let packet = deserialize::parse_message(&mut self.packet_reader).map_err(|e| Error::Protocol(e))?;
+                self.packet_reader.pop_packet().map_err(|e| Error::Protocol(e))?;
+                self.handle_packet(packet, &f)?;
             }
         }
 
