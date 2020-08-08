@@ -1,47 +1,62 @@
-use crate::minimq::{Error, MessageType};
+use crate::minimq::MessageType;
+use crate::mqtt_client::ProtocolError as Error;
 use bit_field::BitField;
+
+use generic_array::{ArrayLength, GenericArray};
 
 const FIXED_HEADER_MAX: usize = 5; // type/flags + remaining length
 
 // TODO: Refactor to remove this.
 fn parse_variable_byte_integer(int: &[u8]) -> Option<(usize, usize)> {
-    let len = if int.len() >= 1 && (int[0] & 0b1000_0000) == 0 { 1 }
-         else if int.len() >= 2 && (int[1] & 0b1000_0000) == 0 { 2 }
-         else if int.len() >= 3 && (int[2] & 0b1000_0000) == 0 { 3 }
-         else if int.len() >= 4 && (int[3] & 0b1000_0000) == 0 { 4 }
-         else { return None };
+    let len = if int.len() >= 1 && (int[0] & 0b1000_0000) == 0 {
+        1
+    } else if int.len() >= 2 && (int[1] & 0b1000_0000) == 0 {
+        2
+    } else if int.len() >= 3 && (int[2] & 0b1000_0000) == 0 {
+        3
+    } else if int.len() >= 4 && (int[3] & 0b1000_0000) == 0 {
+        4
+    } else {
+        return None;
+    };
     let mut acc = 0;
-    for i in 0..len { acc += ((int[i] & 0b0111_1111) as usize) << i*7; }
+    for i in 0..len {
+        acc += ((int[i] & 0b0111_1111) as usize) << i * 7;
+    }
     Some((acc, len))
 }
 
-
-pub struct PacketReader<'a> {
-    pub buffer: &'a mut [u8],
+pub struct PacketReader<T: ArrayLength<u8>> {
+    pub buffer: GenericArray<u8, T>,
     read_bytes: usize,
     packet_length: Option<usize>,
     index: usize,
 }
 
-impl<'a> PacketReader<'a> {
-
-    pub fn new(buffer: &'a mut [u8]) -> PacketReader {
+impl<T> PacketReader<T>
+where
+    T: ArrayLength<u8>,
+{
+    pub fn new() -> PacketReader<T> {
         PacketReader {
-            buffer: buffer,
+            buffer: GenericArray::default(),
             read_bytes: 0,
             packet_length: None,
             index: 0,
         }
     }
 
-    pub fn from_serialized(buffer: &'a mut [u8]) -> PacketReader {
+    #[cfg(test)]
+    pub fn from_serialized<'a>(buffer: &'a mut [u8]) -> PacketReader<T> {
         let len = buffer.len();
         let mut reader = PacketReader {
-            buffer: buffer,
+            buffer: GenericArray::default(),
             read_bytes: len,
             packet_length: None,
             index: 0,
         };
+
+        reader.buffer[..buffer.len()].copy_from_slice(&buffer);
 
         reader.probe_fixed_header();
 
@@ -78,13 +93,12 @@ impl<'a> PacketReader<'a> {
     }
 
     pub fn read_variable_length_integer(&mut self) -> Result<usize, Error> {
-
         let mut bytes: [u8; 4] = [0; 4];
 
         let mut accumulator: usize = 0;
         let mut multiplier = 1;
         for i in 0..bytes.len() {
-            self.read(&mut bytes[i..i+1])?;
+            self.read(&mut bytes[i..i + 1])?;
             accumulator += bytes[i] as usize & 0x7F * multiplier;
             multiplier *= 128;
 
@@ -93,6 +107,7 @@ impl<'a> PacketReader<'a> {
             }
         }
 
+        log::warn!("Encountered invalid variable integer");
         Err(Error::MalformedInteger)
     }
 
@@ -100,7 +115,11 @@ impl<'a> PacketReader<'a> {
         let header = self.read_u8()?;
         let packet_length = self.read_variable_length_integer()?;
 
-        Ok((MessageType::from(header.get_bits(4..=7)), header.get_bits(0..=3), packet_length))
+        Ok((
+            MessageType::from(header.get_bits(4..=7)),
+            header.get_bits(0..=3),
+            packet_length,
+        ))
     }
 
     pub fn read_utf8_string(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
@@ -178,6 +197,10 @@ impl<'a> PacketReader<'a> {
         // Reset the reader index.
         self.index = 0;
 
+        // Probe the fixed header to update the length in case a packet still exists to be
+        // processed.
+        self.probe_fixed_header();
+
         Ok(())
     }
 
@@ -200,7 +223,6 @@ impl<'a> PacketReader<'a> {
                 if total_len > self.buffer.len() {
                     return Err(Error::PacketSize);
                 }
-
             } else if self.read_bytes >= FIXED_HEADER_MAX {
                 return Err(Error::MalformedPacket);
             }
