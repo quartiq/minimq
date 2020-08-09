@@ -1,22 +1,17 @@
 # minimq
 
-Minimal no_std MQTT v5.0 client implementation.
+Minimal `no_std` MQTT v5.0 client implementation.
 
-For now, see `src/bin/integration_test.rs` for usage.
+## Usage
 
-## Setup
+There is an example targeting the Nucleo-H743zi2 board that can be used as a reference design.
 
-```
-$ nix-shell       # get a rust environment with ejabberd for testing
-$ make ejabberd & # run MQTT broker in background
-$ cargo test      # run all the tests
-```
+There is example usage on a standard computer in `tests/integration_test.rs`
 
 ## Todo/NYI
 
-- Should communicate `PACKET_MAX` to broker in *CONNECT* properties
-- SUBACK/QoS=1 for inbound messages
-- Batch SUBSCRIBE
-- Keepalive/timeouts
-- Reconsider *PubInfo* and/or API in general
+- Support all QoS levels
+- Properly manage session state
+- Implement keepalive timeouts
+- Allow batch subscriptions to multiple topics
 - Docs
