@@ -49,6 +49,10 @@ where
         }
     }
 
+    pub fn maximum_packet_length(&self) -> usize {
+        self.buffer.len()
+    }
+
     #[cfg(test)]
     pub fn from_serialized<'a>(buffer: &'a mut [u8]) -> PacketReader<T> {
         let len = buffer.len();

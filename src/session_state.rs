@@ -3,9 +3,9 @@ use heapless::{consts, String, Vec};
 
 pub struct SessionState {
     pub connected: bool,
-    pub session_expiry_interval: u32,
     pub keep_alive_interval: u16,
     pub broker: IpAddr,
+    pub maximum_packet_size: Option<u32>,
     pub client_id: String<consts::U32>,
     pub pending_subscriptions: Vec<u16, consts::U32>,
     packet_id: u16,
@@ -15,20 +15,20 @@ impl SessionState {
     pub fn new<'a>(broker: IpAddr, id: &'a str) -> SessionState {
         SessionState {
             connected: false,
-            session_expiry_interval: 0,
             broker,
             client_id: String::from(id),
             packet_id: 1,
             keep_alive_interval: 0,
             pending_subscriptions: Vec::new(),
+            maximum_packet_size: None,
         }
     }
 
     pub fn reset(&mut self) {
         self.connected = false;
         self.packet_id = 1;
-        self.session_expiry_interval = 0;
         self.keep_alive_interval = 0;
+        self.maximum_packet_size = None;
         self.pending_subscriptions.clear();
     }
 

@@ -16,6 +16,8 @@ use nb;
 use core::cell::RefCell;
 pub use embedded_nal::{IpAddr, Ipv4Addr};
 
+use heapless::String;
+
 pub struct MqttClient<N, T>
 where
     N: embedded_nal::TcpStack,
@@ -200,7 +202,9 @@ where
             &mut buffer,
             self.state.borrow().client_id.as_str().as_bytes(),
             self.state.borrow().keep_alive_interval,
-            &[],
+            &[Property::MaximumPacketSize(
+                self.packet_reader.maximum_packet_length() as u32,
+            )],
         )
         .map_err(|e| Error::Protocol(e))?;
         self.write(packet)?;
@@ -251,6 +255,20 @@ where
                 state.connected = true;
 
                 // TODO: Handle properties in the ConnAck.
+                for property in acknowledge.properties {
+                    match property {
+                        Property::MaximumPacketSize(size) => {
+                            state.maximum_packet_size.replace(size);
+                        }
+                        Property::AssignedClientIdentifier(id) => {
+                            state.client_id = String::from(id);
+                        }
+                        Property::ServerKeepAlive(keep_alive) => {
+                            state.keep_alive_interval = keep_alive;
+                        }
+                        prop => info!("Ignoring property: {:?}", prop),
+                    };
+                }
 
                 return Ok(());
             } else {
