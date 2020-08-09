@@ -1,26 +1,28 @@
 use crate::minimq::MessageType;
 use crate::mqtt_client::ProtocolError as Error;
+use crate::Property;
 
-pub struct PacketWriter<'a> {
+pub(crate) struct ReversedPacketWriter<'a> {
     buffer: &'a mut [u8],
     index: usize,
 }
 
-impl<'a> PacketWriter<'a> {
-    pub fn new(data: &'a mut [u8]) -> Self {
-        PacketWriter {
-            buffer: data,
-            index: 0,
-        }
+impl<'a> ReversedPacketWriter<'a> {
+    pub fn new(buffer: &'a mut [u8]) -> Self {
+        let index = buffer.len();
+
+        ReversedPacketWriter { buffer, index }
     }
 
     pub fn write(&mut self, data: &[u8]) -> Result<(), Error> {
-        if self.index + data.len() > self.buffer.len() {
+        if self.index < data.len() {
             return Err(Error::Bounds);
         }
 
-        self.buffer[self.index..][..data.len()].copy_from_slice(data);
-        self.index += data.len();
+        let write_start = self.index - data.len();
+
+        self.buffer[write_start..self.index].copy_from_slice(data);
+        self.index -= data.len();
 
         Ok(())
     }
@@ -30,14 +32,20 @@ impl<'a> PacketWriter<'a> {
             return Err(Error::DataSize);
         }
 
+        // Write the data into the buffer.
+        self.write(data)?;
+
         // Write the data length into the buffer.
         self.write(&(data.len() as u16).to_be_bytes())?;
 
-        // Write the data into the buffer.
-        self.write(data)
+        Ok(())
     }
 
     pub fn write_u16(&mut self, value: u16) -> Result<(), Error> {
+        self.write(&value.to_be_bytes())
+    }
+
+    pub fn write_u32(&mut self, value: u32) -> Result<(), Error> {
         self.write(&value.to_be_bytes())
     }
 
@@ -79,25 +87,48 @@ impl<'a> PacketWriter<'a> {
         }
     }
 
-    pub fn write_fixed_header(
+    fn write_fixed_header(
         &mut self,
         typ: MessageType,
         flags: u8,
         len: usize,
     ) -> Result<(), Error> {
+        // Write the remaining packet length.
+        self.write_variable_length_integer(len)?;
+
         // Write the control byte.
         let header: u8 = ((typ as u8) << 4) & 0xF0 | (flags & 0x0F);
         self.write(&[header])?;
 
-        // Write the remaining packet length.
-        self.write_variable_length_integer(len)
+        Ok(())
     }
 
-    pub fn finalize(self) -> Result<usize, Error> {
-        if self.index == 0 {
-            Err(Error::EmptyPacket)
+    pub fn current_length(&self) -> usize {
+        self.buffer.len() - self.index
+    }
+
+    pub fn write_properties<'b>(&mut self, properties: &[Property<'b>]) -> Result<(), Error> {
+
+        let start_length = self.current_length();
+
+        for property in properties {
+            property.encode_into(self)?;
+        }
+
+        // Store the length of all the properties.
+        self.write_variable_length_integer(self.current_length() - start_length)?;
+
+        Ok(())
+    }
+
+    pub fn finalize(mut self, typ: MessageType, flags: u8) -> Result<&'a [u8], Error> {
+        // Write the fixed header.
+        self.write_fixed_header(typ, flags, self.current_length())?;
+
+        if self.index == self.buffer.len() {
+            Err(Error::MalformedPacket)
         } else {
-            Ok(self.index)
+            Ok(&self.buffer[self.index..])
         }
     }
 }

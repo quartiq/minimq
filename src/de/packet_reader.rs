@@ -1,8 +1,11 @@
 use crate::minimq::MessageType;
 use crate::mqtt_client::ProtocolError as Error;
 use bit_field::BitField;
+use crate::Property;
 
 use generic_array::{ArrayLength, GenericArray};
+
+use heapless::{Vec, consts};
 
 const FIXED_HEADER_MAX: usize = 5; // type/flags + remaining length
 
@@ -26,11 +29,11 @@ fn parse_variable_byte_integer(int: &[u8]) -> Option<(usize, usize)> {
     Some((acc, len))
 }
 
-pub struct PacketReader<T: ArrayLength<u8>> {
+pub(crate) struct PacketReader<T: ArrayLength<u8>> {
     pub buffer: GenericArray<u8, T>,
     read_bytes: usize,
     packet_length: Option<usize>,
-    index: usize,
+    index: core::cell::RefCell<usize>,
 }
 
 impl<T> PacketReader<T>
@@ -42,7 +45,7 @@ where
             buffer: GenericArray::default(),
             read_bytes: 0,
             packet_length: None,
-            index: 0,
+            index: core::cell::RefCell::new(0),
         }
     }
 
@@ -53,7 +56,7 @@ where
             buffer: GenericArray::default(),
             read_bytes: len,
             packet_length: None,
-            index: 0,
+            index: core::cell::RefCell::new(0),
         };
 
         reader.buffer[..buffer.len()].copy_from_slice(&buffer);
@@ -64,35 +67,52 @@ where
     }
 
     pub fn payload(&self) -> Result<&[u8], Error> {
-        Ok(&self.buffer[self.index..self.packet_length()?])
+        Ok(&self.buffer[*self.index.borrow()..self.packet_length()?])
     }
 
-    pub fn read(&mut self, dest: &mut [u8]) -> Result<(), Error> {
-        if self.index + dest.len() > self.packet_length()? {
+    pub fn read(&self, dest: &mut [u8]) -> Result<(), Error> {
+        let mut index = self.index.borrow_mut();
+
+        if *index + dest.len() > self.packet_length()? {
             return Err(Error::DataSize);
         }
 
-        dest.copy_from_slice(&self.buffer[self.index..][..dest.len()]);
-        self.index += dest.len();
+        dest.copy_from_slice(&self.buffer[*index..][..dest.len()]);
+        *index += dest.len();
 
         Ok(())
     }
 
-    pub fn skip(&mut self, bytes: usize) -> Result<(), Error> {
-        if self.index + bytes > self.buffer.len() {
+    fn read_borrowed(&self, count: usize) -> Result<&[u8], Error> {
+        let mut index = self.index.borrow_mut();
+
+        if *index + count > self.packet_length()? {
             return Err(Error::DataSize);
         }
 
-        self.index += bytes;
+        let borrowed_data = &self.buffer[*index..][..count];
+        *index += count;
+
+        Ok(borrowed_data)
+    }
+
+    pub fn skip(&self, bytes: usize) -> Result<(), Error> {
+        let mut index = self.index.borrow_mut();
+
+        if *index + bytes > self.buffer.len() {
+            return Err(Error::DataSize);
+        }
+
+        *index += bytes;
 
         Ok(())
     }
 
     pub fn len(&self) -> Result<usize, Error> {
-        Ok(self.packet_length()? - self.index)
+        Ok(self.packet_length()? - *self.index.borrow())
     }
 
-    pub fn read_variable_length_integer(&mut self) -> Result<usize, Error> {
+    pub fn read_variable_length_integer(&self) -> Result<usize, Error> {
         let mut bytes: [u8; 4] = [0; 4];
 
         let mut accumulator: usize = 0;
@@ -111,7 +131,7 @@ where
         Err(Error::MalformedInteger)
     }
 
-    pub fn read_fixed_header(&mut self) -> Result<(MessageType, u8, usize), Error> {
+    pub fn read_fixed_header(&self) -> Result<(MessageType, u8, usize), Error> {
         let header = self.read_u8()?;
         let packet_length = self.read_variable_length_integer()?;
 
@@ -122,41 +142,58 @@ where
         ))
     }
 
-    pub fn read_utf8_string(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+    pub fn read_utf8_string<'a, 'me: 'a>(&'me self) -> Result<&'a str, Error> {
         let string_length = self.read_u16()? as usize;
 
-        if buf.len() < string_length {
+        if self.buffer.len() < string_length {
             return Err(Error::DataSize);
         }
 
-        self.read(&mut buf[..string_length])?;
-
-        Ok(string_length)
+        Ok(core::str::from_utf8(self.read_borrowed(string_length)?).map_err(|_|
+                    Error::MalformedPacket)?)
     }
 
-    pub fn read_binary_data(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
-        self.read_utf8_string(buf)
+    pub fn read_binary_data(&self) -> Result<&[u8], Error> {
+        let string_length = self.read_u16()? as usize;
+        self.read_borrowed(string_length)
     }
 
-    pub fn read_u32(&mut self) -> Result<u32, Error> {
-        let mut bytes: [u8; 4] = [0; 4];
-        self.read(&mut bytes)?;
-
-        Ok(u32::from_be_bytes(bytes))
+    pub fn read_u32(&self) -> Result<u32, Error> {
+        let mut buffer: [u8; 4] = [0; 4];
+        self.read(&mut buffer)?;
+        Ok(u32::from_be_bytes(buffer))
     }
 
-    pub fn read_u16(&mut self) -> Result<u16, Error> {
-        let mut bytes: [u8; 2] = [0; 2];
-        self.read(&mut bytes)?;
-
-        Ok(u16::from_be_bytes(bytes))
+    pub fn read_u16(&self) -> Result<u16, Error> {
+        let mut buffer: [u8; 2] = [0; 2];
+        self.read(&mut buffer)?;
+        Ok(u16::from_be_bytes(buffer))
     }
 
-    pub fn read_u8(&mut self) -> Result<u8, Error> {
+    pub fn read_u8(&self) -> Result<u8, Error> {
         let mut byte: [u8; 1] = [0];
         self.read(&mut byte)?;
 
         Ok(byte[0])
+    }
+
+    pub fn read_properties<'a, 'me: 'a>(&'me self) -> Result<Vec<Property<'a>, consts::U8>, Error> {
+        let mut properties: Vec<Property, consts::U8> = Vec::new();
+
+        let properties_size = self.read_variable_length_integer()?;
+        let mut property_bytes_processed = 0;
+
+        while properties_size - property_bytes_processed > 0 {
+            let property = Property::parse(self)?;
+            property_bytes_processed += property.size();
+            properties.push(property).map_err(|_| Error::MalformedPacket)?;
+        }
+
+        if properties_size != property_bytes_processed {
+            return Err(Error::MalformedPacket);
+        }
+
+        Ok(properties)
     }
 
     pub fn message_type(&self) -> MessageType {
@@ -168,7 +205,7 @@ where
         if let Some(packet_length) = self.packet_length {
             Ok(packet_length)
         } else {
-            Err(Error::EmptyPacket)
+            Err(Error::MalformedPacket)
         }
     }
 
@@ -181,6 +218,7 @@ where
 
     pub fn pop_packet(&mut self) -> Result<(), Error> {
         let packet_length = self.packet_length()?;
+        log::debug!("Popping packet of {} bytes", packet_length);
 
         let move_length = self.read_bytes - packet_length;
 
@@ -195,7 +233,7 @@ where
         self.read_bytes = move_length;
 
         // Reset the reader index.
-        self.index = 0;
+        self.index.replace(0);
 
         // Probe the fixed header to update the length in case a packet still exists to be
         // processed.

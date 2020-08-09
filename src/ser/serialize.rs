@@ -1,6 +1,9 @@
-use crate::minimq::{MessageType, PubInfo};
-use crate::mqtt_client::ProtocolError as Error;
-use crate::ser::PacketWriter;
+use crate::{
+    Property,
+    minimq::MessageType,
+    mqtt_client::ProtocolError as Error,
+    ser::ReversedPacketWriter,
+};
 
 pub fn integer_size(value: usize) -> usize {
     if value < 0x80 {
@@ -16,7 +19,7 @@ pub fn integer_size(value: usize) -> usize {
     }
 }
 
-pub fn connect_message(dest: &mut [u8], client_id: &[u8], keep_alive: u16) -> Result<usize, Error> {
+pub fn connect_message<'a, 'b>(dest: &'b mut [u8], client_id: &[u8], keep_alive: u16, properties: &[Property<'a>]) -> Result<&'b [u8], Error> {
     for i in 0..client_id.len() {
         if !(client_id[i] - 0x30 <=  9 || // 0-9
              client_id[i] - 0x41 <= 25 || // A-Z
@@ -27,79 +30,83 @@ pub fn connect_message(dest: &mut [u8], client_id: &[u8], keep_alive: u16) -> Re
         }
     }
 
-    // Calculate the lengths
-    let payload_length = client_id.len() + 2;
-    let properties_length = 1;
-    let variable_header_length = properties_length + 10;
-    let packet_length = variable_header_length + payload_length;
+    // Validate the properties for this packet.
+    for property in properties {
+        match property {
+            _ => return Err(Error::InvalidProperty)
+        }
+    }
 
-    let mut packet = PacketWriter::new(dest);
-    packet.write_fixed_header(MessageType::Connect, 0, packet_length)?;
-
-    // Add the variable length header
-    packet.write_utf8_string("MQTT")?;
-    packet.write(&[5])?;
-    packet.write(&[0b10])?;
-    packet.write_u16(keep_alive)?;
-
-    // Write length + properties (none)
-    packet.write_variable_length_integer(0)?;
+    let mut packet = ReversedPacketWriter::new(dest);
 
     // Write the payload, which is the client ID.
     packet.write_binary_data(client_id)?;
 
-    packet.finalize()
+    // Write the variable header.
+    packet.write_properties(properties)?;
+
+    packet.write_u16(keep_alive)?;
+    packet.write(&[0b10])?;
+    packet.write(&[5])?;
+    packet.write_utf8_string("MQTT")?;
+
+    packet.finalize(MessageType::Connect, 0)
 }
 
-pub fn publish_message(dest: &mut [u8], info: &PubInfo, payload: &[u8]) -> Result<usize, Error> {
-    // Calculate the length of the packet and variable length header.
-    let variable_header_length = info.variable_header_length();
+pub fn publish_message<'a, 'b, 'c>(dest: &'b mut [u8], topic: &'a str, payload: &[u8], properties: &[Property<'c>]) -> Result<&'b [u8], Error> {
+    // Validate the properties for this packet.
+    for property in properties {
+        match property {
+            Property::ResponseTopic(_) => {
+            },
+            _ => {
+                return Err(Error::InvalidProperty);
+            },
+        };
+    }
 
-    let mut packet = PacketWriter::new(dest);
-
-    // Write the fixed length header.
-    packet.write_fixed_header(
-        MessageType::Publish,
-        0,
-        variable_header_length + payload.len(),
-    )?;
-
-    // Write the variable header into the packet.
-    info.write_variable_header(&mut packet)?;
+    let mut packet = ReversedPacketWriter::new(dest);
 
     // Write the payload into the packet.
     packet.write(payload)?;
 
-    packet.finalize()
-}
+    // Write the variable header into the packet.
+    packet.write_properties(properties)?;
 
-pub fn subscribe_message<'b>(
-    dest: &mut [u8],
-    topic: &'b str,
-    packet_id: u16,
-) -> Result<usize, Error> {
-    let mut packet = PacketWriter::new(dest);
-
-    let property_length = 0;
-    let variable_header_length = property_length + integer_size(property_length) + 2;
-    let payload_size = 3 + topic.len();
-    let packet_length = variable_header_length + payload_size;
-
-    packet.write_fixed_header(MessageType::Subscribe, 0b0010, packet_length)?;
-
-    // Write the variable packet header.
-    packet.write_u16(packet_id)?;
-
-    // Write properties.
-    packet.write_variable_length_integer(property_length)?;
-
-    // Write the payload (topic)
+    // TODO: Handle packet ID when QoS > 0.
     packet.write_utf8_string(topic)?;
 
-    // Options byte
-    packet.write(&[0])?;
+    // Write the fixed length header.
+    packet.finalize(MessageType::Publish, 0)
+}
 
-    packet.finalize()
+pub fn subscribe_message<'a, 'b, 'c>(
+    dest: &'c mut [u8],
+    topic: &'b str,
+    packet_id: u16,
+    properties: &[Property<'a>]
+) -> Result<&'c [u8], Error> {
+    // Validate the properties for this packet.
+    for property in properties {
+        match property {
+            _ => {
+                return Err(Error::InvalidProperty);
+            },
+        }
+    }
+
+    let mut packet = ReversedPacketWriter::new(dest);
+
+    // TODO: Support multiple topics.
+    // Write the payload (topic filter + options byte)
+    packet.write(&[0])?;
+    packet.write_utf8_string(topic)?;
+
+    // Write the variable packet header.
+    packet.write_properties(properties)?;
+    packet.write_u16(packet_id)?;
+
+    packet.finalize(MessageType::Subscribe, 0b0010)
 }
 
 #[test]
@@ -112,14 +119,11 @@ pub fn serialize_publish() {
         0xAB, 0xCD, // Payload
     ];
 
-    let mut info = PubInfo::new();
-    info.topic.set("ABC".as_bytes()).unwrap();
-
     let mut buffer: [u8; 900] = [0; 900];
     let payload: [u8; 2] = [0xAB, 0xCD];
-    let length = publish_message(&mut buffer, &info, &payload).unwrap();
+    let message = publish_message(&mut buffer, "ABC", &payload, &[]).unwrap();
 
-    assert_eq!(buffer[..length], good_publish);
+    assert_eq!(message, good_publish);
 }
 
 #[test]
@@ -134,9 +138,27 @@ fn serialize_subscribe() {
     ];
 
     let mut buffer: [u8; 900] = [0; 900];
-    let length = subscribe_message(&mut buffer, "ABC", 16).unwrap();
+    let message = subscribe_message(&mut buffer, "ABC", 16, &[]).unwrap();
 
-    assert_eq!(buffer[..length], good_subscribe);
+    assert_eq!(message, good_subscribe);
+}
+
+#[test]
+pub fn serialize_publish_with_properties() {
+    let good_publish: [u8; 14] = [
+        0x30, // Publish message
+        0x0c, // Remaining length (14)
+        0x00, 0x03, 0x41, 0x42, 0x43, // Topic: ABC
+        0x04, // Properties length - 1 property encoding a string of length 4
+        0x08, 0x00, 0x01, 0x41, // Response topic "A"
+        0xAB, 0xCD, // Payload
+    ];
+
+    let mut buffer: [u8; 900] = [0; 900];
+    let payload: [u8; 2] = [0xAB, 0xCD];
+    let message = publish_message(&mut buffer, "ABC", &payload, &[Property::ResponseTopic("A")]).unwrap();
+
+    assert_eq!(message, good_publish);
 }
 
 #[test]
@@ -153,7 +175,7 @@ fn serialize_connect() {
 
     let mut buffer: [u8; 900] = [0; 900];
     let client_id = "ABC".as_bytes();
-    let length = connect_message(&mut buffer, client_id, 10).unwrap();
+    let message = connect_message(&mut buffer, client_id, 10, &[]).unwrap();
 
-    assert_eq!(buffer[..length], good_serialized_connect)
+    assert_eq!(message, good_serialized_connect)
 }

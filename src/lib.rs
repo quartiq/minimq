@@ -7,6 +7,7 @@ pub(crate) mod ser;
 mod minimq;
 mod properties;
 mod session_state;
+pub use properties::Property;
 
 pub mod mqtt_client;
 

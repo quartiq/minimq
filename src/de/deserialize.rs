@@ -1,67 +1,76 @@
 use crate::de::PacketReader;
-use crate::minimq::{MessageType, Meta, PubInfo};
+use crate::minimq::{MessageType};
 use crate::mqtt_client::ProtocolError as Error;
 use generic_array::ArrayLength;
+use crate::Property;
+
+use heapless::{Vec, consts};
 
 use bit_field::BitField;
 
-use crate::properties::{
-    property_data, Data, CORRELATION_DATA, RESPONSE_TOPIC, SUBSCRIPTION_IDENTIFIER,
-};
-
 #[derive(Debug)]
-pub struct ConnAck {
+pub struct ConnAck<'a> {
     pub session_present: bool,
     pub reason_code: u8,
+    pub properties: Vec<Property<'a>, consts::U8>,
 }
 
 #[derive(Debug)]
-pub struct SubAck {
+pub struct Pub<'a> {
+    pub topic: &'a str,
+    pub properties: Vec<Property<'a>, consts::U8>,
+}
+
+#[derive(Debug)]
+pub struct SubAck<'a> {
     pub packet_identifier: u16,
     pub reason_code: u8,
+    pub properties: Vec<Property<'a>, consts::U8>,
 }
 
 #[derive(Debug)]
-pub enum ReceivedPacket {
-    ConnAck(ConnAck),
-    Publish(PubInfo),
-    SubAck(SubAck),
+pub enum ReceivedPacket<'a> {
+    ConnAck(ConnAck<'a>),
+    Publish(Pub<'a>),
+    SubAck(SubAck<'a>),
 }
 
-pub fn parse_message<T: ArrayLength<u8>>(
-    packet_reader: &mut PacketReader<T>,
-) -> Result<ReceivedPacket, Error> {
-    let (message_type, flags, remaining_length) = packet_reader.read_fixed_header()?;
+impl<'a> ReceivedPacket<'a> {
+    pub(crate) fn parse_message<'reader: 'a, T: ArrayLength<u8>>(
+        packet_reader: &'reader PacketReader<T>,
+    ) -> Result<ReceivedPacket<'a>, Error> {
+        let (message_type, flags, remaining_length) = packet_reader.read_fixed_header()?;
 
-    // Validate packet length.
-    if remaining_length != packet_reader.len()? {
-        return Err(Error::MalformedPacket);
-    }
-
-    match message_type {
-        MessageType::ConnAck => {
-            if flags != 0 {
-                return Err(Error::MalformedPacket);
-            }
-
-            Ok(ReceivedPacket::ConnAck(parse_connack(packet_reader)?))
+        // Validate packet length.
+        if remaining_length != packet_reader.len()? {
+            return Err(Error::MalformedPacket);
         }
 
-        MessageType::Publish => Ok(ReceivedPacket::Publish(parse_publish(packet_reader)?)),
+        match message_type {
+            MessageType::ConnAck => {
+                if flags != 0 {
+                    return Err(Error::MalformedPacket);
+                }
 
-        MessageType::SubAck => {
-            if flags != 0 {
-                return Err(Error::MalformedPacket);
+                Ok(ReceivedPacket::ConnAck(parse_connack(packet_reader)?))
             }
 
-            Ok(ReceivedPacket::SubAck(parse_suback(packet_reader)?))
-        }
+            MessageType::Publish => Ok(ReceivedPacket::Publish(parse_publish(packet_reader)?)),
 
-        _ => Err(Error::UnsupportedPacket),
+            MessageType::SubAck => {
+                if flags != 0 {
+                    return Err(Error::MalformedPacket);
+                }
+
+                Ok(ReceivedPacket::SubAck(parse_suback(packet_reader)?))
+            }
+
+            _ => Err(Error::UnsupportedPacket),
+        }
     }
 }
 
-fn parse_connack<T: ArrayLength<u8>>(p: &mut PacketReader<T>) -> Result<ConnAck, Error> {
+fn parse_connack<T: ArrayLength<u8>>(p: &PacketReader<T>) -> Result<ConnAck, Error> {
     // Read the connect acknowledgement flags.
     let flags = p.read_u8()?;
     if flags != 0 && flags != 1 {
@@ -70,60 +79,36 @@ fn parse_connack<T: ArrayLength<u8>>(p: &mut PacketReader<T>) -> Result<ConnAck,
 
     let reason_code = p.read_u8()?;
 
-    // TODO: Parse properties.
+    // Parse properties.
+    let properties = p.read_properties()?;
+
+    // TODO: Validate properties associated with this message.
 
     Ok(ConnAck {
         reason_code,
         session_present: flags.get_bit(0),
+        properties,
     })
 }
 
-fn parse_publish<T: ArrayLength<u8>>(p: &mut PacketReader<T>) -> Result<PubInfo, Error> {
-    let mut info = PubInfo::new();
-    info.topic.len = p.read_utf8_string(&mut info.topic.buf)?;
-    let properties_length = p.read_variable_length_integer()?;
-    let payload_length = p.len()? - properties_length;
-    while p.len()? > payload_length {
-        match p.read_variable_length_integer()? {
-            SUBSCRIPTION_IDENTIFIER => {
-                info.sid = Some(p.read_variable_length_integer()?);
-            }
-            RESPONSE_TOPIC => {
-                let mut response_topic = Meta::new(&[]);
-                response_topic.len = p.read_utf8_string(&mut response_topic.buf)?;
-                info.response = Some(response_topic);
-            }
-            CORRELATION_DATA => {
-                let mut cd = Meta::new(&[]);
-                cd.len = p.read_binary_data(&mut cd.buf)?;
-                info.cd = Some(cd);
-            }
-            x => {
-                skip_property(x, p)?;
-            }
-        }
-    }
+fn parse_publish<'a, 'reader: 'a, T: ArrayLength<u8>>(p: &'reader PacketReader<T>) -> Result<Pub<'a>, Error> {
+    let topic = p.read_utf8_string()?;
 
-    if p.len()? != payload_length {
-        return Err(Error::DataSize);
-    }
+    let properties = p.read_properties()?;
+    // TODO: Validate properties associated with this message.
 
     // Note that we intentionally don't read the payload from the data reader so that it is
     // available later to be borrowed directly to the handler for the payload data.
-    Ok(info)
+    Ok(Pub { topic, properties })
 }
 
-fn parse_suback<T: ArrayLength<u8>>(p: &mut PacketReader<T>) -> Result<SubAck, Error> {
+fn parse_suback<T: ArrayLength<u8>>(p: &PacketReader<T>) -> Result<SubAck, Error> {
     // Read the variable length header.
     let id = p.read_u16()?;
 
-    // Skip past all properties in the SubAck.
-    let property_length = p.read_variable_length_integer()?;
-    if property_length > p.len()? {
-        return Err(Error::DataSize);
-    }
-
-    p.skip(property_length)?;
+    // Parse all properties in the SubAck.
+    let properties = p.read_properties()?;
+    // TODO: Validate properties associated with this message.
 
     // Read the final payload, which contains the reason code.
     let reason_code = p.read_u8()?;
@@ -131,46 +116,8 @@ fn parse_suback<T: ArrayLength<u8>>(p: &mut PacketReader<T>) -> Result<SubAck, E
     Ok(SubAck {
         packet_identifier: id,
         reason_code,
+        properties,
     })
-}
-
-fn skip_property<T: ArrayLength<u8>>(
-    property: usize,
-    p: &mut PacketReader<T>,
-) -> Result<(), Error> {
-    match property_data(property) {
-        Some(Data::Byte) => {
-            p.read_u8()?;
-            Ok(())
-        }
-        Some(Data::TwoByteInteger) => {
-            p.read_u16()?;
-            Ok(())
-        }
-        Some(Data::FourByteInteger) => {
-            p.read_u32()?;
-            Ok(())
-        }
-        Some(Data::VariableByteInteger) => {
-            p.read_variable_length_integer()?;
-            Ok(())
-        }
-        Some(Data::BinaryData) | Some(Data::UTF8EncodedString) => {
-            let len = p.read_variable_length_integer()?;
-            p.skip(len)?;
-            Ok(())
-        }
-        Some(Data::UTF8StringPair) => {
-            let len = p.read_variable_length_integer()?;
-            p.skip(len)?;
-
-            let len = p.read_variable_length_integer()?;
-            p.skip(len)?;
-
-            Ok(())
-        }
-        None => Err(Error::UnknownProperty),
-    }
 }
 
 #[cfg(test)]
@@ -187,7 +134,7 @@ fn deserialize_good_connack() {
     ];
 
     let mut reader = PacketReader::<typenum::U32>::from_serialized(&mut serialized_connack);
-    let connack = parse_message(&mut reader).unwrap();
+    let connack = ReceivedPacket::parse_message(&mut reader).unwrap();
     match connack {
         ReceivedPacket::ConnAck(conn_ack) => {
             assert_eq!(conn_ack.reason_code, 0);
@@ -208,10 +155,10 @@ fn deserialize_good_publish() {
     ];
 
     let mut reader = PacketReader::<typenum::U32>::from_serialized(&mut serialized_publish);
-    let publish = parse_message(&mut reader).unwrap();
+    let publish = ReceivedPacket::parse_message(&mut reader).unwrap();
     match publish {
         ReceivedPacket::Publish(pub_info) => {
-            assert_eq!(pub_info.topic.get(), "A".as_bytes());
+            assert_eq!(pub_info.topic, "A");
         }
         _ => panic!("Invalid message"),
     }
@@ -228,7 +175,7 @@ fn deserialize_good_suback() {
     ];
 
     let mut reader = PacketReader::<typenum::U32>::from_serialized(&mut serialized_suback);
-    let suback = parse_message(&mut reader).unwrap();
+    let suback = ReceivedPacket::parse_message(&mut reader).unwrap();
     match suback {
         ReceivedPacket::SubAck(sub_ack) => {
             assert_eq!(sub_ack.reason_code, 2);

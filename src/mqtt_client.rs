@@ -1,9 +1,8 @@
 use crate::{
     de::{
-        deserialize::{self, ReceivedPacket},
+        deserialize::ReceivedPacket,
         PacketReader,
     },
-    minimq::{Meta, PubInfo},
     ser::serialize,
     session_state::SessionState,
 };
@@ -27,7 +26,7 @@ where
 {
     socket: RefCell<Option<N::TcpSocket>>,
     pub network_stack: N,
-    state: SessionState,
+    state: RefCell<SessionState>,
     packet_reader: PacketReader<T>,
     transmit_buffer: RefCell<GenericArray<u8, T>>,
 }
@@ -54,14 +53,14 @@ pub enum ProtocolError {
     Bounds,
     DataSize,
     Invalid,
-    PacketSize,
-    EmptyPacket,
     Failed,
-    PartialPacket,
+    PacketSize,
     MalformedPacket,
     MalformedInteger,
     UnknownProperty,
     UnsupportedPacket,
+    BufferSize,
+    InvalidProperty,
 }
 
 impl<E> From<E> for Error<E> {
@@ -89,7 +88,7 @@ where
         let mut client = MqttClient {
             network_stack: network_stack,
             socket: RefCell::new(Some(socket)),
-            state: SessionState::new(broker, client_id),
+            state: RefCell::new(SessionState::new(broker, client_id)),
             transmit_buffer: RefCell::new(GenericArray::default()),
             packet_reader: PacketReader::new(),
         };
@@ -125,17 +124,19 @@ where
         }
     }
 
-    pub fn subscribe<'a, 'b>(&mut self, topic: &'a str, _properties: &[Property<'b>]) -> Result<(), Error<N::Error>> {
+    pub fn subscribe<'a, 'b>(&self, topic: &'a str, _properties: &[Property<'b>]) -> Result<(), Error<N::Error>> {
 
-        let packet_id = self.state.get_packet_identifier();
+        let mut state = self.state.borrow_mut();
+        let packet_id = state.get_packet_identifier();
+
         let mut buffer = self.transmit_buffer.borrow_mut();
-        let len = serialize::subscribe_message(&mut buffer, topic, packet_id).map_err(|e| Error::Protocol(e))?;
+        let packet = serialize::subscribe_message(&mut buffer, topic, packet_id, &[]).map_err(|e| Error::Protocol(e))?;
 
-        match self.write(&buffer[..len]) {
+        match self.write(packet) {
             Ok(_) => {
                 info!("Subscribing to `{}`: {}", topic, packet_id);
-                self.state.pending_subscriptions.push(packet_id).map_err(|_| Error::Unsupported)?;
-                self.state.increment_packet_identifier();
+                state.pending_subscriptions.push(packet_id).map_err(|_| Error::Unsupported)?;
+                state.increment_packet_identifier();
                 Ok(())
             },
             Err(e) => Err(e),
@@ -143,7 +144,7 @@ where
     }
 
     pub fn subscriptions_pending(&self) -> bool {
-        self.state.pending_subscriptions.len() != 0
+        self.state.borrow().pending_subscriptions.len() != 0
     }
 
     pub fn publish<'a, 'b>(&self, topic: &'a str, data: &[u8], qos: QoS, properties: &[Property<'a>]) -> Result<(), Error<N::Error>> {
@@ -155,21 +156,12 @@ where
             return Ok(());
         }
 
-        let mut pub_info = PubInfo::new();
-        pub_info.topic = Meta::new(topic.as_bytes());
-
-        for property in properties {
-            match property {
-                Property::ResponseTopic(topic) => pub_info.response = Some(Meta::new(topic.as_bytes())),
-            }
-        }
-
-        info!("Publishing to `{}`: {:?}", topic, data);
+        info!("Publishing to `{}`: {:?} Props: {:?}", topic, data, properties);
 
         let mut buffer = self.transmit_buffer.borrow_mut();
-        let len = serialize::publish_message(&mut buffer, &pub_info, data)
+        let packet = serialize::publish_message(&mut buffer, topic, data, properties)
             .map_err(|e| Error::Protocol(e))?;
-        self.write(&buffer[..len])
+        self.write(packet)
     }
 
     fn socket_is_connected(&self) -> Result<bool, N::Error> {
@@ -185,18 +177,20 @@ where
 
     fn reset(&mut self) -> Result<(), Error<N::Error>> {
         // TODO: Handle connection failures?
+
         self.connect_socket(true)?;
-        self.state.reset();
+        self.state.borrow_mut().reset();
         self.packet_reader.reset();
 
         let mut buffer = self.transmit_buffer.borrow_mut();
-        let len = serialize::connect_message(
+        let packet = serialize::connect_message(
             &mut buffer,
-            self.state.client_id.as_str().as_bytes(),
-            self.state.keep_alive_interval,
+            self.state.borrow().client_id.as_str().as_bytes(),
+            self.state.borrow().keep_alive_interval,
+            &[],
         )
         .map_err(|e| Error::Protocol(e))?;
-        self.write(&buffer[..len])?;
+        self.write(packet)?;
 
         Ok(())
     }
@@ -217,7 +211,7 @@ where
         // TODO: Limit the time between connect attempts to prevent network spam.
         let socket = self
             .network_stack
-            .connect(socket, SocketAddr::new(self.state.broker, 1883))?;
+            .connect(socket, SocketAddr::new(self.state.borrow().broker, 1883))?;
 
         // Store the new socket for future use.
         socket_ref.replace(socket);
@@ -225,11 +219,12 @@ where
         Ok(())
     }
 
-    fn handle_packet<F>(&mut self, packet: ReceivedPacket, f: &F) -> Result<(), Error<N::Error>>
+    fn handle_packet<'p, F>(&self, packet: ReceivedPacket<'p>, f: &F) -> Result<(), Error<N::Error>>
     where
-        F: Fn(&Self, &PubInfo, &[u8]),
+        for <'a> F: Fn(&Self, &'a str, &[u8], &[Property<'a>]),
     {
-        if !self.state.connected {
+        let mut state = self.state.borrow_mut();
+        if !state.connected {
             if let ReceivedPacket::ConnAck(acknowledge) = packet {
                 if acknowledge.reason_code != 0 {
                     return Err(Error::Failed(acknowledge.reason_code));
@@ -240,7 +235,7 @@ where
                     return Err(Error::Unsupported);
                 }
 
-                self.state.connected = true;
+                state.connected = true;
 
                 // TODO: Handle properties in the ConnAck.
 
@@ -260,20 +255,20 @@ where
                     .packet_reader
                     .payload()
                     .map_err(|e| Error::Protocol(e))?;
-                f(self, &info, payload);
+                f(self, info.topic, payload, &info.properties);
 
                 Ok(())
             }
 
             ReceivedPacket::SubAck(subscribe_acknowledge) => {
-                match self.state.pending_subscriptions.iter().position(
+                match state.pending_subscriptions.iter().position(
                         |v| *v == subscribe_acknowledge.packet_identifier)
                 {
                     None => {
                         error!("Got bad suback: {:?}", subscribe_acknowledge);
                         return Err(Error::Protocol(ProtocolError::Invalid))
                     },
-                    Some(index) => self.state.pending_subscriptions.swap_remove(index),
+                    Some(index) => state.pending_subscriptions.swap_remove(index),
                 };
 
                 if subscribe_acknowledge.reason_code != 0 {
@@ -289,7 +284,7 @@ where
 
     pub fn poll<F>(&mut self, f: F) -> Result<(), Error<N::Error>>
     where
-        F: Fn(&Self, &PubInfo, &[u8]),
+        for <'a> F: Fn(&Self, &'a str, &[u8], &[Property<'a>]),
     {
         debug!("Polling MQTT interface");
 
@@ -324,14 +319,14 @@ where
             // Handle any received packets.
             while self.packet_reader.packet_available() {
                 // TODO: Handle deserialize errors properly.
-                let packet = deserialize::parse_message(&mut self.packet_reader)
+                let packet = ReceivedPacket::parse_message(&self.packet_reader)
                     .map_err(|e| Error::Protocol(e))?;
 
-                debug!("Received {:?}", packet);
+                info!("Received {:?}", packet);
+                self.handle_packet(packet, &f)?;
                 self.packet_reader
                     .pop_packet()
                     .map_err(|e| Error::Protocol(e))?;
-                self.handle_packet(packet, &f)?;
             }
         }
 

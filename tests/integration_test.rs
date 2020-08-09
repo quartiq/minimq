@@ -126,31 +126,20 @@ fn main() -> std::io::Result<()> {
 
     loop {
 
-        client.poll(|mqtt, req, payload| {
-            if req.cd.is_some() {
-                println!(
-                    "{}:{} < {} [cd:{}]",
-                    req.sid.unwrap_or(0),
-                    core::str::from_utf8(req.topic.get()).unwrap(),
-                    core::str::from_utf8(payload).unwrap(),
-                    core::str::from_utf8(req.cd.unwrap().get()).unwrap()
-                );
-            } else {
-                println!(
-                    "{}:{} < {}",
-                    req.sid.unwrap_or(0),
-                    core::str::from_utf8(req.topic.get()).unwrap(),
-                    core::str::from_utf8(payload).unwrap(),
-                );
+        client.poll(|client, topic, payload, properties| {
+            println!("{} < {}", topic, core::str::from_utf8(payload).unwrap());
+
+            for property in properties {
+                match property {
+                    Property::ResponseTopic(topic) => client.publish(topic, "Pong".as_bytes(),
+                                                                     QoS::AtMostOnce, &[]).unwrap(),
+                    _ => {},
+                };
             }
 
-            match req.response {
-                Some(topic) => mqtt.publish(core::str::from_utf8(topic.get()).unwrap(),
-                                            "Pong".as_bytes(),
-                                            QoS::AtMostOnce,
-                                            &[]).unwrap(),
-                None => std::process::exit(0),
-            };
+            if topic == "response" {
+                std::process::exit(0);
+            }
         })
         .unwrap();
 
