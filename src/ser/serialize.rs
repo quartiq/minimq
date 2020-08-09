@@ -1,8 +1,5 @@
 use crate::{
-    Property,
-    minimq::MessageType,
-    mqtt_client::ProtocolError as Error,
-    ser::ReversedPacketWriter,
+    minimq::MessageType, mqtt_client::ProtocolError as Error, ser::ReversedPacketWriter, Property,
 };
 
 pub fn integer_size(value: usize) -> usize {
@@ -19,7 +16,12 @@ pub fn integer_size(value: usize) -> usize {
     }
 }
 
-pub fn connect_message<'a, 'b>(dest: &'b mut [u8], client_id: &[u8], keep_alive: u16, properties: &[Property<'a>]) -> Result<&'b [u8], Error> {
+pub fn connect_message<'a, 'b>(
+    dest: &'b mut [u8],
+    client_id: &[u8],
+    keep_alive: u16,
+    properties: &[Property<'a>],
+) -> Result<&'b [u8], Error> {
     for i in 0..client_id.len() {
         if !(client_id[i] - 0x30 <=  9 || // 0-9
              client_id[i] - 0x41 <= 25 || // A-Z
@@ -33,7 +35,7 @@ pub fn connect_message<'a, 'b>(dest: &'b mut [u8], client_id: &[u8], keep_alive:
     // Validate the properties for this packet.
     for property in properties {
         match property {
-            _ => return Err(Error::InvalidProperty)
+            _ => return Err(Error::InvalidProperty),
         }
     }
 
@@ -53,15 +55,19 @@ pub fn connect_message<'a, 'b>(dest: &'b mut [u8], client_id: &[u8], keep_alive:
     packet.finalize(MessageType::Connect, 0)
 }
 
-pub fn publish_message<'a, 'b, 'c>(dest: &'b mut [u8], topic: &'a str, payload: &[u8], properties: &[Property<'c>]) -> Result<&'b [u8], Error> {
+pub fn publish_message<'a, 'b, 'c>(
+    dest: &'b mut [u8],
+    topic: &'a str,
+    payload: &[u8],
+    properties: &[Property<'c>],
+) -> Result<&'b [u8], Error> {
     // Validate the properties for this packet.
     for property in properties {
         match property {
-            Property::ResponseTopic(_) => {
-            },
+            Property::ResponseTopic(_) => {}
             _ => {
                 return Err(Error::InvalidProperty);
-            },
+            }
         };
     }
 
@@ -84,14 +90,14 @@ pub fn subscribe_message<'a, 'b, 'c>(
     dest: &'c mut [u8],
     topic: &'b str,
     packet_id: u16,
-    properties: &[Property<'a>]
+    properties: &[Property<'a>],
 ) -> Result<&'c [u8], Error> {
     // Validate the properties for this packet.
     for property in properties {
         match property {
             _ => {
                 return Err(Error::InvalidProperty);
-            },
+            }
         }
     }
 
@@ -156,7 +162,13 @@ pub fn serialize_publish_with_properties() {
 
     let mut buffer: [u8; 900] = [0; 900];
     let payload: [u8; 2] = [0xAB, 0xCD];
-    let message = publish_message(&mut buffer, "ABC", &payload, &[Property::ResponseTopic("A")]).unwrap();
+    let message = publish_message(
+        &mut buffer,
+        "ABC",
+        &payload,
+        &[Property::ResponseTopic("A")],
+    )
+    .unwrap();
 
     assert_eq!(message, good_publish);
 }

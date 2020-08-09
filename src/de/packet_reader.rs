@@ -1,11 +1,11 @@
 use crate::minimq::MessageType;
 use crate::mqtt_client::ProtocolError as Error;
-use bit_field::BitField;
 use crate::Property;
+use bit_field::BitField;
 
 use generic_array::{ArrayLength, GenericArray};
 
-use heapless::{Vec, consts};
+use heapless::{consts, Vec};
 
 const FIXED_HEADER_MAX: usize = 5; // type/flags + remaining length
 
@@ -149,8 +149,8 @@ where
             return Err(Error::DataSize);
         }
 
-        Ok(core::str::from_utf8(self.read_borrowed(string_length)?).map_err(|_|
-                    Error::MalformedPacket)?)
+        Ok(core::str::from_utf8(self.read_borrowed(string_length)?)
+            .map_err(|_| Error::MalformedPacket)?)
     }
 
     pub fn read_binary_data(&self) -> Result<&[u8], Error> {
@@ -186,7 +186,9 @@ where
         while properties_size - property_bytes_processed > 0 {
             let property = Property::parse(self)?;
             property_bytes_processed += property.size();
-            properties.push(property).map_err(|_| Error::MalformedPacket)?;
+            properties
+                .push(property)
+                .map_err(|_| Error::MalformedPacket)?;
         }
 
         if properties_size != property_bytes_processed {

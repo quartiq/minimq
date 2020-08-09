@@ -1,13 +1,10 @@
+pub use crate::properties::Property;
 use crate::{
-    de::{
-        deserialize::ReceivedPacket,
-        PacketReader,
-    },
+    de::{deserialize::ReceivedPacket, PacketReader},
     ser::serialize,
     session_state::SessionState,
 };
-pub use crate::properties::Property;
-use log::{debug, info, warn, error};
+use log::{debug, error, info, warn};
 
 use embedded_nal::{Mode, SocketAddr};
 
@@ -124,21 +121,28 @@ where
         }
     }
 
-    pub fn subscribe<'a, 'b>(&self, topic: &'a str, _properties: &[Property<'b>]) -> Result<(), Error<N::Error>> {
-
+    pub fn subscribe<'a, 'b>(
+        &self,
+        topic: &'a str,
+        _properties: &[Property<'b>],
+    ) -> Result<(), Error<N::Error>> {
         let mut state = self.state.borrow_mut();
         let packet_id = state.get_packet_identifier();
 
         let mut buffer = self.transmit_buffer.borrow_mut();
-        let packet = serialize::subscribe_message(&mut buffer, topic, packet_id, &[]).map_err(|e| Error::Protocol(e))?;
+        let packet = serialize::subscribe_message(&mut buffer, topic, packet_id, &[])
+            .map_err(|e| Error::Protocol(e))?;
 
         match self.write(packet) {
             Ok(_) => {
                 info!("Subscribing to `{}`: {}", topic, packet_id);
-                state.pending_subscriptions.push(packet_id).map_err(|_| Error::Unsupported)?;
+                state
+                    .pending_subscriptions
+                    .push(packet_id)
+                    .map_err(|_| Error::Unsupported)?;
                 state.increment_packet_identifier();
                 Ok(())
-            },
+            }
             Err(e) => Err(e),
         }
     }
@@ -147,7 +151,13 @@ where
         self.state.borrow().pending_subscriptions.len() != 0
     }
 
-    pub fn publish<'a, 'b>(&self, topic: &'a str, data: &[u8], qos: QoS, properties: &[Property<'a>]) -> Result<(), Error<N::Error>> {
+    pub fn publish<'a, 'b>(
+        &self,
+        topic: &'a str,
+        data: &[u8],
+        qos: QoS,
+        properties: &[Property<'a>],
+    ) -> Result<(), Error<N::Error>> {
         // TODO: QoS support.
         assert!(qos == QoS::AtMostOnce);
 
@@ -156,7 +166,10 @@ where
             return Ok(());
         }
 
-        info!("Publishing to `{}`: {:?} Props: {:?}", topic, data, properties);
+        info!(
+            "Publishing to `{}`: {:?} Props: {:?}",
+            topic, data, properties
+        );
 
         let mut buffer = self.transmit_buffer.borrow_mut();
         let packet = serialize::publish_message(&mut buffer, topic, data, properties)
@@ -221,7 +234,7 @@ where
 
     fn handle_packet<'p, F>(&self, packet: ReceivedPacket<'p>, f: &F) -> Result<(), Error<N::Error>>
     where
-        for <'a> F: Fn(&Self, &'a str, &[u8], &[Property<'a>]),
+        for<'a> F: Fn(&Self, &'a str, &[u8], &[Property<'a>]),
     {
         let mut state = self.state.borrow_mut();
         if !state.connected {
@@ -243,7 +256,10 @@ where
             } else {
                 // It is a protocol error to receive anything else when not connected.
                 // TODO: Verify it is a protocol error.
-                error!("Received invalid packet outside of connected state: {:?}", packet);
+                error!(
+                    "Received invalid packet outside of connected state: {:?}",
+                    packet
+                );
                 return Err(Error::Protocol(ProtocolError::Invalid));
             }
         }
@@ -261,13 +277,15 @@ where
             }
 
             ReceivedPacket::SubAck(subscribe_acknowledge) => {
-                match state.pending_subscriptions.iter().position(
-                        |v| *v == subscribe_acknowledge.packet_identifier)
+                match state
+                    .pending_subscriptions
+                    .iter()
+                    .position(|v| *v == subscribe_acknowledge.packet_identifier)
                 {
                     None => {
                         error!("Got bad suback: {:?}", subscribe_acknowledge);
-                        return Err(Error::Protocol(ProtocolError::Invalid))
-                    },
+                        return Err(Error::Protocol(ProtocolError::Invalid));
+                    }
                     Some(index) => state.pending_subscriptions.swap_remove(index),
                 };
 
@@ -284,7 +302,7 @@ where
 
     pub fn poll<F>(&mut self, f: F) -> Result<(), Error<N::Error>>
     where
-        for <'a> F: Fn(&Self, &'a str, &[u8], &[Property<'a>]),
+        for<'a> F: Fn(&Self, &'a str, &[u8], &[Property<'a>]),
     {
         debug!("Polling MQTT interface");
 
@@ -307,7 +325,7 @@ where
                 Ok(count) => {
                     debug!("Processed {} bytes", count);
                     processed += count
-                },
+                }
 
                 Err(_) => {
                     // TODO: We should handle recoverable errors better.

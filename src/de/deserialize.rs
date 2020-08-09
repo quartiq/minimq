@@ -1,10 +1,10 @@
 use crate::de::PacketReader;
-use crate::minimq::{MessageType};
+use crate::minimq::MessageType;
 use crate::mqtt_client::ProtocolError as Error;
-use generic_array::ArrayLength;
 use crate::Property;
+use generic_array::ArrayLength;
 
-use heapless::{Vec, consts};
+use heapless::{consts, Vec};
 
 use bit_field::BitField;
 
@@ -91,7 +91,9 @@ fn parse_connack<T: ArrayLength<u8>>(p: &PacketReader<T>) -> Result<ConnAck, Err
     })
 }
 
-fn parse_publish<'a, 'reader: 'a, T: ArrayLength<u8>>(p: &'reader PacketReader<T>) -> Result<Pub<'a>, Error> {
+fn parse_publish<'a, 'reader: 'a, T: ArrayLength<u8>>(
+    p: &'reader PacketReader<T>,
+) -> Result<Pub<'a>, Error> {
     let topic = p.read_utf8_string()?;
 
     let properties = p.read_properties()?;

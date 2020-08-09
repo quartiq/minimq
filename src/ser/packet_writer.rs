@@ -87,12 +87,7 @@ impl<'a> ReversedPacketWriter<'a> {
         }
     }
 
-    fn write_fixed_header(
-        &mut self,
-        typ: MessageType,
-        flags: u8,
-        len: usize,
-    ) -> Result<(), Error> {
+    fn write_fixed_header(&mut self, typ: MessageType, flags: u8, len: usize) -> Result<(), Error> {
         // Write the remaining packet length.
         self.write_variable_length_integer(len)?;
 
@@ -108,7 +103,6 @@ impl<'a> ReversedPacketWriter<'a> {
     }
 
     pub fn write_properties<'b>(&mut self, properties: &[Property<'b>]) -> Result<(), Error> {
-
         let start_length = self.current_length();
 
         for property in properties {
