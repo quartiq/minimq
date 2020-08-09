@@ -9,7 +9,7 @@ use enum_iterator::IntoEnumIterator;
 use generic_array::ArrayLength;
 
 #[derive(Copy, Clone, IntoEnumIterator)]
-enum PropertyIdentifier {
+pub(crate) enum PropertyIdentifier {
     Invalid = -1,
 
     PayloadFormatIndicator = 0x01,
@@ -92,6 +92,46 @@ impl From<usize> for PropertyIdentifier {
 }
 
 impl<'a> Property<'a> {
+    pub(crate) fn id(&self) -> PropertyIdentifier {
+        match self {
+            Property::PayloadFormatIndicator(_) => PropertyIdentifier::PayloadFormatIndicator,
+            Property::MessageExpiryInterval(_) => PropertyIdentifier::MessageExpiryInterval,
+            Property::ContentType(_) => PropertyIdentifier::ContentType,
+            Property::ResponseTopic(_) => PropertyIdentifier::ResponseTopic,
+            Property::CorrelationData(_) => PropertyIdentifier::CorrelationData,
+            Property::SubscriptionIdentifier(_) => PropertyIdentifier::SubscriptionIdentifier,
+            Property::SessionExpiryInterval(_) => PropertyIdentifier::SessionExpiryInterval,
+            Property::AssignedClientIdentifier(_) => PropertyIdentifier::AssignedClientIdentifier,
+            Property::ServerKeepAlive(_) => PropertyIdentifier::ServerKeepAlive,
+            Property::AuthenticationMethod(_) => PropertyIdentifier::AuthenticationMethod,
+            Property::AuthenticationData(_) => PropertyIdentifier::AuthenticationData,
+            Property::RequestProblemInformation(_) => PropertyIdentifier::RequestProblemInformation,
+            Property::WillDelayInterval(_) => PropertyIdentifier::WillDelayInterval,
+            Property::RequestResponseInformation(_) => {
+                PropertyIdentifier::RequestResponseInformation
+            }
+            Property::ResponseInformation(_) => PropertyIdentifier::ResponseInformation,
+            Property::ServerReference(_) => PropertyIdentifier::ServerReference,
+            Property::ReasonString(_) => PropertyIdentifier::ReasonString,
+            Property::ReceiveMaximum(_) => PropertyIdentifier::ReceiveMaximum,
+            Property::TopicAliasMaximum(_) => PropertyIdentifier::TopicAliasMaximum,
+            Property::TopicAlias(_) => PropertyIdentifier::TopicAlias,
+            Property::MaximumQoS(_) => PropertyIdentifier::MaximumQoS,
+            Property::RetainAvailable(_) => PropertyIdentifier::RetainAvailable,
+            Property::UserProperty(_, _) => PropertyIdentifier::UserProperty,
+            Property::MaximumPacketSize(_) => PropertyIdentifier::MaximumPacketSize,
+            Property::WildcardSubscriptionAvailable(_) => {
+                PropertyIdentifier::WildcardSubscriptionAvailable
+            }
+            Property::SubscriptionIdentifierAvailable(_) => {
+                PropertyIdentifier::SubscriptionIdentifierAvailable
+            }
+            Property::SharedSubscriptionAvailable(_) => {
+                PropertyIdentifier::SharedSubscriptionAvailable
+            }
+        }
+    }
+
     pub(crate) fn parse<'reader: 'a, T: ArrayLength<u8>>(
         packet: &'reader PacketReader<T>,
     ) -> Result<Property<'a>, Error> {

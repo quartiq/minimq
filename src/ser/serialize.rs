@@ -1,5 +1,6 @@
 use crate::{
-    minimq::MessageType, mqtt_client::ProtocolError as Error, ser::ReversedPacketWriter, Property,
+    minimq::MessageType, mqtt_client::ProtocolError as Error, properties::PropertyIdentifier,
+    ser::ReversedPacketWriter, Property,
 };
 
 pub fn integer_size(value: usize) -> usize {
@@ -34,7 +35,17 @@ pub fn connect_message<'a, 'b>(
 
     // Validate the properties for this packet.
     for property in properties {
-        match property {
+        match property.id() {
+            PropertyIdentifier::SessionExpiryInterval
+            | PropertyIdentifier::AuthenticationMethod
+            | PropertyIdentifier::AuthenticationData
+            | PropertyIdentifier::RequestProblemInformation
+            | PropertyIdentifier::RequestResponseInformation
+            | PropertyIdentifier::ReceiveMaximum
+            | PropertyIdentifier::TopicAliasMaximum
+            | PropertyIdentifier::UserProperty
+            | PropertyIdentifier::MaximumPacketSize => {}
+
             _ => return Err(Error::InvalidProperty),
         }
     }
@@ -63,8 +74,14 @@ pub fn publish_message<'a, 'b, 'c>(
 ) -> Result<&'b [u8], Error> {
     // Validate the properties for this packet.
     for property in properties {
-        match property {
-            Property::ResponseTopic(_) => {}
+        match property.id() {
+            PropertyIdentifier::ResponseTopic
+            | PropertyIdentifier::PayloadFormatIndicator
+            | PropertyIdentifier::MessageExpiryInterval
+            | PropertyIdentifier::ContentType
+            | PropertyIdentifier::CorrelationData
+            | PropertyIdentifier::SubscriptionIdentifier
+            | PropertyIdentifier::TopicAlias => {}
             _ => {
                 return Err(Error::InvalidProperty);
             }
@@ -94,7 +111,8 @@ pub fn subscribe_message<'a, 'b, 'c>(
 ) -> Result<&'c [u8], Error> {
     // Validate the properties for this packet.
     for property in properties {
-        match property {
+        match property.id() {
+            PropertyIdentifier::SubscriptionIdentifier => {}
             _ => {
                 return Err(Error::InvalidProperty);
             }
