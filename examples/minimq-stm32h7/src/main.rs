@@ -220,7 +220,7 @@ const APP: () = {
                 client.publish("temperature", &temperature.into_bytes(), QoS::AtMostOnce, &[]).unwrap();
             }
 
-            match client.poll(|_client, topic, message| {
+            match client.poll(|_client, topic, message, _properties| {
                 match topic {
                     _ => info!("On '{:?}', received: {:?}", topic, message),
                 }

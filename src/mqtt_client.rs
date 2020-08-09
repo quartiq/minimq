@@ -4,7 +4,7 @@ use crate::{
     ser::serialize,
     session_state::SessionState,
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 
 use embedded_nal::{Mode, SocketAddr};
 
@@ -28,6 +28,7 @@ where
     state: RefCell<SessionState>,
     packet_reader: PacketReader<T>,
     transmit_buffer: RefCell<GenericArray<u8, T>>,
+    connect_sent: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -41,6 +42,7 @@ pub enum QoS {
 pub enum Error<E> {
     Network(E),
     WriteFail,
+    NotReady,
     Disconnected,
     Unsupported,
     Failed(u8),
@@ -90,6 +92,7 @@ where
             state: RefCell::new(SessionState::new(broker, client_id)),
             transmit_buffer: RefCell::new(GenericArray::default()),
             packet_reader: PacketReader::new(),
+            connect_sent: false,
         };
 
         client.reset()?;
@@ -164,7 +167,7 @@ where
         assert!(qos == QoS::AtMostOnce);
 
         // If the socket is not connected, we can't do anything.
-        if self.socket_is_connected()? == false {
+        if self.socket_can_communicate()? == false {
             return Ok(());
         }
 
@@ -179,7 +182,7 @@ where
         self.write(packet)
     }
 
-    fn socket_is_connected(&self) -> Result<bool, N::Error> {
+    fn socket_can_communicate(&self) -> Result<bool, N::Error> {
         let mut socket_ref = self.socket.borrow_mut();
         let socket = socket_ref.take().unwrap();
 
@@ -191,11 +194,15 @@ where
     }
 
     fn reset(&mut self) -> Result<(), Error<N::Error>> {
-        // TODO: Handle connection failures?
-
-        self.connect_socket(true)?;
         self.state.borrow_mut().reset();
         self.packet_reader.reset();
+        self.connect_sent = false;
+
+        Ok(())
+    }
+
+    fn connect_to_broker(&mut self) -> Result<(), Error<N::Error>> {
+        self.reset()?;
 
         let mut buffer = self.transmit_buffer.borrow_mut();
         let packet = serialize::connect_message(
@@ -209,29 +216,7 @@ where
         .map_err(|e| Error::Protocol(e))?;
         self.write(packet)?;
 
-        Ok(())
-    }
-
-    fn connect_socket(&mut self, new_socket: bool) -> Result<(), Error<N::Error>> {
-        let mut socket_ref = self.socket.borrow_mut();
-        let socket = socket_ref.take().unwrap();
-
-        // Close the socket. We need to reset the socket state.
-        let socket = if new_socket {
-            self.network_stack.close(socket)?;
-            self.network_stack.open(Mode::NonBlocking)?
-        } else {
-            socket
-        };
-
-        // Connect to the broker's TCP port with a new socket.
-        // TODO: Limit the time between connect attempts to prevent network spam.
-        let socket = self
-            .network_stack
-            .connect(socket, SocketAddr::new(self.state.borrow().broker, 1883))?;
-
-        // Store the new socket for future use.
-        socket_ref.replace(socket);
+        self.connect_sent = true;
 
         Ok(())
     }
@@ -318,6 +303,22 @@ where
         }
     }
 
+    fn connect_socket(&mut self) -> Result<(), Error<N::Error>> {
+        let mut socket_ref = self.socket.borrow_mut();
+        let socket = socket_ref.take().unwrap();
+
+        // Connect to the broker's TCP port with a new socket.
+        // TODO: Limit the time between connect attempts to prevent network spam.
+        let socket = self
+            .network_stack
+            .connect(socket, SocketAddr::new(self.state.borrow().broker, 1883))?;
+
+        // Store the new socket for future use.
+        socket_ref.replace(socket);
+
+        Ok(())
+    }
+
     pub fn poll<F>(&mut self, f: F) -> Result<(), Error<N::Error>>
     where
         for<'a> F: Fn(&Self, &'a str, &[u8], &[Property<'a>]),
@@ -325,10 +326,16 @@ where
         debug!("Polling MQTT interface");
 
         // If the socket is not connected, we can't do anything.
-        if self.socket_is_connected()? == false {
-            // TODO: Handle a session timeout.
-            warn!("Socket disconnected");
-            self.reset()?;
+        if self.socket_can_communicate()? == false {
+            self.connect_socket()?;
+            return Ok(());
+        }
+
+        // If we are not yet connected to the MQTT broker, we can't do anything.
+        if !self.state.borrow().connected {
+            if !self.connect_sent {
+                self.connect_to_broker()?;
+            }
 
             return Ok(());
         }
