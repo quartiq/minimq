@@ -4,6 +4,7 @@ use nb;
 use heapless::{consts, Vec};
 
 use super::{net, NetworkInterface};
+use minimq::embedded_nal;
 
 #[derive(Debug)]
 pub enum NetworkError {

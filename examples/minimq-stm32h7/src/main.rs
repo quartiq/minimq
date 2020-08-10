@@ -20,7 +20,10 @@ use rtic::cyccnt::{Instant, U32Ext};
 
 mod tcp_stack;
 
-use minimq::{MqttClient, QoS, embedded_nal::{IpAddr, Ipv4Addr}};
+use minimq::{
+    embedded_nal::{IpAddr, Ipv4Addr},
+    MqttClient, QoS,
+};
 use tcp_stack::NetworkStack;
 
 pub struct NetStorage {

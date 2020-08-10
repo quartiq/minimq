@@ -24,9 +24,6 @@ serde-json-core = "0.1"
 [dependencies.minimq]
 path = "../../"
 
-[dependencies.embedded-nal]
-git = "https://github.com/thejpster/embedded-nal"
-
 [dependencies.smoltcp]
 version = "0.6.0"
 default-features = false
