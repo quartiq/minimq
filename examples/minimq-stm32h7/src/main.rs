@@ -4,18 +4,11 @@
 #[macro_use]
 extern crate log;
 
-
-use stm32h7_ethernet as ethernet;
 use smoltcp as net;
-use stm32h7xx_hal::{
-    gpio::Speed,
-    prelude::*
-};
+use stm32h7_ethernet as ethernet;
+use stm32h7xx_hal::{gpio::Speed, prelude::*};
 
-use heapless::{
-    String,
-    consts,
-};
+use heapless::{consts, String};
 use si7021::Si7021;
 
 use cortex_m;
@@ -27,7 +20,7 @@ use rtic::cyccnt::{Instant, U32Ext};
 
 mod tcp_stack;
 
-use minimq::mqtt_client::{QoS, MqttClient, IpAddr, Ipv4Addr};
+use minimq::mqtt_client::{IpAddr, Ipv4Addr, MqttClient, QoS};
 use tcp_stack::NetworkStack;
 
 pub struct NetStorage {
@@ -37,11 +30,13 @@ pub struct NetStorage {
 
 static mut NET_STORE: NetStorage = NetStorage {
     // Placeholder for the real IP address, which is initialized at runtime.
-    ip_addrs: [net::wire::IpCidr::Ipv6(net::wire::Ipv6Cidr::SOLICITED_NODE_PREFIX)],
+    ip_addrs: [net::wire::IpCidr::Ipv6(
+        net::wire::Ipv6Cidr::SOLICITED_NODE_PREFIX,
+    )],
     neighbor_cache: [None; 8],
 };
 
-#[link_section=".sram3.eth"]
+#[link_section = ".sram3.eth"]
 static mut DES_RING: ethernet::DesRing = ethernet::DesRing::new();
 
 #[derive(Serialize, Deserialize)]
@@ -49,8 +44,8 @@ struct Temperature {
     temperature_c: f32,
 }
 
-type NetworkInterface = net::iface::EthernetInterface<'static, 'static, 'static,
-     ethernet::EthernetDMA<'static>>;
+type NetworkInterface =
+    net::iface::EthernetInterface<'static, 'static, 'static, ethernet::EthernetDMA<'static>>;
 
 macro_rules! add_socket {
     ($sockets:ident, $tx_storage:ident, $rx_storage:ident) => {
@@ -65,7 +60,7 @@ macro_rules! add_socket {
         };
 
         let _handle = $sockets.add(tcp_socket);
-    }
+    };
 }
 
 #[cfg(not(feature = "semihosting"))]
@@ -91,7 +86,6 @@ fn init_log() {
 
 #[rtic::app(device = stm32h7xx_hal::stm32, peripherals = true, monotonic = rtic::cyccnt::CYCCNT)]
 const APP: () = {
-
     struct Resources {
         net_interface: NetworkInterface,
         si7021: Si7021<stm32h7xx_hal::i2c::I2c<stm32h7xx_hal::stm32::I2C2>>,
@@ -99,7 +93,6 @@ const APP: () = {
 
     #[init]
     fn init(c: init::Context) -> init::LateResources {
-
         let mut cp = cortex_m::Peripherals::take().unwrap();
         cp.DWT.enable_cycle_counter();
 
@@ -143,11 +136,13 @@ const APP: () = {
         let net_interface = {
             let mac_addr = net::wire::EthernetAddress([0xAC, 0x6F, 0x7A, 0xDE, 0xD6, 0xC8]);
             let (eth_dma, _eth_mac) = unsafe {
-                ethernet::ethernet_init(c.device.ETHERNET_MAC,
-                        c.device.ETHERNET_MTL,
-                        c.device.ETHERNET_DMA,
-                        &mut DES_RING,
-                        mac_addr.clone())
+                ethernet::ethernet_init(
+                    c.device.ETHERNET_MAC,
+                    c.device.ETHERNET_MTL,
+                    c.device.ETHERNET_DMA,
+                    &mut DES_RING,
+                    mac_addr.clone(),
+                )
             };
 
             unsafe { ethernet::enable_interrupt() }
@@ -169,8 +164,12 @@ const APP: () = {
         let si7021 = {
             let i2c_sda = gpiof.pf0.into_open_drain_output().into_alternate_af4();
             let i2c_scl = gpiof.pf1.into_open_drain_output().into_alternate_af4();
-            let i2c = c.device.I2C2.i2c((i2c_scl, i2c_sda), 100.khz(), ccdr.peripheral.I2C2,
-                    &ccdr.clocks);
+            let i2c = c.device.I2C2.i2c(
+                (i2c_scl, i2c_sda),
+                100.khz(),
+                ccdr.peripheral.I2C2,
+                &ccdr.clocks,
+            );
 
             Si7021::new(i2c)
         };
@@ -188,7 +187,6 @@ const APP: () = {
 
     #[idle(resources=[net_interface, si7021])]
     fn idle(c: idle::Context) -> ! {
-
         let mut time: u32 = 0;
         let mut next_ms = Instant::now();
 
@@ -199,8 +197,12 @@ const APP: () = {
         add_socket!(sockets, rx_storage, tx_storage);
 
         let tcp_stack = NetworkStack::new(c.resources.net_interface, sockets);
-        let mut client = MqttClient::<_, consts::U256>::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), "nucleo",
-                tcp_stack).unwrap();
+        let mut client = MqttClient::<_, consts::U256>::new(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            "nucleo",
+            tcp_stack,
+        )
+        .unwrap();
 
         loop {
             let tick = Instant::now() > next_ms;
@@ -211,30 +213,30 @@ const APP: () = {
             }
 
             if tick && (time % 1000) == 0 {
-                client.publish("nucleo", "Hello, World!".as_bytes(), QoS::AtMostOnce, &[]).unwrap();
+                client
+                    .publish("nucleo", "Hello, World!".as_bytes(), QoS::AtMostOnce, &[])
+                    .unwrap();
 
                 let temperature = Temperature {
-                    temperature_c: c.resources.si7021.temperature_celsius().unwrap()
+                    temperature_c: c.resources.si7021.temperature_celsius().unwrap(),
                 };
-                let temperature: String<consts::U256> = serde_json_core::to_string(&temperature).unwrap();
-                client.publish("temperature", &temperature.into_bytes(), QoS::AtMostOnce, &[]).unwrap();
+                let temperature: String<consts::U256> =
+                    serde_json_core::to_string(&temperature).unwrap();
+                client
+                    .publish(
+                        "temperature",
+                        &temperature.into_bytes(),
+                        QoS::AtMostOnce,
+                        &[],
+                    )
+                    .unwrap();
             }
 
-            match client.poll(|_client, topic, message, _properties| {
-                match topic {
+            client
+                .poll(|_client, topic, message, _properties| match topic {
                     _ => info!("On '{:?}', received: {:?}", topic, message),
-                }
-            }) {
-                Ok(_) => {
-                    // Nothing to do.
-                }
-                Err(minimq::mqtt_client::Error::Disconnected) => {
-                    // Resubscribe to any relevant topics.
-                }
-                Err(e) => {
-                    info!("{:?}", e);
-                }
-            };
+                })
+                .unwrap();
 
             // Update the TCP stack.
             let sleep = client.network_stack.update(time);
@@ -246,7 +248,7 @@ const APP: () = {
     }
 
     #[task(binds=ETH)]
-    fn eth(_: eth::Context)  {
+    fn eth(_: eth::Context) {
         unsafe { ethernet::interrupt_handler() }
     }
 };

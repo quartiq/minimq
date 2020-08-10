@@ -1,10 +1,7 @@
 use core::cell::RefCell;
 use nb;
 
-use heapless::{
-    Vec,
-    consts,
-};
+use heapless::{consts, Vec};
 
 use super::{net, NetworkInterface};
 
@@ -26,8 +23,10 @@ pub struct NetworkStack<'a, 'b, 'c, 'n> {
 }
 
 impl<'a, 'b, 'c, 'n> NetworkStack<'a, 'b, 'c, 'n> {
-    pub fn new(interface: &'n mut NetworkInterface, sockets: net::socket::SocketSet<'a, 'b, 'c>) -> Self {
-
+    pub fn new(
+        interface: &'n mut NetworkInterface,
+        sockets: net::socket::SocketSet<'a, 'b, 'c>,
+    ) -> Self {
         let mut unused_handles: Vec<net::socket::SocketHandle, consts::U16> = Vec::new();
         for socket in sockets.iter() {
             unused_handles.push(socket.handle()).unwrap();
@@ -43,11 +42,14 @@ impl<'a, 'b, 'c, 'n> NetworkStack<'a, 'b, 'c, 'n> {
 
     pub fn update(&mut self, time: u32) -> bool {
         match self.network_interface.poll(
-                &mut self.sockets.borrow_mut(),
-                net::time::Instant::from_millis(time as i64)) {
+            &mut self.sockets.borrow_mut(),
+            net::time::Instant::from_millis(time as i64),
+        ) {
             Ok(changed) => changed == false,
-            Err(net::Error::Unrecognized) => true,
-            Err(_) => true,
+            Err(e) => {
+                info!("{:?}", e);
+                true
+            }
         }
     }
 
@@ -56,11 +58,7 @@ impl<'a, 'b, 'c, 'n> NetworkStack<'a, 'b, 'c, 'n> {
         let current_port = self.next_port.borrow().clone();
 
         let (next, wrap) = self.next_port.borrow().overflowing_add(1);
-        *self.next_port.borrow_mut() = if wrap {
-            49152
-        } else {
-            next
-        };
+        *self.next_port.borrow_mut() = if wrap { 49152 } else { next };
 
         return current_port;
     }
@@ -71,7 +69,6 @@ impl<'a, 'b, 'c, 'n> embedded_nal::TcpStack for NetworkStack<'a, 'b, 'c, 'n> {
     type Error = NetworkError;
 
     fn open(&self, _mode: embedded_nal::Mode) -> Result<Self::TcpSocket, Self::Error> {
-
         // TODO: Handle mode?
         match self.unused_handles.borrow_mut().pop() {
             Some(handle) => {
@@ -81,12 +78,16 @@ impl<'a, 'b, 'c, 'n> embedded_nal::TcpStack for NetworkStack<'a, 'b, 'c, 'n> {
                 internal_socket.abort();
 
                 Ok(handle)
-            },
+            }
             None => Err(NetworkError::NoSocket),
         }
     }
 
-    fn connect(&self, socket: Self::TcpSocket, remote: embedded_nal::SocketAddr) -> Result<Self::TcpSocket, Self::Error> {
+    fn connect(
+        &self,
+        socket: Self::TcpSocket,
+        remote: embedded_nal::SocketAddr,
+    ) -> Result<Self::TcpSocket, Self::Error> {
         // TODO: Handle socket mode?
 
         let mut sockets = self.sockets.borrow_mut();
@@ -103,16 +104,20 @@ impl<'a, 'b, 'c, 'n> embedded_nal::TcpStack for NetworkStack<'a, 'b, 'c, 'n> {
                     let octets = addr.octets();
                     net::wire::Ipv4Address::new(octets[0], octets[1], octets[2], octets[3])
                 };
-                internal_socket.connect((address, remote.port()), self.get_ephemeral_port())
+                internal_socket
+                    .connect((address, remote.port()), self.get_ephemeral_port())
                     .map_err(|_| NetworkError::ConnectionFailure)?;
-            },
+            }
             embedded_nal::IpAddr::V6(addr) => {
                 let address = {
                     let octets = addr.segments();
-                    net::wire::Ipv6Address::new(octets[0], octets[1], octets[2], octets[3], octets[4],
-                                                  octets[5], octets[6], octets[7])
+                    net::wire::Ipv6Address::new(
+                        octets[0], octets[1], octets[2], octets[3], octets[4], octets[5],
+                        octets[6], octets[7],
+                    )
                 };
-                internal_socket.connect((address, remote.port()), self.get_ephemeral_port())
+                internal_socket
+                    .connect((address, remote.port()), self.get_ephemeral_port())
                     .map_err(|_| NetworkError::ConnectionFailure)?;
             }
         };
@@ -141,7 +146,11 @@ impl<'a, 'b, 'c, 'n> embedded_nal::TcpStack for NetworkStack<'a, 'b, 'c, 'n> {
         }
     }
 
-    fn read(&self, socket: &mut Self::TcpSocket, buffer: &mut [u8]) -> nb::Result<usize, Self::Error> {
+    fn read(
+        &self,
+        socket: &mut Self::TcpSocket,
+        buffer: &mut [u8],
+    ) -> nb::Result<usize, Self::Error> {
         // TODO: Handle the socket mode.
 
         let mut sockets = self.sockets.borrow_mut();

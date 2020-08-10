@@ -167,7 +167,7 @@ where
         assert!(qos == QoS::AtMostOnce);
 
         // If the socket is not connected, we can't do anything.
-        if self.socket_can_communicate()? == false {
+        if self.socket_is_connected()? == false {
             return Ok(());
         }
 
@@ -182,7 +182,7 @@ where
         self.write(packet)
     }
 
-    fn socket_can_communicate(&self) -> Result<bool, N::Error> {
+    fn socket_is_connected(&self) -> Result<bool, N::Error> {
         let mut socket_ref = self.socket.borrow_mut();
         let socket = socket_ref.take().unwrap();
 
@@ -214,6 +214,7 @@ where
             )],
         )
         .map_err(|e| Error::Protocol(e))?;
+
         self.write(packet)?;
 
         self.connect_sent = true;
@@ -326,17 +327,15 @@ where
         debug!("Polling MQTT interface");
 
         // If the socket is not connected, we can't do anything.
-        if self.socket_can_communicate()? == false {
+        if self.socket_is_connected()? == false {
+            self.reset()?;
             self.connect_socket()?;
             return Ok(());
         }
 
-        // If we are not yet connected to the MQTT broker, we can't do anything.
-        if !self.state.borrow().connected {
-            if !self.connect_sent {
-                self.connect_to_broker()?;
-            }
-
+        // Connect to the MQTT broker.
+        if !self.connect_sent {
+            self.connect_to_broker()?;
             return Ok(());
         }
 
