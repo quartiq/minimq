@@ -1,10 +1,18 @@
 [package]
 name = "minimq"
 version = "0.1.0"
-authors = ["Max Rottenkolber <max@mr.gy>"]
+authors = ["Ryan Summers <ryan.summers@vertigo-designs.com>", "Max Rottenkolber <max@mr.gy>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "A minimal MQTT5 client designed for no_std platforms"
+homepage = "https://github.com/quartiq/minimq"
+repository = "https://github.com/quartiq/minimq"
+documentation = "https://docs.rs//minimq"
+
+readme = "README.md"
+categories = ["embedded", "no-std", "database", "encoding"]
+keywords = ["mqtt", "embedded", "client"]
+license = "MIT"
 
 [dependencies]
 bit_field = "0.10.0"
@@ -12,7 +20,10 @@ enum-iterator = "0.6.0"
 nb = "0.1.2"
 heapless = "0.5.5"
 generic-array = "0.14.3"
-log = "0.4"
+log = {version = "0.4", optional = true}
+
+[features]
+logging = ["log"]
 
 [dev-dependencies]
 env_logger = "0.7"

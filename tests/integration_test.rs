@@ -1,4 +1,4 @@
-use minimq::mqtt_client::{consts, MqttClient, Property, QoS};
+use minimq::{consts, MqttClient, Property, QoS};
 
 use nb;
 use std::cell::RefCell;
@@ -130,11 +130,10 @@ fn main() -> std::io::Result<()> {
     let stack = StandardStack::new();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
     let mut client =
-        MqttClient::<_, consts::U256>::new(localhost, "IntegrationTest", stack).unwrap();
+        MqttClient::<consts::U256, _>::new(localhost, "IntegrationTest", stack).unwrap();
 
     let mut published = false;
-    client.subscribe("response", &[]).unwrap();
-    client.subscribe("request", &[]).unwrap();
+    let mut subscribed = false;
 
     loop {
         client
@@ -156,15 +155,23 @@ fn main() -> std::io::Result<()> {
             })
             .unwrap();
 
-        if client.subscriptions_pending() == false {
-            if !published {
-                println!("PUBLISH request");
-                let properties = [Property::ResponseTopic("response")];
-                client
-                    .publish("request", "Ping".as_bytes(), QoS::AtMostOnce, &properties)
-                    .unwrap();
+        if !subscribed {
+            if client.is_connected() {
+                client.subscribe("response", &[]).unwrap();
+                client.subscribe("request", &[]).unwrap();
+                subscribed = true;
+            }
+        } else {
+            if client.subscriptions_pending() == false {
+                if !published {
+                    println!("PUBLISH request");
+                    let properties = [Property::ResponseTopic("response")];
+                    client
+                        .publish("request", "Ping".as_bytes(), QoS::AtMostOnce, &properties)
+                        .unwrap();
 
-                published = true;
+                    published = true;
+                }
             }
         }
     }

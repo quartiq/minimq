@@ -1,12 +1,9 @@
-use crate::de::PacketReader;
-use crate::minimq::MessageType;
-use crate::mqtt_client::ProtocolError as Error;
-use crate::Property;
-use generic_array::ArrayLength;
-
-use heapless::{consts, Vec};
-
+use crate::{
+    de::PacketReader, message_types::MessageType, mqtt_client::ProtocolError as Error, Property,
+};
 use bit_field::BitField;
+use generic_array::ArrayLength;
+use heapless::{consts, Vec};
 
 #[derive(Debug)]
 pub struct ConnAck<'a> {

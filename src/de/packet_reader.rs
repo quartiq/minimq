@@ -1,10 +1,10 @@
-use crate::minimq::MessageType;
-use crate::mqtt_client::ProtocolError as Error;
-use crate::Property;
+use crate::{
+    message_types::MessageType,
+    mqtt_client::ProtocolError as Error,
+    Property, {debug, warn},
+};
 use bit_field::BitField;
-
 use generic_array::{ArrayLength, GenericArray};
-
 use heapless::{consts, Vec};
 
 const FIXED_HEADER_MAX: usize = 5; // type/flags + remaining length
@@ -100,18 +100,6 @@ where
         Ok(borrowed_data)
     }
 
-    pub fn skip(&self, bytes: usize) -> Result<(), Error> {
-        let mut index = self.index.borrow_mut();
-
-        if *index + bytes > self.buffer.len() {
-            return Err(Error::DataSize);
-        }
-
-        *index += bytes;
-
-        Ok(())
-    }
-
     pub fn len(&self) -> Result<usize, Error> {
         Ok(self.packet_length()? - *self.index.borrow())
     }
@@ -131,7 +119,7 @@ where
             }
         }
 
-        log::warn!("Encountered invalid variable integer");
+        warn!("Encountered invalid variable integer");
         Err(Error::MalformedInteger)
     }
 
@@ -202,11 +190,6 @@ where
         Ok(properties)
     }
 
-    pub fn message_type(&self) -> MessageType {
-        assert!(self.buffer.len() > 0);
-        MessageType::from(self.buffer[0].get_bits(4..7))
-    }
-
     pub fn packet_length(&self) -> Result<usize, Error> {
         if let Some(packet_length) = self.packet_length {
             Ok(packet_length)
@@ -224,7 +207,7 @@ where
 
     pub fn pop_packet(&mut self) -> Result<(), Error> {
         let packet_length = self.packet_length()?;
-        log::debug!("Popping packet of {} bytes", packet_length);
+        debug!("Popping packet of {} bytes", packet_length);
 
         let move_length = self.read_bytes - packet_length;
 

@@ -1,6 +1,6 @@
 use crate::{
-    minimq::MessageType, mqtt_client::ProtocolError as Error, properties::PropertyIdentifier,
-    ser::ReversedPacketWriter, Property,
+    message_types::MessageType, mqtt_client::ProtocolError as Error,
+    properties::PropertyIdentifier, ser::ReversedPacketWriter, Property,
 };
 
 pub fn integer_size(value: usize) -> usize {
