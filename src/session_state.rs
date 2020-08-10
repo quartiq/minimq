@@ -1,4 +1,7 @@
-pub use embedded_nal::IpAddr;
+/// This module represents the session state of an MQTT communication session.
+///
+///
+use embedded_nal::IpAddr;
 use heapless::{consts, String, Vec};
 
 pub struct SessionState {

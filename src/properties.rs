@@ -5,7 +5,6 @@ use crate::{
 };
 
 use enum_iterator::IntoEnumIterator;
-
 use generic_array::ArrayLength;
 
 #[derive(Copy, Clone, IntoEnumIterator)]
@@ -48,6 +47,7 @@ pub(crate) enum PropertyIdentifier {
     SharedSubscriptionAvailable = 0x2A,
 }
 
+/// All of the possible properties that MQTT version 5 supports.
 #[derive(Debug)]
 pub enum Property<'a> {
     PayloadFormatIndicator(u8),

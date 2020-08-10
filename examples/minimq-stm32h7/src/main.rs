@@ -20,7 +20,7 @@ use rtic::cyccnt::{Instant, U32Ext};
 
 mod tcp_stack;
 
-use minimq::mqtt_client::{IpAddr, Ipv4Addr, MqttClient, QoS};
+use minimq::{MqttClient, QoS, embedded_nal::{IpAddr, Ipv4Addr}};
 use tcp_stack::NetworkStack;
 
 pub struct NetStorage {
@@ -176,9 +176,6 @@ const APP: () = {
 
         cp.SCB.enable_icache();
 
-        //let mut delay = stm32h7xx_hal::delay::Delay::new(cp.SYST, ccdr.clocks);
-        //delay.delay_ms(1000_u16);
-
         init::LateResources {
             net_interface: net_interface,
             si7021: si7021,
@@ -197,7 +194,7 @@ const APP: () = {
         add_socket!(sockets, rx_storage, tx_storage);
 
         let tcp_stack = NetworkStack::new(c.resources.net_interface, sockets);
-        let mut client = MqttClient::<_, consts::U256>::new(
+        let mut client = MqttClient::<consts::U256, _>::new(
             IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             "nucleo",
             tcp_stack,

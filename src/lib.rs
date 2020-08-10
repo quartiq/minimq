@@ -31,12 +31,9 @@
 //! ```ignore
 //! use minimq::{MqttClient, consts, QoS, embedded_nal::{IpAddr, Ipv4Addr}};
 //!
-//! let tcp_stack = ();
-//!
 //! // Construct an MQTT client with a maximum packet size of 256 bytes.
-//! // Connect to a broker at 192.168.0.254
-//! // Use a client ID of "test-client"
-//! let client: MqttClient<consts::U256, _>  = MqttClient::new(
+//! // Connect to a broker at 192.168.0.254. Use a client ID of "test-client".
+//! let client: MqttClient<consts::U256, _> = MqttClient::new(
 //!         IpAddr::V4(Ipv4Addr::new(192, 168, 0, 254)),
 //!         "test-client",
 //!         tcp_stack).unwrap();
@@ -79,8 +76,10 @@ pub use mqtt_client::{Error, MqttClient, ProtocolError, QoS};
 #[cfg(feature = "logging")]
 pub(crate) use log::{debug, error, info, warn};
 
+#[doc(hidden)]
 #[cfg(not(feature = "logging"))]
 mod mqtt_log {
+    #[doc(hidden)]
     #[macro_export]
     macro_rules! debug {
         ($($arg:tt)+) => {
@@ -88,6 +87,7 @@ mod mqtt_log {
         };
     }
 
+    #[doc(hidden)]
     #[macro_export]
     macro_rules! info {
         ($($arg:tt)+) => {
@@ -95,6 +95,7 @@ mod mqtt_log {
         };
     }
 
+    #[doc(hidden)]
     #[macro_export]
     macro_rules! warn {
         ($($arg:tt)+) => {
@@ -102,6 +103,7 @@ mod mqtt_log {
         };
     }
 
+    #[doc(hidden)]
     #[macro_export]
     macro_rules! error {
         ($($arg:tt)+) => {

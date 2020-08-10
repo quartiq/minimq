@@ -7,27 +7,9 @@ use bit_field::BitField;
 use generic_array::{ArrayLength, GenericArray};
 use heapless::{consts, Vec};
 
-const FIXED_HEADER_MAX: usize = 5; // type/flags + remaining length
-
-// TODO: Refactor to remove this.
-fn parse_variable_byte_integer(int: &[u8]) -> Option<(usize, usize)> {
-    let len = if int.len() >= 1 && (int[0] & 0b1000_0000) == 0 {
-        1
-    } else if int.len() >= 2 && (int[1] & 0b1000_0000) == 0 {
-        2
-    } else if int.len() >= 3 && (int[2] & 0b1000_0000) == 0 {
-        3
-    } else if int.len() >= 4 && (int[3] & 0b1000_0000) == 0 {
-        4
-    } else {
-        return None;
-    };
-    let mut acc = 0;
-    for i in 0..len {
-        acc += ((int[i] & 0b0111_1111) as usize) << i * 7;
-    }
-    Some((acc, len))
-}
+// The maximum size of the fixed header. This is calculated as the type+flag byte and the maximum
+// variable length integer size (4).
+const FIXED_HEADER_MAX: usize = 5;
 
 pub(crate) struct PacketReader<T: ArrayLength<u8>> {
     pub buffer: GenericArray<u8, T>,
@@ -263,9 +245,30 @@ where
             return None;
         }
 
-        self.packet_length = match parse_variable_byte_integer(&self.buffer[1..self.read_bytes]) {
-            Some((rlen, nbytes)) => Some(1 + nbytes + rlen),
-            None => None,
+        // Attempt to parse a variable byte integer out of the currently available data.
+        self.packet_length = if let Some((rlen, nbytes)) = {
+            let int = &self.buffer[1..self.read_bytes];
+
+            let len = if int.len() >= 1 && (int[0] & 0b1000_0000) == 0 {
+                1
+            } else if int.len() >= 2 && (int[1] & 0b1000_0000) == 0 {
+                2
+            } else if int.len() >= 3 && (int[2] & 0b1000_0000) == 0 {
+                3
+            } else if int.len() >= 4 && (int[3] & 0b1000_0000) == 0 {
+                4
+            } else {
+                return None;
+            };
+            let mut acc = 0;
+            for i in 0..len {
+                acc += ((int[i] & 0b0111_1111) as usize) << i * 7;
+            }
+            Some((acc, len))
+        } {
+            Some(1 + rlen + nbytes)
+        } else {
+            None
         };
 
         self.packet_length
