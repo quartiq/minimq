@@ -1,0 +1,67 @@
+[package]
+name = "stm32h7-ethernet"
+version = "0.1.1"
+authors = ["Richard Meadows <richard@richard.fish>"]
+edition = "2018"
+categories = ["embedded", "hardware-support", "no-std"]
+description = "Drivers for Ethernet on STM32H7"
+keywords = ["stm32", "stm32h7", "ethernet", "lan8720", "ksz8081"]
+repository = "https://github.com/richardeoin/stm32h7-ethernet"
+license = "MIT/Apache-2.0"
+readme = "README.md"
+exclude = [".gitignore"]
+
+[package.metadata.docs.rs]
+features = ["stm32h743v"]
+targets = ["thumbv7em-none-eabihf"]
+
+[dependencies]
+cortex-m = "0.6.2"
+log = "0.4.8"
+
+[dependencies.smoltcp]
+version = "0.6.0"
+default-features = false
+features = ["ethernet", "proto-ipv4", "proto-dhcpv4", "socket-tcp", "log", "socket-raw"]
+
+[dependencies.stm32h7xx-hal]
+version = "0.6.0"
+# NOTE: Keep re-exported feature flags below up-to-date with stm32h7xx-hal
+
+[features]
+default = ["phy_lan8742a", "phy0"]
+phy_ksz8081r = []
+phy_lan8742a = []
+phy0 = []
+phy1 = []
+stm32h742 = ["stm32h7xx-hal/stm32h742"]
+stm32h743 = ["stm32h7xx-hal/stm32h743"]
+stm32h753 = ["stm32h7xx-hal/stm32h753"]
+stm32h750 = ["stm32h7xx-hal/stm32h750"]
+stm32h742v = ["stm32h7xx-hal/stm32h742v"]
+stm32h743v = ["stm32h7xx-hal/stm32h743v"]
+stm32h753v = ["stm32h7xx-hal/stm32h753v"]
+stm32h750v = ["stm32h7xx-hal/stm32h750v"]
+stm32h747cm7 = ["stm32h7xx-hal/stm32h747cm7"]
+
+[dev-dependencies]
+cortex-m-rt = "0.6.12"
+panic-halt = "0.2.0"
+cortex-m-rtfm = "0.5.1"
+
+[dev-dependencies.smoltcp]
+version = "0.6.0"
+default-features = false
+features = ["ethernet", "proto-ipv4", "proto-ipv6", "socket-raw"]
+
+[[example]]
+name = "stm32h747i-disco"
+required-features = ["phy_lan8742a", "stm32h7xx-hal/rt", "stm32h747cm7"]
+
+[[example]]
+name = "stm32h747i-disco-rtfm"
+required-features = ["phy_lan8742a", "stm32h7xx-hal/rt", "stm32h747cm7"]
+
+[[example]]
+name = "nucleo-h743zi2"
+required-features = ["phy_lan8742a", "stm32h7xx-hal/rt", "stm32h7xx-hal/revision_v", "stm32h743v"]
