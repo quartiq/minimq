@@ -99,23 +99,23 @@ impl<'a> ReversedPacketWriter<'a> {
 
         if value & (0b0111_1111 << 21) > 0 {
             let data: [u8; 4] = [
-                (value >> 21) as u8 & 0x7F,
-                (value >> 14) as u8 | 0x80,
-                (value >> 7) as u8 | 0x80,
                 (value >> 0) as u8 | 0x80,
+                (value >> 7) as u8 | 0x80,
+                (value >> 14) as u8 | 0x80,
+                (value >> 21) as u8 & 0x7F,
             ];
 
             self.write(&data)
         } else if value & (0b0111_1111 << 14) > 0 {
             let data: [u8; 3] = [
-                (value >> 14) as u8 & 0x7F,
-                (value >> 7) as u8 | 0x80,
                 (value >> 0) as u8 | 0x80,
+                (value >> 7) as u8 | 0x80,
+                (value >> 14) as u8 & 0x7F,
             ];
 
             self.write(&data)
         } else if value & (0b0111_1111 << 7) > 0 {
-            let data: [u8; 2] = [(value >> 7) as u8 & 0x7F, (value >> 0) as u8 | 0x80];
+            let data: [u8; 2] = [(value >> 0) as u8 | 0x80, ((value >> 7) & 0x7F) as u8];
 
             self.write(&data)
         } else {
