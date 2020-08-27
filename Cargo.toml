@@ -7,7 +7,7 @@ edition = "2018"
 description = "A minimal MQTT5 client designed for no_std platforms"
 homepage = "https://github.com/quartiq/minimq"
 repository = "https://github.com/quartiq/minimq"
-documentation = "https://docs.rs//minimq"
+documentation = "https://docs.rs/minimq"
 
 readme = "README.md"
 categories = ["embedded", "no-std", "database", "encoding"]

@@ -32,10 +32,10 @@
 //! use minimq::{MqttClient, consts, QoS, embedded_nal::{IpAddr, Ipv4Addr}};
 //!
 //! // Construct an MQTT client with a maximum packet size of 256 bytes.
-//! // Connect to a broker at 192.168.0.254. Use a client ID of "test-client".
+//! // Connect to a broker at 192.168.0.254 - Use a client ID of "test".
 //! let client: MqttClient<consts::U256, _> = MqttClient::new(
 //!         IpAddr::V4(Ipv4Addr::new(192, 168, 0, 254)),
-//!         "test-client",
+//!         "test",
 //!         tcp_stack).unwrap();
 //!
 //! let mut subscribed = false;
@@ -70,7 +70,7 @@ use message_types::MessageType;
 pub use properties::Property;
 
 pub use embedded_nal;
-pub use generic_array::typenum as consts;
+pub use generic_array::typenum::consts;
 pub use mqtt_client::{Error, MqttClient, ProtocolError, QoS};
 
 #[cfg(feature = "logging")]
