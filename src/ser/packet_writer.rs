@@ -99,23 +99,23 @@ impl<'a> ReversedPacketWriter<'a> {
 
         if value & (0b0111_1111 << 21) > 0 {
             let data: [u8; 4] = [
-                (value >> 21) as u8 & 0x7F,
-                (value >> 14) as u8 | 0x80,
-                (value >> 7) as u8 | 0x80,
                 (value >> 0) as u8 | 0x80,
+                (value >> 7) as u8 | 0x80,
+                (value >> 14) as u8 | 0x80,
+                (value >> 21) as u8 & 0x7F,
             ];
 
             self.write(&data)
         } else if value & (0b0111_1111 << 14) > 0 {
             let data: [u8; 3] = [
-                (value >> 14) as u8 & 0x7F,
-                (value >> 7) as u8 | 0x80,
                 (value >> 0) as u8 | 0x80,
+                (value >> 7) as u8 | 0x80,
+                (value >> 14) as u8 & 0x7F,
             ];
 
             self.write(&data)
         } else if value & (0b0111_1111 << 7) > 0 {
-            let data: [u8; 2] = [(value >> 7) as u8 & 0x7F, (value >> 0) as u8 | 0x80];
+            let data: [u8; 2] = [(value >> 0) as u8 | 0x80, ((value >> 7) & 0x7F) as u8];
 
             self.write(&data)
         } else {
@@ -171,5 +171,98 @@ impl<'a> ReversedPacketWriter<'a> {
         } else {
             Ok(&self.buffer[self.index..])
         }
+    }
+
+    #[cfg(test)]
+    pub fn finish(self) -> &'a [u8] {
+        &self.buffer[self.index..]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ReversedPacketWriter;
+
+    #[test]
+    fn variable_length_single_byte_integers() {
+        let mut buffer: [u8; 10] = [0; 10];
+        let mut writer = ReversedPacketWriter::new(&mut buffer);
+
+        writer.write_variable_length_integer(127).unwrap();
+        let result = writer.finish();
+        assert_eq!(result, [0x7F]);
+
+        let mut writer = ReversedPacketWriter::new(&mut buffer);
+        writer.write_variable_length_integer(0).unwrap();
+        let result = writer.finish();
+        assert_eq!(result, [0x00]);
+
+        let mut writer = ReversedPacketWriter::new(&mut buffer);
+        writer.write_variable_length_integer(16).unwrap();
+        let result = writer.finish();
+        assert_eq!(result, [0x10]);
+    }
+
+    #[test]
+    fn variable_length_two_byte_integers() {
+        let mut buffer: [u8; 10] = [0; 10];
+
+        // Encodings here taken directly from Table 1-1 of the MQTT 5 specification.
+        let mut writer = ReversedPacketWriter::new(&mut buffer);
+        writer.write_variable_length_integer(128).unwrap();
+        let result = writer.finish();
+        assert_eq!(result, [0x80, 0x01]);
+
+        let mut writer = ReversedPacketWriter::new(&mut buffer);
+        writer.write_variable_length_integer(129).unwrap();
+        let result = writer.finish();
+        assert_eq!(result, [0x81, 0x01]);
+
+        let mut writer = ReversedPacketWriter::new(&mut buffer);
+        writer.write_variable_length_integer(256).unwrap();
+        let result = writer.finish();
+        assert_eq!(result, [0x80, 0x02]);
+
+        let mut writer = ReversedPacketWriter::new(&mut buffer);
+        writer.write_variable_length_integer(256).unwrap();
+        let result = writer.finish();
+        assert_eq!(result, [0x80, 0x02]);
+
+        let mut writer = ReversedPacketWriter::new(&mut buffer);
+        writer.write_variable_length_integer(16_383).unwrap();
+        let result = writer.finish();
+        assert_eq!(result, [0xFF, 0x7F]);
+    }
+
+    #[test]
+    fn variable_length_three_byte_integers() {
+        let mut buffer: [u8; 10] = [0; 10];
+
+        // Encodings here taken directly from Table 1-1 of the MQTT 5 specification.
+        let mut writer = ReversedPacketWriter::new(&mut buffer);
+        writer.write_variable_length_integer(16_384).unwrap();
+        let result = writer.finish();
+        assert_eq!(result, [0x80, 0x80, 0x01]);
+
+        let mut writer = ReversedPacketWriter::new(&mut buffer);
+        writer.write_variable_length_integer(2_097_151).unwrap();
+        let result = writer.finish();
+        assert_eq!(result, [0xFF, 0xFF, 0x7F]);
+    }
+
+    #[test]
+    fn variable_length_four_byte_integers() {
+        let mut buffer: [u8; 10] = [0; 10];
+
+        // Encodings here taken directly from Table 1-1 of the MQTT 5 specification.
+        let mut writer = ReversedPacketWriter::new(&mut buffer);
+        writer.write_variable_length_integer(2_097_152).unwrap();
+        let result = writer.finish();
+        assert_eq!(result, [0x80, 0x80, 0x80, 0x01]);
+
+        let mut writer = ReversedPacketWriter::new(&mut buffer);
+        writer.write_variable_length_integer(268_435_455).unwrap();
+        let result = writer.finish();
+        assert_eq!(result, [0xFF, 0xFF, 0xFF, 0x7F]);
     }
 }
