@@ -1,11 +1,10 @@
 use minimq::{consts, MqttClient, Property, QoS};
 
-use nb;
 use std::cell::RefCell;
 use std::io::{self, Read, Write};
 use std::net::{self, TcpStream};
 
-use embedded_nal::{self, IpAddr, Ipv4Addr, SocketAddr};
+use embedded_nal::{self, nb, IpAddr, Ipv4Addr, SocketAddr};
 
 struct StandardStack {
     stream: RefCell<Option<TcpStream>>,

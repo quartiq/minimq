@@ -7,11 +7,10 @@ use crate::{
 
 use core::cell::RefCell;
 
-use embedded_nal::{IpAddr, Mode, SocketAddr};
+use embedded_nal::{nb, IpAddr, Mode, SocketAddr};
 
 use generic_array::{ArrayLength, GenericArray};
 use heapless::String;
-use nb;
 
 /// A client for interacting with an MQTT Broker.
 pub struct MqttClient<T, N>
