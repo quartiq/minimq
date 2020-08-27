@@ -17,16 +17,14 @@ license = "MIT"
 [dependencies]
 bit_field = "0.10.0"
 enum-iterator = "0.6.0"
-nb = "0.1.2"
 heapless = "0.5.5"
 generic-array = "0.14.3"
 log = {version = "0.4", optional = true}
+embedded-nal = "0.1.0"
 
 [features]
+default = []
 logging = ["log"]
 
 [dev-dependencies]
 env_logger = "0.7"
-
-[dependencies.embedded-nal]
-git = "https://github.com/thejpster/embedded-nal"
