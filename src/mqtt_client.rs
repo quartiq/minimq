@@ -276,9 +276,13 @@ where
         Ok(())
     }
 
-    fn handle_packet<'p, F>(&self, packet: ReceivedPacket<'p>, f: &F) -> Result<(), Error<N::Error>>
+    fn handle_packet<'p, F>(
+        &self,
+        packet: ReceivedPacket<'p>,
+        f: &mut F,
+    ) -> Result<(), Error<N::Error>>
     where
-        for<'a> F: Fn(&Self, &'a str, &[u8], &[Property<'a>]),
+        for<'a> F: FnMut(&Self, &'a str, &[u8], &[Property<'a>]),
     {
         let mut state = self.state.borrow_mut();
         if !state.connected {
@@ -378,9 +382,9 @@ where
     /// # Args
     /// * `f` - A closure to process any received messages. The closure should accept the client,
     /// topic, message, and list of proprties (in that order).
-    pub fn poll<F>(&mut self, f: F) -> Result<(), Error<N::Error>>
+    pub fn poll<F>(&mut self, mut f: F) -> Result<(), Error<N::Error>>
     where
-        for<'a> F: Fn(&Self, &'a str, &[u8], &[Property<'a>]),
+        for<'a> F: FnMut(&Self, &'a str, &[u8], &[Property<'a>]),
     {
         debug!("Polling MQTT interface");
 
@@ -428,7 +432,7 @@ where
                     .map_err(|e| Error::Protocol(e))?;
 
                 info!("Received {:?}", packet);
-                self.handle_packet(packet, &f)?;
+                self.handle_packet(packet, &mut f)?;
                 self.packet_reader
                     .pop_packet()
                     .map_err(|e| Error::Protocol(e))?;
