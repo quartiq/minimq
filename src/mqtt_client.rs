@@ -191,8 +191,8 @@ where
     ///
     /// # Returns
     /// True if the client has sent a request to establish an MQTT connection.
-    pub fn is_connected(&self) -> bool {
-        self.connect_sent
+    pub fn is_connected(&self) -> Result<bool, Error<N::Error>> {
+        Ok(self.socket_is_connected()? && self.connect_sent)
     }
 
     /// Publish a message over MQTT.
@@ -220,7 +220,7 @@ where
         assert!(qos == QoS::AtMostOnce);
 
         // If we are not yet connected to the broker, we can't transmit a message.
-        if self.is_connected() == false {
+        if self.is_connected()? == false {
             return Ok(());
         }
 
