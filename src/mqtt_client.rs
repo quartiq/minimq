@@ -190,7 +190,7 @@ where
     /// Determine if the client has established a connection with the broker.
     ///
     /// # Returns
-    /// True if the client has sent a request to establish an MQTT connection.
+    /// True if the client is connected to the broker.
     pub fn is_connected(&self) -> Result<bool, Error<N::Error>> {
         Ok(self.socket_is_connected()? && self.connect_sent)
     }
