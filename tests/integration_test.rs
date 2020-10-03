@@ -35,7 +35,7 @@ fn main() -> std::io::Result<()> {
             .unwrap();
 
         if !subscribed {
-            if client.is_connected() {
+            if client.is_connected().unwrap() {
                 client.subscribe("response", &[]).unwrap();
                 client.subscribe("request", &[]).unwrap();
                 subscribed = true;
