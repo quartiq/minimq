@@ -87,16 +87,13 @@ where
     }
 
     pub fn read_variable_length_integer(&self) -> Result<usize, Error> {
-        let mut bytes: [u8; 4] = [0; 4];
-
         let mut accumulator: usize = 0;
-        let mut multiplier = 1;
-        for i in 0..bytes.len() {
-            self.read(&mut bytes[i..i + 1])?;
-            accumulator += bytes[i] as usize & 0x7F * multiplier;
-            multiplier *= 128;
+        for i in 0..4 {
+            let mut byte = [0u8; 1];
+            self.read(&mut byte)?;
+            accumulator += ((byte[0] & 0x7F) as usize) << i * 7;
 
-            if (bytes[i] & 0x80) == 0 {
+            if (byte[0] & 0x80) == 0 {
                 return Ok(accumulator);
             }
         }

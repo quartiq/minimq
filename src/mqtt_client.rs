@@ -224,7 +224,7 @@ where
             return Ok(());
         }
 
-        info!(
+        debug!(
             "Publishing to `{}`: {:?} Props: {:?}",
             topic, data, properties
         );
@@ -386,8 +386,6 @@ where
     where
         for<'a> F: FnMut(&Self, &'a str, &[u8], &[Property<'a>]),
     {
-        debug!("Polling MQTT interface");
-
         // If the socket is not connected, we can't do anything.
         if self.socket_is_connected()? == false {
             let result = if self.connect_sent {
@@ -408,7 +406,9 @@ where
 
         let mut buf: [u8; 1024] = [0; 1024];
         let received = self.read(&mut buf)?;
-        debug!("Received {} bytes", received);
+        if received > 0 {
+            debug!("Received {} bytes", received);
+        }
 
         let mut processed = 0;
         while processed < received {
