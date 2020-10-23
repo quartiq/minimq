@@ -25,7 +25,10 @@ serde-json-core = "0.1"
 path = "../../"
 
 [dependencies.smoltcp]
-version = "0.6.0"
+# Using specific git commit until PR 367 lands on crates.io
+# https://github.com/smoltcp-rs/smoltcp/pull/367
+git = "https://github.com/smoltcp-rs/smoltcp"
+rev = "bdfa442"
 default-features = false
 features = ["ethernet", "proto-ipv4", "socket-tcp", "proto-ipv6"]
 
