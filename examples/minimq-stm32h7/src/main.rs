@@ -9,7 +9,6 @@ use stm32h7_ethernet as ethernet;
 use stm32h7xx_hal::{gpio::Speed, prelude::*};
 
 use heapless::{consts, String};
-use si7021::Si7021;
 
 use cortex_m;
 
@@ -43,8 +42,8 @@ static mut NET_STORE: NetStorage = NetStorage {
 static mut DES_RING: ethernet::DesRing = ethernet::DesRing::new();
 
 #[derive(Serialize, Deserialize)]
-struct Temperature {
-    temperature_c: f32,
+struct Random {
+    random: Option<u32>
 }
 
 type NetworkInterface =
@@ -91,13 +90,12 @@ fn init_log() {
 const APP: () = {
     struct Resources {
         net_interface: NetworkInterface,
-        si7021: Si7021<stm32h7xx_hal::i2c::I2c<stm32h7xx_hal::stm32::I2C2>>,
+        rng: stm32h7xx_hal::rng::Rng,
     }
 
     #[init]
-    fn init(c: init::Context) -> init::LateResources {
-        let mut cp = cortex_m::Peripherals::take().unwrap();
-        cp.DWT.enable_cycle_counter();
+    fn init(mut c: init::Context) -> init::LateResources {
+        c.core.DWT.enable_cycle_counter();
 
         // Enable SRAM3 for the descriptor ring.
         c.device.RCC.ahb2enr.modify(|_, w| w.sram3en().set_bit());
@@ -119,7 +117,7 @@ const APP: () = {
         let gpioa = c.device.GPIOA.split(ccdr.peripheral.GPIOA);
         let gpiob = c.device.GPIOB.split(ccdr.peripheral.GPIOB);
         let gpioc = c.device.GPIOC.split(ccdr.peripheral.GPIOC);
-        let gpiof = c.device.GPIOF.split(ccdr.peripheral.GPIOF);
+        let _gpiof = c.device.GPIOF.split(ccdr.peripheral.GPIOF);
         let gpiog = c.device.GPIOG.split(ccdr.peripheral.GPIOG);
 
         // Configure ethernet IO
@@ -163,29 +161,20 @@ const APP: () = {
                 .finalize()
         };
 
-        // Configure I2C
-        let si7021 = {
-            let i2c_sda = gpiof.pf0.into_open_drain_output().into_alternate_af4();
-            let i2c_scl = gpiof.pf1.into_open_drain_output().into_alternate_af4();
-            let i2c = c.device.I2C2.i2c(
-                (i2c_scl, i2c_sda),
-                100.khz(),
-                ccdr.peripheral.I2C2,
-                &ccdr.clocks,
-            );
 
-            Si7021::new(i2c)
-        };
 
-        cp.SCB.enable_icache();
+        // Initialize random number generator
+        let rng = c.device.RNG.constrain(ccdr.peripheral.RNG, &ccdr.clocks);
+
+        c.core.SCB.enable_icache();
 
         init::LateResources {
             net_interface: net_interface,
-            si7021: si7021,
+            rng: rng,
         }
     }
 
-    #[idle(resources=[net_interface, si7021])]
+    #[idle(resources=[net_interface, rng])]
     fn idle(c: idle::Context) -> ! {
         let mut time: u32 = 0;
         let mut next_ms = Instant::now();
@@ -213,19 +202,27 @@ const APP: () = {
             }
 
             if tick && (time % 1000) == 0 {
+                if client.is_connected().unwrap() {
+                    info!("connected!");
+                }
+                else{
+                    info!("not connected!");
+
+                }
                 client
                     .publish("nucleo", "Hello, World!".as_bytes(), QoS::AtMostOnce, &[])
                     .unwrap();
 
-                let temperature = Temperature {
-                    temperature_c: c.resources.si7021.temperature_celsius().unwrap(),
+                let random = Random {
+                    random: c.resources.rng.gen().ok()
                 };
-                let temperature: String<consts::U256> =
-                    serde_json_core::to_string(&temperature).unwrap();
+
+                let random: String<consts::U256> =
+                    serde_json_core::to_string(&random).unwrap();
                 client
                     .publish(
-                        "temperature",
-                        &temperature.into_bytes(),
+                        "random",
+                        &random.into_bytes(),
                         QoS::AtMostOnce,
                         &[],
                     )
