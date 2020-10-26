@@ -302,9 +302,7 @@ dependencies = [
  "panic-halt",
  "serde",
  "serde-json-core",
- "si7021",
  "smoltcp",
- "stm32h7-ethernet",
  "stm32h7xx-hal",
 ]
 
@@ -456,21 +454,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "si7021"
-version = "0.2.0"
-source = "git+https://github.com/ryan-summers/si7021-rs#f7d840221ecba3da852c0005f97631215d64de2d"
-dependencies = [
- "embedded-hal",
-]
-
-[[package]]
 name = "smoltcp"
 version = "0.6.0"
-source = "git+https://github.com/smoltcp-rs/smoltcp?rev=bdfa442#bdfa44270e9c59b3095b555cdf14601f7dc27794"
+source = "git+https://github.com/smoltcp-rs/smoltcp?branch=master#bdfa44270e9c59b3095b555cdf14601f7dc27794"
 dependencies = [
  "bitflags",
  "byteorder",
- "log",
  "managed",
 ]
 
@@ -493,20 +482,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "stm32h7-ethernet"
-version = "0.1.1"
-dependencies = [
- "cortex-m",
- "log",
- "smoltcp",
- "stm32h7xx-hal",
-]
-
-[[package]]
 name = "stm32h7xx-hal"
-version = "0.6.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6eacfeb7ab5ac45535247092c1d47e3ef2e5fce125bef2e86f7b5f17a541d079"
+checksum = "052ab12f6f43c47797bf7b5d056df3a5f79b23abdcdb7d7a6c6c349080a1839f"
 dependencies = [
  "bare-metal",
  "cast",
@@ -515,6 +494,7 @@ dependencies = [
  "embedded-hal",
  "nb 0.1.3",
  "paste",
+ "smoltcp",
  "stm32h7",
  "void",
 ]

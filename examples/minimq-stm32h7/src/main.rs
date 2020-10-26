@@ -5,8 +5,7 @@
 extern crate log;
 
 use smoltcp as net;
-use stm32h7_ethernet as ethernet;
-use stm32h7xx_hal::{gpio::Speed, prelude::*};
+use stm32h7xx_hal::{gpio::Speed, prelude::*, ethernet};
 
 use heapless::{consts, String};
 
@@ -117,7 +116,6 @@ const APP: () = {
         let gpioa = c.device.GPIOA.split(ccdr.peripheral.GPIOA);
         let gpiob = c.device.GPIOB.split(ccdr.peripheral.GPIOB);
         let gpioc = c.device.GPIOC.split(ccdr.peripheral.GPIOC);
-        let _gpiof = c.device.GPIOF.split(ccdr.peripheral.GPIOF);
         let gpiog = c.device.GPIOG.split(ccdr.peripheral.GPIOG);
 
         // Configure ethernet IO
@@ -137,7 +135,7 @@ const APP: () = {
         let net_interface = {
             let mac_addr = net::wire::EthernetAddress([0xAC, 0x6F, 0x7A, 0xDE, 0xD6, 0xC8]);
             let (eth_dma, _eth_mac) = unsafe {
-                ethernet::ethernet_init(
+                ethernet::new_unchecked(
                     c.device.ETHERNET_MAC,
                     c.device.ETHERNET_MTL,
                     c.device.ETHERNET_DMA,
@@ -202,13 +200,6 @@ const APP: () = {
             }
 
             if tick && (time % 1000) == 0 {
-                if client.is_connected().unwrap() {
-                    info!("connected!");
-                }
-                else{
-                    info!("not connected!");
-
-                }
                 client
                     .publish("nucleo", "Hello, World!".as_bytes(), QoS::AtMostOnce, &[])
                     .unwrap();
@@ -229,11 +220,21 @@ const APP: () = {
                     .unwrap();
             }
 
-            client
+            match client
                 .poll(|_client, topic, message, _properties| match topic {
                     _ => info!("On '{:?}', received: {:?}", topic, message),
                 })
-                .unwrap();
+            {
+                Ok(_) => {},
+                // If we got disconnected from the broker
+                Err(minimq::Error::Disconnected) => {
+                    info!("MQTT client disconnected")
+                },
+                Err(e) => {
+                    panic!("{:#?}", e);
+                }
+            };
+
 
             // Update the TCP stack.
             let sleep = client.network_stack.update(time);
