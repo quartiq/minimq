@@ -11,9 +11,7 @@ cortex-m-rt = "0.6.10"
 cortex-m-semihosting = "0.3.3"
 panic-halt = "0.2.0"
 cortex-m-log = { version = "0.6.1", features = ["log-integration"] }
-stm32h7xx-hal = { version = "0.6.0", features = ["stm32h743v", "rt"] }
-stm32h7-ethernet = { path = "stm32h7-ethernet" }
-cortex-m-rtic = "0.5.3"
+cortex-m-rtic = "^0.5.5"
 heapless = "0.5.5"
 nb = "0.1.2"
 log = "0.4.8"
@@ -21,16 +19,27 @@ log = "0.4.8"
 serde = {version = "1.0", features = ["derive"], default-features = false }
 serde-json-core = "0.1"
 
+[dependencies.stm32h7xx-hal]
+version = "0.7.1"
+features = ["stm32h743v", "rt", "ethernet", "phy_lan8742a"]
+
 [dependencies.minimq]
 path = "../../"
 
 [dependencies.smoltcp]
-version = "0.6.0"
+# Using master branch until PR 367 lands on crates.io.
+# https://github.com/smoltcp-rs/smoltcp/pull/367
+git = "https://github.com/smoltcp-rs/smoltcp"
+branch = "master"
 default-features = false
 features = ["ethernet", "proto-ipv4", "socket-tcp", "proto-ipv6"]
 
-[dependencies.si7021]
-git = "https://github.com/ryan-summers/si7021-rs"
+[patch.crates-io]
+# Make dependencies use master branch for smoltcp until PR 367 lands on
+# crates.io.
+# https://github.com/smoltcp-rs/smoltcp/pull/367
+smoltcp = {git = "https://github.com/smoltcp-rs/smoltcp", branch = "master"}
+
 
 [features]
 semihosting = ["cortex-m-log/semihosting"]
