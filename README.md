@@ -1,3 +1,5 @@
+[![QUARTIQ Matrix Chat](https://img.shields.io/matrix/quartiq:matrix.org)](https://matrix.to/#/#quartiq:matrix.org)
+
 # MiniMQ
 
 A minimal `no_std` MQTT v5.0 client implementation.
