@@ -117,7 +117,11 @@ where
     fn read(&self, mut buf: &mut [u8]) -> Result<usize, Error<N::Error>> {
         let mut socket_ref = self.socket.borrow_mut();
         let mut socket = socket_ref.take().unwrap();
-        let read = nb::block!(self.network_stack.read(&mut socket, &mut buf)).unwrap();
+        let read = match self.network_stack.read(&mut socket, &mut buf) {
+            Ok(count) => count,
+            Err(nb::Error::WouldBlock) => 0,
+            Err(nb::Error::Other(error)) => return Err(Error::Network(error)),
+        };
 
         // Put the socket back into the option.
         socket_ref.replace(socket);
@@ -128,7 +132,7 @@ where
     fn write(&self, buf: &[u8]) -> Result<(), Error<N::Error>> {
         let mut socket_ref = self.socket.borrow_mut();
         let mut socket = socket_ref.take().unwrap();
-        let written = nb::block!(self.network_stack.write(&mut socket, &buf)).unwrap();
+        let written = nb::block!(self.network_stack.write(&mut socket, &buf))?;
 
         // Put the socket back into the option.
         socket_ref.replace(socket);
