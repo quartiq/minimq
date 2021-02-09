@@ -70,6 +70,7 @@ use message_types::MessageType;
 pub use properties::Property;
 
 pub use embedded_nal;
+pub use generic_array;
 pub use generic_array::typenum::consts;
 pub use mqtt_client::{Error, MqttClient, ProtocolError, QoS};
 
