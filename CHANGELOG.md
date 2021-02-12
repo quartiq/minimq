@@ -9,6 +9,7 @@ This document describes the changes to Minimq between releases.
   integration tests.
 * Updating `read()` to not block when no data is available. Updating `write()` to progate network
   stack errors out to the user.
+* Updating library to re-export `generic-array` publicly.
 
 ## Version 0.1.0
 Version 0.1.0 was published on 2020-08-27
