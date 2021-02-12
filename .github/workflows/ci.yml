@@ -78,9 +78,9 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - run: |
-          sudo apt-get install mosquitto
-          sudo service mosquitto start
+      - name: Start Mosquitto
+        uses: namoshek/mosquitto-github-action@v0.1.0
+
 
       - name: Install Rust ${{ matrix.toolchain }}
         uses: actions-rs/toolchain@v1
