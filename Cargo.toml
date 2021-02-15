@@ -20,7 +20,9 @@ enum-iterator = "0.6.0"
 heapless = "0.5.5"
 generic-array = "0.14.3"
 log = {version = "0.4", optional = true}
-embedded-nal = "0.1.0"
+
+[dependencies.embedded-nal]
+git = "https://github.com/rust-embedded-community/embedded-nal"
 
 [features]
 default = []
