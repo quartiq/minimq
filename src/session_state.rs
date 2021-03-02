@@ -15,11 +15,11 @@ pub struct SessionState {
 }
 
 impl SessionState {
-    pub fn new(broker: IpAddr) -> SessionState {
+    pub fn new<'a>(broker: IpAddr, id: String<consts::U64>) -> SessionState {
         SessionState {
             connected: false,
             broker,
-            client_id: String::new(),
+            client_id: id,
             packet_id: 1,
             keep_alive_interval: 0,
             pending_subscriptions: Vec::new(),

@@ -91,21 +91,17 @@ where
     ///
     /// # Returns
     /// An `MqttClient` that can be used for publishing messages and subscribing to topics.
-    pub fn new(
-        broker: IpAddr,
-        client_id: Option<&str>,
-        network_stack: N,
-    ) -> Result<Self, Error<N::Error>> {
+    pub fn new(broker: IpAddr, client_id: &str, network_stack: N) -> Result<Self, Error<N::Error>> {
         // Connect to the broker's TCP port.
         let socket = network_stack.open(Mode::NonBlocking)?;
 
         // Next, connect to the broker over MQTT.
         let socket = network_stack.connect(socket, SocketAddr::new(broker, 1883))?;
 
-        let mut session_state = SessionState::new(broker);
-        if let Some(id) = client_id {
-            session_state.client_id = String::from_str(id).or(Err(Error::ProvidedClientIdTooLong))?;
-        }
+        let session_state = SessionState::new(
+            broker,
+            String::from_str(client_id).or(Err(Error::ProvidedClientIdTooLong))?,
+        );
 
         let mut client = MqttClient {
             network_stack: network_stack,
@@ -315,8 +311,8 @@ where
                             state.maximum_packet_size.replace(size);
                         }
                         Property::AssignedClientIdentifier(id) => {
-                            state.client_id = String::from_str(id)
-                                .or(Err(Error::ProvidedClientIdTooLong))?;
+                            state.client_id =
+                                String::from_str(id).or(Err(Error::ProvidedClientIdTooLong))?;
                         }
                         Property::ServerKeepAlive(keep_alive) => {
                             state.keep_alive_interval = keep_alive;
