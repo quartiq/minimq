@@ -5,7 +5,7 @@ use crate::{
     Property, {debug, error, info},
 };
 
-use core::cell::RefCell;
+use core::{cell::RefCell, str::FromStr};
 
 use embedded_nal::{nb, IpAddr, Mode, SocketAddr};
 
@@ -314,7 +314,8 @@ where
                             state.maximum_packet_size.replace(size);
                         }
                         Property::AssignedClientIdentifier(id) => {
-                            state.client_id = String::from(id);
+                            state.client_id = String::from_str(id)
+                                .or(Err(Error::Protocol(ProtocolError::DataSize)))?;
                         }
                         Property::ServerKeepAlive(keep_alive) => {
                             state.keep_alive_interval = keep_alive;
