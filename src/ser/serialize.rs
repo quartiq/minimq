@@ -23,16 +23,6 @@ pub fn connect_message<'a, 'b>(
     keep_alive: u16,
     properties: &[Property<'a>],
 ) -> Result<&'b [u8], Error> {
-    for i in 0..client_id.len() {
-        if !(client_id[i] - 0x30 <=  9 || // 0-9
-             client_id[i] - 0x41 <= 25 || // A-Z
-             client_id[i] - 0x61 <= 25)
-        {
-            // a-z
-            return Err(Error::Bounds);
-        }
-    }
-
     // Validate the properties for this packet.
     for property in properties {
         match property.id() {

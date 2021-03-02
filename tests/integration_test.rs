@@ -9,7 +9,7 @@ fn main() -> std::io::Result<()> {
     let stack = std_embedded_nal::STACK.clone();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
     let mut client =
-        MqttClient::<consts::U256, _>::new(localhost, "IntegrationTest", stack).unwrap();
+        MqttClient::<consts::U256, _>::new(localhost, None, stack).unwrap();
 
     let mut published = false;
     let mut subscribed = false;

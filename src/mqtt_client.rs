@@ -84,14 +84,15 @@ where
     ///
     /// # Args
     /// * `broker` - The IP address of the broker to connect to.
-    /// * `client_id` The client ID to use for communicating with the broker.
+    /// * `client_id` The client ID to use for communicating with the broker. If None, rely on the
+    ///   broker to automatically assign a client ID.
     /// * `network_stack` - The network stack to use for communication.
     ///
     /// # Returns
     /// An `MqttClient` that can be used for publishing messages and subscribing to topics.
-    pub fn new<'a>(
+    pub fn new(
         broker: IpAddr,
-        client_id: &'a str,
+        client_id: Option<&str>,
         network_stack: N,
     ) -> Result<Self, Error<N::Error>> {
         // Connect to the broker's TCP port.
@@ -100,10 +101,15 @@ where
         // Next, connect to the broker over MQTT.
         let socket = network_stack.connect(socket, SocketAddr::new(broker, 1883))?;
 
+        let mut session_state = SessionState::new(broker);
+        if let Some(id) = client_id {
+            session_state.client_id = String::from(id);
+        }
+
         let mut client = MqttClient {
             network_stack: network_stack,
             socket: RefCell::new(Some(socket)),
-            state: RefCell::new(SessionState::new(broker, client_id)),
+            state: RefCell::new(session_state),
             transmit_buffer: RefCell::new(GenericArray::default()),
             packet_reader: PacketReader::new(),
             connect_sent: false,
