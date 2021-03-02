@@ -9,7 +9,7 @@ pub struct SessionState {
     pub keep_alive_interval: u16,
     pub broker: IpAddr,
     pub maximum_packet_size: Option<u32>,
-    pub client_id: String<consts::U32>,
+    pub client_id: String<consts::U64>,
     pub pending_subscriptions: Vec<u16, consts::U32>,
     packet_id: u16,
 }
