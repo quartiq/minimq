@@ -103,7 +103,8 @@ where
 
         let mut session_state = SessionState::new(broker);
         if let Some(id) = client_id {
-            session_state.client_id = String::from(id);
+            session_state.client_id =
+                String::from_str(id).or(Err(Error::Protocol(ProtocolError::DataSize)))?;
         }
 
         let mut client = MqttClient {
