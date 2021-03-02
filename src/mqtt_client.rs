@@ -85,7 +85,7 @@ where
     ///
     /// # Args
     /// * `broker` - The IP address of the broker to connect to.
-    /// * `client_id` The client ID to use for communicating with the broker. If None, rely on the
+    /// * `client_id` The client ID to use for communicating with the broker. If empty, rely on the
     ///   broker to automatically assign a client ID.
     /// * `network_stack` - The network stack to use for communication.
     ///
