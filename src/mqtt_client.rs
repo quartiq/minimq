@@ -49,6 +49,7 @@ pub enum Error<E> {
     NotReady,
     Disconnected,
     Unsupported,
+    ProvidedClientIdTooLong,
     Failed(u8),
     Protocol(ProtocolError),
 }
@@ -103,8 +104,7 @@ where
 
         let mut session_state = SessionState::new(broker);
         if let Some(id) = client_id {
-            session_state.client_id =
-                String::from_str(id).or(Err(Error::Protocol(ProtocolError::DataSize)))?;
+            session_state.client_id = String::from_str(id).or(Err(Error::ProvidedClientIdTooLong))?;
         }
 
         let mut client = MqttClient {
@@ -316,7 +316,7 @@ where
                         }
                         Property::AssignedClientIdentifier(id) => {
                             state.client_id = String::from_str(id)
-                                .or(Err(Error::Protocol(ProtocolError::DataSize)))?;
+                                .or(Err(Error::ProvidedClientIdTooLong))?;
                         }
                         Property::ServerKeepAlive(keep_alive) => {
                             state.keep_alive_interval = keep_alive;
