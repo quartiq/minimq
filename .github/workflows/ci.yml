@@ -26,6 +26,23 @@ jobs:
           command: fmt
           args: --all -- --check
 
+  documentation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: thumbv7em-none-eabihf
+          override: true
+
+      - name: Cargo Doc
+        uses: actions-rs/cargo@v1
+        with:
+          command: doc
+
   clippy:
     runs-on: ubuntu-latest
     steps:
@@ -42,6 +59,15 @@ jobs:
         continue-on-error: true
         with:
           command: clippy
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Cargo Audit
+        uses: actions-rs/audit-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   compile:
     runs-on: ubuntu-latest
