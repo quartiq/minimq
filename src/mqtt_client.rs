@@ -92,11 +92,6 @@ where
     /// # Returns
     /// An `MqttClient` that can be used for publishing messages and subscribing to topics.
     pub fn new(broker: IpAddr, client_id: &str, network_stack: N) -> Result<Self, Error<N::Error>> {
-        // Connect to the broker's TCP port.
-        let socket = network_stack.open(Mode::NonBlocking)?;
-
-        // Next, connect to the broker over MQTT.
-        let socket = network_stack.connect(socket, SocketAddr::new(broker, 1883))?;
 
         let session_state = SessionState::new(
             broker,
@@ -105,7 +100,7 @@ where
 
         let mut client = MqttClient {
             network_stack: network_stack,
-            socket: RefCell::new(Some(socket)),
+            socket: RefCell::new(None),
             state: RefCell::new(session_state),
             transmit_buffer: RefCell::new(GenericArray::default()),
             packet_reader: PacketReader::new(),
@@ -244,11 +239,17 @@ where
 
     fn socket_is_connected(&self) -> Result<bool, N::Error> {
         let mut socket_ref = self.socket.borrow_mut();
+
+        if socket_ref.is_none() {
+            // Attempt to open a socket from the network stack.
+            socket_ref.replace(self.network_stack.open(Mode::NonBlocking)?);
+        }
+
         let socket = socket_ref.take().unwrap();
-
-        let connected = self.network_stack.is_connected(&socket)?;
-
+        let result = self.network_stack.is_connected(&socket);
         socket_ref.replace(socket);
+
+        let connected = result?;
 
         Ok(connected)
     }
