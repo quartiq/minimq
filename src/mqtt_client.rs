@@ -92,7 +92,6 @@ where
     /// # Returns
     /// An `MqttClient` that can be used for publishing messages and subscribing to topics.
     pub fn new(broker: IpAddr, client_id: &str, network_stack: N) -> Result<Self, Error<N::Error>> {
-
         let session_state = SessionState::new(
             broker,
             String::from_str(client_id).or(Err(Error::ProvidedClientIdTooLong))?,
