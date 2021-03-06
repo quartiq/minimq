@@ -72,7 +72,7 @@ pub use properties::Property;
 pub use embedded_nal;
 pub use generic_array;
 pub use generic_array::typenum::consts;
-pub use mqtt_client::{Clock, Error, MqttClient, ProtocolError, QoS};
+pub use mqtt_client::{Error, MqttClient, ProtocolError, QoS};
 
 #[cfg(feature = "logging")]
 pub(crate) use log::{debug, error, info, warn};

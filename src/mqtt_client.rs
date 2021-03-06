@@ -5,17 +5,13 @@ use crate::{
     Property, {debug, error, info},
 };
 
-use core::{cell::RefCell, str::FromStr};
+use core::{cell::RefCell, convert::TryFrom, str::FromStr};
 
 use embedded_nal::{nb, IpAddr, Mode, SocketAddr};
+use embedded_time::{Clock, duration::Seconds, fixed_point::FixedPoint};
 
 use generic_array::{ArrayLength, GenericArray};
 use heapless::String;
-
-pub trait Clock {
-    /// Returns the current time, in seconds.
-    fn now(&self) -> u16;
-}
 
 /// A client for interacting with an MQTT Broker.
 pub struct MqttClient<T, N, C>
@@ -23,16 +19,18 @@ where
     T: ArrayLength<u8>,
     N: embedded_nal::TcpStack,
     C: Clock,
+    u32: TryFrom<C::T>,
 {
     /// The network stack originally provided to the client.
     pub network_stack: N,
     pub clock: C,
 
     socket: RefCell<Option<N::TcpSocket>>,
-    state: RefCell<SessionState>,
+    state: RefCell<SessionState<C>>,
     packet_reader: PacketReader<T>,
     transmit_buffer: RefCell<GenericArray<u8, T>>,
     connect_sent: bool,
+    ping_response_timeout: Seconds<u32>,
 }
 
 /// The quality-of-service for an MQTT message.
@@ -88,6 +86,7 @@ where
     T: ArrayLength<u8>,
     N: embedded_nal::TcpStack,
     C: Clock,
+    u32: TryFrom<C::T>,
 {
     /// Construct a new MQTT client.
     ///
@@ -118,8 +117,8 @@ where
             packet_reader: PacketReader::new(),
             connect_sent: false,
             clock: clock,
+            ping_response_timeout: Seconds(2),
         };
-
         client.open_socket()?;
         client.connect_socket()?;
         client.reset()?;
@@ -142,10 +141,10 @@ where
         Ok(read)
     }
 
-    fn write(&self, state: &mut SessionState, buf: &[u8]) -> Result<(), Error<N::Error>> {
+    fn write(&self, state: &mut SessionState<C>, buf: &[u8]) -> Result<(), Error<N::Error>> {
         let mut socket_ref = self.socket.borrow_mut();
         let mut socket = socket_ref.take().unwrap();
-        state.last_write_time = self.clock.now();
+        state.last_write_time.replace(self.clock.try_now().unwrap());
         let written = nb::block!(self.network_stack.write(&mut socket, &buf))?;
 
         // Put the socket back into the option.
@@ -292,7 +291,7 @@ where
         let packet = serialize::connect_message(
             &mut buffer,
             self.state.borrow().client_id.as_str().as_bytes(),
-            self.state.borrow().keep_alive_interval,
+            *self.state.borrow().keep_alive_interval.integer() as u16,
             &[Property::MaximumPacketSize(
                 self.packet_reader.maximum_packet_length() as u32,
             )],
@@ -339,7 +338,7 @@ where
                                 String::from_str(id).or(Err(Error::ProvidedClientIdTooLong))?;
                         }
                         Property::ServerKeepAlive(keep_alive) => {
-                            state.keep_alive_interval = keep_alive;
+                            state.keep_alive_interval = Seconds(keep_alive as u32);
                         }
                         _prop => info!("Ignoring property: {:?}", _prop),
                     };
@@ -423,10 +422,19 @@ where
 
     fn is_ping_request_due(&self) -> bool {
         let s = self.state.borrow();
-        if s.keep_alive_interval == 0 {
+        if s.keep_alive_interval == Seconds(0_u32) {
             false
         } else {
-            self.clock.now().wrapping_sub(s.last_write_time) >= s.keep_alive_interval
+            // Note(unwrap): We should have at least sent out the initial connect packet.
+            let last_write_time = &s.last_write_time.unwrap();
+            // On error (clock wrapped) be conservative and send out a keepalive ping.
+            self.clock
+                .try_now()
+                .unwrap()
+                .checked_duration_since(last_write_time)
+                .and_then(|diff| Seconds::<u32>::try_from(diff).ok())
+                .map(|diff| diff >= s.keep_alive_interval)
+                .unwrap_or(true)
         }
     }
 
@@ -434,15 +442,29 @@ where
         debug!("Sending keepalive ping request");
         let mut buffer = self.transmit_buffer.borrow_mut();
         let packet = serialize::ping_req_message(&mut buffer).map_err(|e| Error::Protocol(e))?;
-        self.write(&mut self.state.borrow_mut(), packet)
+        self.write(&mut self.state.borrow_mut(), packet)?;
+        self.state
+            .borrow_mut()
+            .pending_pingreq_time
+            .replace(self.clock.try_now().unwrap());
+        Ok(())
     }
 
     fn ping_response_is_overdue(&self) -> bool {
         let s = self.state.borrow();
-        match s.pending_pingreq_time {
-            // TODO: Make ping response timeout configurable?
-            Some(sent) => self.clock.now().wrapping_sub(sent) >= 2,
+        match &s.pending_pingreq_time {
             None => false,
+            Some(sent) => {
+                // Be conservative on error (clock wrapped) and just wait until the next ping
+                // to detect a lost connection.
+                self.clock
+                    .try_now()
+                    .unwrap()
+                    .checked_duration_since(sent)
+                    .and_then(|diff| Seconds::<u32>::try_from(diff).ok())
+                    .map(|diff| diff >= self.ping_response_timeout)
+                    .unwrap_or(false)
+            }
         }
     }
 
@@ -518,6 +540,11 @@ where
         }
 
         if self.ping_response_is_overdue() {
+            error!(
+                "Expected ping response, but none received; dropping broker \
+                    connection (timeout: {})",
+                self.ping_response_timeout
+            );
             self.shutdown_socket()?;
         }
 

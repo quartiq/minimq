@@ -2,18 +2,24 @@
 ///
 ///
 use embedded_nal::IpAddr;
+use embedded_time::{duration::Seconds, Clock, Instant};
 use heapless::{consts, String, Vec};
 
-pub struct SessionState {
+pub struct SessionState<C>
+where
+    C: Clock,
+{
     pub connected: bool,
-    pub keep_alive_interval: u16,
+
+    /// (embedded_time doesn't support u16.)
+    pub keep_alive_interval: Seconds<u32>,
 
     /// Timestamp of the last message sent to the broker, for keep-alive generation.
-    pub last_write_time: u16,
+    pub last_write_time: Option<Instant<C>>,
 
     /// If we sent a ping request without having received a response, stores the time
     /// the request was sent.
-    pub pending_pingreq_time: Option<u16>,
+    pub pending_pingreq_time: Option<Instant<C>>,
 
     pub broker: IpAddr,
     pub maximum_packet_size: Option<u32>,
@@ -22,15 +28,18 @@ pub struct SessionState {
     packet_id: u16,
 }
 
-impl SessionState {
-    pub fn new<'a>(broker: IpAddr, id: String<consts::U64>) -> SessionState {
+impl<C> SessionState<C>
+where
+    C: Clock,
+{
+    pub fn new<'a>(broker: IpAddr, id: String<consts::U64>) -> SessionState<C> {
         SessionState {
             connected: false,
             broker,
             client_id: id,
             packet_id: 1,
-            keep_alive_interval: 0,
-            last_write_time: 0,
+            keep_alive_interval: Seconds(0),
+            last_write_time: None,
             pending_pingreq_time: None,
             pending_subscriptions: Vec::new(),
             maximum_packet_size: None,
@@ -40,8 +49,8 @@ impl SessionState {
     pub fn reset(&mut self) {
         self.connected = false;
         self.packet_id = 1;
-        self.keep_alive_interval = 0;
-        self.last_write_time = 0;
+        self.keep_alive_interval = Seconds(0);
+        self.last_write_time = None;
         self.pending_pingreq_time = None;
         self.maximum_packet_size = None;
         self.pending_subscriptions.clear();
