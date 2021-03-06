@@ -7,6 +7,7 @@ This document describes the changes to Minimq between releases.
 * Strict client ID check removed to allow broker-validated IDs.
 * Updated `generic-array` dependencies to address security vulnerability.
 * Implemented keep-alive ping requests (and connection termination on lack of response).
+* Broker connection attempts are now rate-limited to 1 per second.
 
 # Version 0.2.0
 Version 0.2.0 was published on 2021-02-15

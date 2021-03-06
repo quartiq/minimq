@@ -8,7 +8,7 @@ use crate::{
 use core::{cell::RefCell, convert::TryFrom, str::FromStr};
 
 use embedded_nal::{nb, IpAddr, Mode, SocketAddr};
-use embedded_time::{duration::Seconds, fixed_point::FixedPoint, Clock};
+use embedded_time::{duration::Seconds, fixed_point::FixedPoint, Clock, Instant};
 
 use generic_array::{ArrayLength, GenericArray};
 use heapless::String;
@@ -31,6 +31,9 @@ where
     transmit_buffer: RefCell<GenericArray<u8, T>>,
     connect_sent: bool,
     ping_response_timeout: Seconds<u32>,
+
+    /// Timestamp of the last connection attempt to the broker (for rate-limiting).
+    last_socket_connect_time: Option<Instant<C>>,
 }
 
 /// The quality-of-service for an MQTT message.
@@ -118,6 +121,7 @@ where
             connect_sent: false,
             clock: clock,
             ping_response_timeout: Seconds(2),
+            last_socket_connect_time: None,
         };
         client.reset()?;
         Ok(client)
@@ -402,18 +406,27 @@ where
     }
 
     fn connect_socket(&mut self) -> Result<(), Error<N::Error>> {
+        // Don't try connecting more than once per second to avoid network spam if
+        // the broker port is closed.
+        if let Some(last_connect) = &self.last_socket_connect_time {
+            let now = self.clock.try_now().unwrap();
+            if now
+                .checked_duration_since(last_connect)
+                .and_then(|diff| Seconds::<u32>::try_from(diff).ok())
+                .map(|diff| diff < Seconds(1u32))
+                .unwrap_or(false)
+            {
+                return Err(Error::Disconnected);
+            }
+        }
+        self.last_socket_connect_time = Some(self.clock.try_now().unwrap());
+
+        // Connect to the broker's TCP port.
+        let addr = SocketAddr::new(self.state.borrow().broker, 1883);
+        info!("Connecting to {}", addr);
         let mut socket_ref = self.socket.borrow_mut();
         let socket = socket_ref.take().unwrap();
-
-        // Connect to the broker's TCP port with a new socket.
-        // TODO: Limit the time between connect attempts to prevent network spam.
-        let socket = self
-            .network_stack
-            .connect(socket, SocketAddr::new(self.state.borrow().broker, 1883))?;
-
-        // Store the new socket for future use.
-        socket_ref.replace(socket);
-
+        socket_ref.replace(self.network_stack.connect(socket, addr)?);
         Ok(())
     }
 
