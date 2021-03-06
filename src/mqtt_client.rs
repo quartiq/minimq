@@ -8,7 +8,7 @@ use crate::{
 use core::{cell::RefCell, convert::TryFrom, str::FromStr};
 
 use embedded_nal::{nb, IpAddr, Mode, SocketAddr};
-use embedded_time::{Clock, duration::Seconds, fixed_point::FixedPoint};
+use embedded_time::{duration::Seconds, fixed_point::FixedPoint, Clock};
 
 use generic_array::{ArrayLength, GenericArray};
 use heapless::String;
@@ -119,10 +119,7 @@ where
             clock: clock,
             ping_response_timeout: Seconds(2),
         };
-        client.open_socket()?;
-        client.connect_socket()?;
         client.reset()?;
-
         Ok(client)
     }
 
@@ -423,19 +420,16 @@ where
     fn is_ping_request_due(&self) -> bool {
         let s = self.state.borrow();
         if s.keep_alive_interval == Seconds(0_u32) {
-            false
-        } else {
-            // Note(unwrap): We should have at least sent out the initial connect packet.
-            let last_write_time = &s.last_write_time.unwrap();
-            // On error (clock wrapped) be conservative and send out a keepalive ping.
-            self.clock
-                .try_now()
-                .unwrap()
-                .checked_duration_since(last_write_time)
-                .and_then(|diff| Seconds::<u32>::try_from(diff).ok())
-                .map(|diff| diff >= s.keep_alive_interval)
-                .unwrap_or(true)
+            return false;
         }
+        // Note(unwrap): We should have at least sent out the initial connect packet.
+        let last_write_time = &s.last_write_time.unwrap();
+        // On error (clock wrapped) be conservative and send out a keepalive ping.
+        let now = self.clock.try_now().unwrap();
+        now.checked_duration_since(last_write_time)
+            .and_then(|diff| Seconds::<u32>::try_from(diff).ok())
+            .map(|diff| diff >= s.keep_alive_interval)
+            .unwrap_or(true)
     }
 
     fn send_ping_request(&mut self) -> Result<(), Error<N::Error>> {
@@ -457,10 +451,8 @@ where
             Some(sent) => {
                 // Be conservative on error (clock wrapped) and just wait until the next ping
                 // to detect a lost connection.
-                self.clock
-                    .try_now()
-                    .unwrap()
-                    .checked_duration_since(sent)
+                let now = self.clock.try_now().unwrap();
+                now.checked_duration_since(sent)
                     .and_then(|diff| Seconds::<u32>::try_from(diff).ok())
                     .map(|diff| diff >= self.ping_response_timeout)
                     .unwrap_or(false)
