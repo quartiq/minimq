@@ -7,6 +7,14 @@ use heapless::{consts, String, Vec};
 pub struct SessionState {
     pub connected: bool,
     pub keep_alive_interval: u16,
+
+    /// Timestamp of the last message sent to the broker, for keep-alive generation.
+    pub last_write_time: u16,
+
+    /// If we sent a ping request without having received a response, stores the time
+    /// the request was sent.
+    pub pending_pingreq_time: Option<u16>,
+
     pub broker: IpAddr,
     pub maximum_packet_size: Option<u32>,
     pub client_id: String<consts::U64>,
@@ -22,6 +30,8 @@ impl SessionState {
             client_id: id,
             packet_id: 1,
             keep_alive_interval: 0,
+            last_write_time: 0,
+            pending_pingreq_time: None,
             pending_subscriptions: Vec::new(),
             maximum_packet_size: None,
         }
@@ -31,6 +41,8 @@ impl SessionState {
         self.connected = false;
         self.packet_id = 1;
         self.keep_alive_interval = 0;
+        self.last_write_time = 0;
+        self.pending_pingreq_time = None;
         self.maximum_packet_size = None;
         self.pending_subscriptions.clear();
     }

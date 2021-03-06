@@ -123,6 +123,10 @@ pub fn subscribe_message<'a, 'b, 'c>(
     packet.finalize(MessageType::Subscribe, 0b0010)
 }
 
+pub fn ping_req_message<'a>(dest: &'a mut [u8]) -> Result<&'a [u8], Error> {
+    ReversedPacketWriter::new(dest).finalize(MessageType::PingReq, 0b0000)
+}
+
 #[test]
 pub fn serialize_publish() {
     let good_publish: [u8; 10] = [
@@ -198,4 +202,11 @@ fn serialize_connect() {
     let message = connect_message(&mut buffer, client_id, 10, &[]).unwrap();
 
     assert_eq!(message, good_serialized_connect)
+}
+
+#[test]
+fn serialise_ping_req() {
+    let good_ping_req: [u8; 2] = [0xc0, 0x00];
+    let mut buffer: [u8; 900] = [0; 900];
+    assert_eq!(ping_req_message(&mut buffer).unwrap(), good_ping_req)
 }

@@ -9,7 +9,6 @@
 //! This library does not currently support the following elements:
 //! * Quality-of-service above `AtMostOnce`
 //! * Session timeouts
-//! * Server keep alive timeouts (ping)
 //! * Bulk subscriptions
 //! * Server Authentication
 //! * Encryption
@@ -17,7 +16,8 @@
 //!
 //! # Requirements
 //! This library requires that the user provide it an object that implements a basic TcpStack that
-//! can be used as the transport layer for MQTT communications.
+//! can be used as the transport layer for MQTT communications. A clock with second accuracy is
+//! required for keep-alive support.
 //!
 //! The maximum message size is configured through generic parameters. This allows the maximum
 //! message size to be configured by the user. Note that buffers will be allocated on the stack, so it
@@ -72,7 +72,7 @@ pub use properties::Property;
 pub use embedded_nal;
 pub use generic_array;
 pub use generic_array::typenum::consts;
-pub use mqtt_client::{Error, MqttClient, ProtocolError, QoS};
+pub use mqtt_client::{Clock, Error, MqttClient, ProtocolError, QoS};
 
 #[cfg(feature = "logging")]
 pub(crate) use log::{debug, error, info, warn};

@@ -16,5 +16,4 @@ There is also an example on a standard computer in `tests/integration_test.rs`
 
 - Support all QoS levels
 - Support maintained session states
-- Implement keepalive timeouts
 - Allow batch subscriptions to multiple topics

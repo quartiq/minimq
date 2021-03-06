@@ -12,14 +12,21 @@ use embedded_nal::{nb, IpAddr, Mode, SocketAddr};
 use generic_array::{ArrayLength, GenericArray};
 use heapless::String;
 
+pub trait Clock {
+    /// Returns the current time, in seconds.
+    fn now(&self) -> u16;
+}
+
 /// A client for interacting with an MQTT Broker.
-pub struct MqttClient<T, N>
+pub struct MqttClient<T, N, C>
 where
     T: ArrayLength<u8>,
     N: embedded_nal::TcpStack,
+    C: Clock,
 {
     /// The network stack originally provided to the client.
     pub network_stack: N,
+    pub clock: C,
 
     socket: RefCell<Option<N::TcpSocket>>,
     state: RefCell<SessionState>,
@@ -76,10 +83,11 @@ impl<E> From<E> for Error<E> {
     }
 }
 
-impl<T, N> MqttClient<T, N>
+impl<T, N, C> MqttClient<T, N, C>
 where
     T: ArrayLength<u8>,
     N: embedded_nal::TcpStack,
+    C: Clock,
 {
     /// Construct a new MQTT client.
     ///
@@ -91,13 +99,12 @@ where
     ///
     /// # Returns
     /// An `MqttClient` that can be used for publishing messages and subscribing to topics.
-    pub fn new(broker: IpAddr, client_id: &str, network_stack: N) -> Result<Self, Error<N::Error>> {
-        // Connect to the broker's TCP port.
-        let socket = network_stack.open(Mode::NonBlocking)?;
-
-        // Next, connect to the broker over MQTT.
-        let socket = network_stack.connect(socket, SocketAddr::new(broker, 1883))?;
-
+    pub fn new(
+        broker: IpAddr,
+        client_id: &str,
+        network_stack: N,
+        clock: C,
+    ) -> Result<Self, Error<N::Error>> {
         let session_state = SessionState::new(
             broker,
             String::from_str(client_id).or(Err(Error::ProvidedClientIdTooLong))?,
@@ -105,13 +112,16 @@ where
 
         let mut client = MqttClient {
             network_stack: network_stack,
-            socket: RefCell::new(Some(socket)),
+            socket: RefCell::new(None),
             state: RefCell::new(session_state),
             transmit_buffer: RefCell::new(GenericArray::default()),
             packet_reader: PacketReader::new(),
             connect_sent: false,
+            clock: clock,
         };
 
+        client.open_socket()?;
+        client.connect_socket()?;
         client.reset()?;
 
         Ok(client)
@@ -132,9 +142,10 @@ where
         Ok(read)
     }
 
-    fn write(&self, buf: &[u8]) -> Result<(), Error<N::Error>> {
+    fn write(&self, state: &mut SessionState, buf: &[u8]) -> Result<(), Error<N::Error>> {
         let mut socket_ref = self.socket.borrow_mut();
         let mut socket = socket_ref.take().unwrap();
+        state.last_write_time = self.clock.now();
         let written = nb::block!(self.network_stack.write(&mut socket, &buf))?;
 
         // Put the socket back into the option.
@@ -172,7 +183,7 @@ where
         let packet = serialize::subscribe_message(&mut buffer, topic, packet_id, properties)
             .map_err(|e| Error::Protocol(e))?;
 
-        match self.write(packet) {
+        match self.write(&mut state, packet) {
             Ok(_) => {
                 info!("Subscribing to `{}`: {}", topic, packet_id);
                 state
@@ -239,12 +250,16 @@ where
         let mut buffer = self.transmit_buffer.borrow_mut();
         let packet = serialize::publish_message(&mut buffer, topic, data, properties)
             .map_err(|e| Error::Protocol(e))?;
-        self.write(packet)
+        self.write(&mut self.state.borrow_mut(), packet)
     }
 
     fn socket_is_connected(&self) -> Result<bool, N::Error> {
         let mut socket_ref = self.socket.borrow_mut();
-        let socket = socket_ref.take().unwrap();
+        let socket = socket_ref.take();
+        if socket.is_none() {
+            return Ok(false);
+        }
+        let socket = socket.unwrap();
 
         let connected = self.network_stack.is_connected(&socket)?;
 
@@ -258,6 +273,15 @@ where
         self.packet_reader.reset();
         self.connect_sent = false;
 
+        Ok(())
+    }
+
+    /// Non-graceful socket shutdown (will cause broker to send out LWTT if configured,
+    /// etc.).
+    fn shutdown_socket(&mut self) -> Result<(), Error<N::Error>> {
+        self.network_stack
+            .close(self.socket.borrow_mut().take().unwrap())?;
+        self.reset()?;
         Ok(())
     }
 
@@ -276,7 +300,7 @@ where
         .map_err(|e| Error::Protocol(e))?;
 
         info!("Sending CONNECT");
-        self.write(packet)?;
+        self.write(&mut self.state.borrow_mut(), packet)?;
 
         self.connect_sent = true;
 
@@ -291,8 +315,8 @@ where
     where
         for<'a> F: FnMut(&Self, &'a str, &[u8], &[Property<'a>]),
     {
-        let mut state = self.state.borrow_mut();
-        if !state.connected {
+        if !self.state.borrow().connected {
+            let mut state = self.state.borrow_mut();
             if let ReceivedPacket::ConnAck(acknowledge) = packet {
                 if acknowledge.reason_code != 0 {
                     return Err(Error::Failed(acknowledge.reason_code));
@@ -346,6 +370,7 @@ where
             }
 
             ReceivedPacket::SubAck(subscribe_acknowledge) => {
+                let mut state = self.state.borrow_mut();
                 match state
                     .pending_subscriptions
                     .iter()
@@ -365,8 +390,19 @@ where
                 Ok(())
             }
 
+            ReceivedPacket::PingResp => {
+                self.state.borrow_mut().pending_pingreq_time.take();
+                Ok(())
+            }
+
             _ => Err(Error::Unsupported),
         }
+    }
+
+    fn open_socket(&mut self) -> Result<(), N::Error> {
+        let socket = self.network_stack.open(Mode::NonBlocking)?;
+        self.socket.borrow_mut().replace(socket);
+        Ok(())
     }
 
     fn connect_socket(&mut self) -> Result<(), Error<N::Error>> {
@@ -385,7 +421,38 @@ where
         Ok(())
     }
 
-    /// Check the MQTT interface for available messages.
+    fn is_ping_request_due(&self) -> bool {
+        let s = self.state.borrow();
+        if s.keep_alive_interval == 0 {
+            false
+        } else {
+            self.clock.now().wrapping_sub(s.last_write_time) >= s.keep_alive_interval
+        }
+    }
+
+    fn send_ping_request(&mut self) -> Result<(), Error<N::Error>> {
+        debug!("Sending keepalive ping request");
+        let mut buffer = self.transmit_buffer.borrow_mut();
+        let packet = serialize::ping_req_message(&mut buffer).map_err(|e| Error::Protocol(e))?;
+        self.write(&mut self.state.borrow_mut(), packet)
+    }
+
+    fn ping_response_is_overdue(&self) -> bool {
+        let s = self.state.borrow();
+        match s.pending_pingreq_time {
+            // TODO: Make ping response timeout configurable?
+            Some(sent) => self.clock.now().wrapping_sub(sent) >= 2,
+            None => false,
+        }
+    }
+
+    /// Check the MQTT interface for available messages, and send a keepalive ping if
+    /// required.
+    ///
+    /// Should be called at least once per second, as per the configured Clock, for
+    /// timely handling of keepalive pings. (More infrequent calls can also cause
+    /// pings to be missed entirely when the keepalive interval is set to a large value
+    /// and the clock wraps around.)
     ///
     /// # Args
     /// * `f` - A closure to process any received messages. The closure should accept the client,
@@ -401,6 +468,9 @@ where
             } else {
                 Ok(())
             };
+            if self.socket.borrow().is_none() {
+                self.open_socket()?;
+            }
             self.reset()?;
             self.connect_socket()?;
             return result;
@@ -445,6 +515,14 @@ where
                     .pop_packet()
                     .map_err(|e| Error::Protocol(e))?;
             }
+        }
+
+        if self.ping_response_is_overdue() {
+            self.shutdown_socket()?;
+        }
+
+        if self.is_ping_request_due() {
+            self.send_ping_request()?;
         }
 
         Ok(())
