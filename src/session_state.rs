@@ -38,7 +38,7 @@ where
             broker,
             client_id: id,
             packet_id: 1,
-            keep_alive_interval: Seconds(0),
+            keep_alive_interval: Seconds(10),
             last_write_time: None,
             pending_pingreq_time: None,
             pending_subscriptions: Vec::new(),
@@ -49,7 +49,7 @@ where
     pub fn reset(&mut self) {
         self.connected = false;
         self.packet_id = 1;
-        self.keep_alive_interval = Seconds(0);
+        self.keep_alive_interval = Seconds(10);
         self.last_write_time = None;
         self.pending_pingreq_time = None;
         self.maximum_packet_size = None;
