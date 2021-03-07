@@ -1,6 +1,29 @@
 use minimq::{consts, MqttClient, Property, QoS};
 
 use embedded_nal::{self, IpAddr, Ipv4Addr};
+use embedded_time;
+
+pub struct StdClock {
+    epoch: std::time::Instant,
+}
+impl StdClock {
+    fn new() -> StdClock {
+        StdClock {
+            epoch: std::time::Instant::now(),
+        }
+    }
+}
+impl embedded_time::Clock for StdClock {
+    type T = u64;
+    const SCALING_FACTOR: embedded_time::fraction::Fraction =
+        <embedded_time::fraction::Fraction>::new(1, 1_000);
+
+    fn try_now(&self) -> Result<embedded_time::Instant<Self>, embedded_time::clock::Error> {
+        Ok(embedded_time::Instant::new(
+            self.epoch.elapsed().as_millis() as u64,
+        ))
+    }
+}
 
 #[test]
 fn main() -> std::io::Result<()> {
@@ -8,7 +31,8 @@ fn main() -> std::io::Result<()> {
 
     let stack = std_embedded_nal::STACK.clone();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let mut client = MqttClient::<consts::U256, _>::new(localhost, "", stack).unwrap();
+    let clock = StdClock::new();
+    let mut client = MqttClient::<consts::U256, _, _>::new(localhost, "", stack, clock).unwrap();
 
     let mut published = false;
     let mut subscribed = false;
