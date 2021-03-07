@@ -491,6 +491,13 @@ where
         // If the socket is not connected, we can't do anything.
         if self.socket_is_connected()? == false {
             let result = if self.connect_sent {
+                // Properly close the TCP connection before trying to reconnect. Note
+                // that self.socket can also be present if we've just started a connection
+                // attempt in a recent call to poll (in which case we don't want to close
+                // it).
+                if let Some(socket) = self.socket.borrow_mut().take() {
+                    self.network_stack.close(socket)?;
+                }
                 Err(Error::Disconnected)
             } else {
                 Ok(())
