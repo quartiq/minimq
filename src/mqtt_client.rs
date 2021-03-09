@@ -248,9 +248,7 @@ where
         let result = self.network_stack.is_connected(&socket);
         socket_ref.replace(socket);
 
-        let connected = result?;
-
-        Ok(connected)
+        result
     }
 
     fn reset(&mut self) -> Result<(), Error<N::Error>> {
