@@ -48,7 +48,7 @@ pub(crate) enum PropertyIdentifier {
 }
 
 /// All of the possible properties that MQTT version 5 supports.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum Property<'a> {
     PayloadFormatIndicator(u8),
     MessageExpiryInterval(u32),
