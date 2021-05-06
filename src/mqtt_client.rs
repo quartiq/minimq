@@ -46,7 +46,6 @@ pub enum Error<E> {
     Network(E),
     WriteFail,
     NotReady,
-    Disconnected,
     Unsupported,
     ProvidedClientIdTooLong,
     Failed(u8),
@@ -403,14 +402,9 @@ where
     {
         // If the socket is not connected, we can't do anything.
         if self.socket_is_connected()? == false {
-            let result = if self.connect_sent {
-                Err(Error::Disconnected)
-            } else {
-                Ok(())
-            };
             self.reset()?;
             self.connect_socket()?;
-            return result;
+            return Ok(());
         }
 
         // Connect to the MQTT broker.
@@ -433,10 +427,9 @@ where
                     processed += count
                 }
 
-                Err(_) => {
-                    // TODO: We should handle recoverable errors better.
+                Err(e) => {
                     self.reset()?;
-                    return Err(Error::Disconnected);
+                    return Err(Error::Protocol(e));
                 }
             }
 
