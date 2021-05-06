@@ -22,9 +22,8 @@ where
     pub network_stack: N,
 
     socket: RefCell<Option<N::TcpSocket>>,
-    state: RefCell<SessionState>,
+    session_state: SessionState,
     packet_reader: PacketReader<T>,
-    transmit_buffer: RefCell<GenericArray<u8, T>>,
     connect_sent: bool,
 }
 
@@ -47,11 +46,11 @@ pub enum Error<E> {
     Network(E),
     WriteFail,
     NotReady,
-    Disconnected,
     Unsupported,
     ProvidedClientIdTooLong,
     Failed(u8),
     Protocol(ProtocolError),
+    SessionReset,
 }
 
 /// Errors that are specific to the MQTT protocol implementation.
@@ -100,8 +99,7 @@ where
         let mut client = MqttClient {
             network_stack: network_stack,
             socket: RefCell::new(None),
-            state: RefCell::new(session_state),
-            transmit_buffer: RefCell::new(GenericArray::default()),
+            session_state,
             packet_reader: PacketReader::new(),
             connect_sent: false,
         };
@@ -151,33 +149,29 @@ where
     /// * `topic` - The topic to subscribe to.
     /// * `properties` - A list of properties to attach to the subscription request. May be empty.
     pub fn subscribe<'a, 'b>(
-        &self,
+        &mut self,
         topic: &'a str,
         properties: &[Property<'b>],
     ) -> Result<(), Error<N::Error>> {
-        let mut state = self.state.borrow_mut();
-
-        if !self.connect_sent {
+        if !self.session_state.connected {
             return Err(Error::NotReady);
         }
-        let packet_id = state.get_packet_identifier();
 
-        let mut buffer = self.transmit_buffer.borrow_mut();
+        let packet_id = self.session_state.get_packet_identifier();
+
+        let mut buffer: GenericArray<u8, T> = GenericArray::default();
         let packet = serialize::subscribe_message(&mut buffer, topic, packet_id, properties)
             .map_err(|e| Error::Protocol(e))?;
 
-        match self.write(packet) {
-            Ok(_) => {
-                info!("Subscribing to `{}`: {}", topic, packet_id);
-                state
-                    .pending_subscriptions
-                    .push(packet_id)
-                    .map_err(|_| Error::Unsupported)?;
-                state.increment_packet_identifier();
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
+        self.write(packet).and_then(|_| {
+            info!("Subscribing to `{}`: {}", topic, packet_id);
+            self.session_state
+                .pending_subscriptions
+                .push(packet_id)
+                .map_err(|_| Error::Unsupported)?;
+            self.session_state.increment_packet_identifier();
+            Ok(())
+        })
     }
 
     /// Determine if any subscriptions are waiting for completion.
@@ -185,7 +179,7 @@ where
     /// # Returns
     /// True if any subscriptions are waiting for confirmation from the broker.
     pub fn subscriptions_pending(&self) -> bool {
-        self.state.borrow().pending_subscriptions.len() != 0
+        self.session_state.pending_subscriptions.len() != 0
     }
 
     /// Determine if the client has established a connection with the broker.
@@ -193,7 +187,7 @@ where
     /// # Returns
     /// True if the client is connected to the broker.
     pub fn is_connected(&self) -> Result<bool, Error<N::Error>> {
-        Ok(self.socket_is_connected()? && self.connect_sent)
+        Ok(self.socket_is_connected()? && self.session_state.connected)
     }
 
     /// Publish a message over MQTT.
@@ -230,7 +224,7 @@ where
             topic, data, properties
         );
 
-        let mut buffer = self.transmit_buffer.borrow_mut();
+        let mut buffer: GenericArray<u8, T> = GenericArray::default();
         let packet = serialize::publish_message(&mut buffer, topic, data, properties)
             .map_err(|e| Error::Protocol(e))?;
         self.write(packet)
@@ -252,9 +246,9 @@ where
     }
 
     fn reset(&mut self) -> Result<(), Error<N::Error>> {
-        self.state.borrow_mut().reset();
         self.packet_reader.reset();
         self.connect_sent = false;
+        self.session_state.connected = false;
 
         Ok(())
     }
@@ -262,14 +256,21 @@ where
     fn connect_to_broker(&mut self) -> Result<(), Error<N::Error>> {
         self.reset()?;
 
-        let mut buffer = self.transmit_buffer.borrow_mut();
+        let properties = [
+            // Tell the broker our maximum packet size.
+            Property::MaximumPacketSize(self.packet_reader.maximum_packet_length() as u32),
+            // The session does not expire.
+            Property::SessionExpiryInterval(u32::MAX),
+        ];
+
+        let mut buffer: GenericArray<u8, T> = GenericArray::default();
         let packet = serialize::connect_message(
             &mut buffer,
-            self.state.borrow().client_id.as_str().as_bytes(),
-            self.state.borrow().keep_alive_interval,
-            &[Property::MaximumPacketSize(
-                self.packet_reader.maximum_packet_length() as u32,
-            )],
+            self.session_state.client_id.as_str().as_bytes(),
+            self.session_state.keep_alive_interval,
+            &properties,
+            // Only perform a clean start if we do not have any session state.
+            !self.session_state.is_present(),
         )
         .map_err(|e| Error::Protocol(e))?;
 
@@ -281,45 +282,54 @@ where
         Ok(())
     }
 
-    fn handle_packet<'p, F>(
-        &self,
-        packet: ReceivedPacket<'p>,
-        f: &mut F,
-    ) -> Result<(), Error<N::Error>>
+    fn handle_packet<F>(&mut self, f: &mut F) -> Result<(), Error<N::Error>>
     where
         for<'a> F: FnMut(&Self, &'a str, &[u8], &[Property<'a>]),
     {
-        let mut state = self.state.borrow_mut();
-        if !state.connected {
+        let packet =
+            ReceivedPacket::parse_message(&self.packet_reader).map_err(|e| Error::Protocol(e))?;
+
+        info!("Received {:?}", packet);
+
+        if !self.session_state.connected {
             if let ReceivedPacket::ConnAck(acknowledge) = packet {
+                let mut result = Ok(());
+
                 if acknowledge.reason_code != 0 {
                     return Err(Error::Failed(acknowledge.reason_code));
                 }
 
-                if acknowledge.session_present {
-                    // We do not currently support saved session state.
-                    return Err(Error::Unsupported);
+                if !acknowledge.session_present {
+                    if self.session_state.connected {
+                        result = Err(Error::SessionReset);
+                    }
+
+                    // Reset the session state upon connection with a broker that doesn't have a
+                    // session state saved for us.
+                    self.session_state.reset();
                 }
 
-                state.connected = true;
+                // Now that we are connected, we have session state that will be persisted.
+                self.session_state.register_connection();
+                self.session_state.connected = true;
 
                 for property in acknowledge.properties {
                     match property {
                         Property::MaximumPacketSize(size) => {
-                            state.maximum_packet_size.replace(size);
+                            self.session_state.maximum_packet_size.replace(size);
                         }
                         Property::AssignedClientIdentifier(id) => {
-                            state.client_id =
+                            self.session_state.client_id =
                                 String::from_str(id).or(Err(Error::ProvidedClientIdTooLong))?;
                         }
                         Property::ServerKeepAlive(keep_alive) => {
-                            state.keep_alive_interval = keep_alive;
+                            self.session_state.keep_alive_interval = keep_alive;
                         }
                         _prop => info!("Ignoring property: {:?}", _prop),
                     };
                 }
 
-                return Ok(());
+                return result;
             } else {
                 // It is a protocol error to receive anything else when not connected.
                 // TODO: Verify it is a protocol error.
@@ -344,7 +354,8 @@ where
             }
 
             ReceivedPacket::SubAck(subscribe_acknowledge) => {
-                match state
+                match self
+                    .session_state
                     .pending_subscriptions
                     .iter()
                     .position(|v| *v == subscribe_acknowledge.packet_identifier)
@@ -353,7 +364,7 @@ where
                         error!("Got bad suback: {:?}", subscribe_acknowledge);
                         return Err(Error::Protocol(ProtocolError::Invalid));
                     }
-                    Some(index) => state.pending_subscriptions.swap_remove(index),
+                    Some(index) => self.session_state.pending_subscriptions.swap_remove(index),
                 };
 
                 if subscribe_acknowledge.reason_code != 0 {
@@ -375,7 +386,7 @@ where
         // TODO: Limit the time between connect attempts to prevent network spam.
         let socket = self
             .network_stack
-            .connect(socket, SocketAddr::new(self.state.borrow().broker, 1883))?;
+            .connect(socket, SocketAddr::new(self.session_state.broker, 1883))?;
 
         // Store the new socket for future use.
         socket_ref.replace(socket);
@@ -394,14 +405,9 @@ where
     {
         // If the socket is not connected, we can't do anything.
         if self.socket_is_connected()? == false {
-            let result = if self.connect_sent {
-                Err(Error::Disconnected)
-            } else {
-                Ok(())
-            };
             self.reset()?;
             self.connect_socket()?;
-            return result;
+            return Ok(());
         }
 
         // Connect to the MQTT broker.
@@ -424,24 +430,23 @@ where
                     processed += count
                 }
 
-                Err(_) => {
-                    // TODO: We should handle recoverable errors better.
+                Err(e) => {
                     self.reset()?;
-                    return Err(Error::Disconnected);
+                    return Err(Error::Protocol(e));
                 }
             }
 
             // Handle any received packets.
             while self.packet_reader.packet_available() {
-                // TODO: Handle deserialize errors properly.
-                let packet = ReceivedPacket::parse_message(&self.packet_reader)
-                    .map_err(|e| Error::Protocol(e))?;
+                let result = self.handle_packet(&mut f);
 
-                info!("Received {:?}", packet);
-                self.handle_packet(packet, &mut f)?;
                 self.packet_reader
                     .pop_packet()
                     .map_err(|e| Error::Protocol(e))?;
+
+                // If there was an error, return it now. Note that we ensure the packet is removed
+                // from buffering after processing even in error conditions..
+                result?;
             }
         }
 
