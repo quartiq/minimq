@@ -153,7 +153,7 @@ where
         topic: &'a str,
         properties: &[Property<'b>],
     ) -> Result<(), Error<N::Error>> {
-        if !self.connect_sent {
+        if !self.session_state.connected {
             return Err(Error::NotReady);
         }
 
@@ -187,7 +187,7 @@ where
     /// # Returns
     /// True if the client is connected to the broker.
     pub fn is_connected(&self) -> Result<bool, Error<N::Error>> {
-        Ok(self.socket_is_connected()? && self.connect_sent)
+        Ok(self.socket_is_connected()? && self.session_state.connected)
     }
 
     /// Publish a message over MQTT.
@@ -248,6 +248,7 @@ where
     fn reset(&mut self) -> Result<(), Error<N::Error>> {
         self.packet_reader.reset();
         self.connect_sent = false;
+        self.session_state.connected = false;
 
         Ok(())
     }
@@ -268,8 +269,8 @@ where
             self.session_state.client_id.as_str().as_bytes(),
             self.session_state.keep_alive_interval,
             &properties,
-            // Only perform a clean start if we have never connected before.
-            !self.session_state.connected,
+            // Only perform a clean start if we do not have any session state.
+            !self.session_state.is_present(),
         )
         .map_err(|e| Error::Protocol(e))?;
 
@@ -308,6 +309,8 @@ where
                     self.session_state.reset();
                 }
 
+                // Now that we are connected, we have session state that will be persisted.
+                self.session_state.register_connection();
                 self.session_state.connected = true;
 
                 for property in acknowledge.properties {
