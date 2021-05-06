@@ -3,6 +3,8 @@ use crate::{
     properties::PropertyIdentifier, ser::ReversedPacketWriter, Property,
 };
 
+use bit_field::BitField;
+
 pub fn integer_size(value: usize) -> usize {
     if value < 0x80 {
         1
@@ -22,6 +24,7 @@ pub fn connect_message<'a, 'b>(
     client_id: &[u8],
     keep_alive: u16,
     properties: &[Property<'a>],
+    clean_start: bool,
 ) -> Result<&'b [u8], Error> {
     // Validate the properties for this packet.
     for property in properties {
@@ -40,6 +43,9 @@ pub fn connect_message<'a, 'b>(
         }
     }
 
+    let mut flags: u8 = 0;
+    flags.set_bit(1, clean_start);
+
     let mut packet = ReversedPacketWriter::new(dest);
 
     // Write the payload, which is the client ID.
@@ -49,7 +55,7 @@ pub fn connect_message<'a, 'b>(
     packet.write_properties(properties)?;
 
     packet.write_u16(keep_alive)?;
-    packet.write(&[0b10])?;
+    packet.write(&[flags])?;
     packet.write(&[5])?;
     packet.write_utf8_string("MQTT")?;
 
@@ -195,7 +201,7 @@ fn serialize_connect() {
 
     let mut buffer: [u8; 900] = [0; 900];
     let client_id = "ABC".as_bytes();
-    let message = connect_message(&mut buffer, client_id, 10, &[]).unwrap();
+    let message = connect_message(&mut buffer, client_id, 10, &[], true).unwrap();
 
     assert_eq!(message, good_serialized_connect)
 }
