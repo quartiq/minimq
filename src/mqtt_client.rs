@@ -127,7 +127,13 @@ where
     fn write(&self, buf: &[u8]) -> Result<(), Error<N::Error>> {
         let mut socket_ref = self.socket.borrow_mut();
         let mut socket = socket_ref.take().unwrap();
-        let written = nb::block!(self.network_stack.write(&mut socket, &buf))?;
+        let written = self
+            .network_stack
+            .write(&mut socket, &buf)
+            .map_err(|err| match err {
+                nb::Error::WouldBlock => Error::WriteFail,
+                nb::Error::Other(err) => Error::Network(err),
+            })?;
 
         // Put the socket back into the option.
         socket_ref.replace(socket);
