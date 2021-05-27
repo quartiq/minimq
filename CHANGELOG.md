@@ -10,6 +10,9 @@ This document describes the changes to Minimq between releases.
 * `Property` updated to implement `Copy`/`Clone`.
 * Session state is now maintained
 * `Error::SessionReset` can be used to detect need to resubscribe to topics.
+* Refactoring client into `Minimq` and `MqttClient` to solve internal mutability issues.
+* Updating to `embedded-nal` v0.6
+* Removing using of `generic-array` in favor of const-generics.
 
 # Version 0.2.0
 Version 0.2.0 was published on 2021-02-15
