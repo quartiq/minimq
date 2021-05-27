@@ -4,42 +4,34 @@ use crate::{
     Property, {debug, warn},
 };
 use bit_field::BitField;
-use generic_array::{ArrayLength, GenericArray};
-use heapless::{consts, Vec};
+use heapless::Vec;
 
 // The maximum size of the fixed header. This is calculated as the type+flag byte and the maximum
 // variable length integer size (4).
 const FIXED_HEADER_MAX: usize = 5;
 
-pub(crate) struct PacketReader<T: ArrayLength<u8>> {
-    pub buffer: GenericArray<u8, T>,
+pub(crate) struct PacketReader<const T: usize> {
+    pub buffer: [u8; T],
     read_bytes: usize,
     packet_length: Option<usize>,
     index: core::cell::RefCell<usize>,
 }
 
-impl<T> PacketReader<T>
-where
-    T: ArrayLength<u8>,
-{
+impl<const T: usize> PacketReader<T> {
     pub fn new() -> PacketReader<T> {
         PacketReader {
-            buffer: GenericArray::default(),
+            buffer: [0; T],
             read_bytes: 0,
             packet_length: None,
             index: core::cell::RefCell::new(0),
         }
     }
 
-    pub fn maximum_packet_length(&self) -> usize {
-        self.buffer.len()
-    }
-
     #[cfg(test)]
     pub fn from_serialized<'a>(buffer: &'a mut [u8]) -> PacketReader<T> {
         let len = buffer.len();
         let mut reader = PacketReader {
-            buffer: GenericArray::default(),
+            buffer: [0; T],
             read_bytes: len,
             packet_length: None,
             index: core::cell::RefCell::new(0),
@@ -148,8 +140,8 @@ where
         Ok(byte[0])
     }
 
-    pub fn read_properties<'a, 'me: 'a>(&'me self) -> Result<Vec<Property<'a>, consts::U8>, Error> {
-        let mut properties: Vec<Property, consts::U8> = Vec::new();
+    pub fn read_properties<'a, 'me: 'a>(&'me self) -> Result<Vec<Property<'a>, 8>, Error> {
+        let mut properties: Vec<Property, 8> = Vec::new();
 
         let properties_size = self.read_variable_length_integer()?;
         let mut property_bytes_processed = 0;

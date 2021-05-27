@@ -2,24 +2,27 @@
 ///
 ///
 use embedded_nal::IpAddr;
-use heapless::{consts, String, Vec};
+use heapless::{String, Vec};
 
 pub struct SessionState {
+    // Indicates that we are connected to a broker.
     pub connected: bool,
     pub keep_alive_interval: u16,
     pub broker: IpAddr,
     pub maximum_packet_size: Option<u32>,
-    pub client_id: String<consts::U32>,
-    pub pending_subscriptions: Vec<u16, consts::U32>,
+    pub client_id: String<64>,
+    pub pending_subscriptions: Vec<u16, 32>,
     packet_id: u16,
+    active: bool,
 }
 
 impl SessionState {
-    pub fn new<'a>(broker: IpAddr, id: &'a str) -> SessionState {
+    pub fn new<'a>(broker: IpAddr, id: String<64>) -> SessionState {
         SessionState {
             connected: false,
+            active: false,
             broker,
-            client_id: String::from(id),
+            client_id: id,
             packet_id: 1,
             keep_alive_interval: 0,
             pending_subscriptions: Vec::new(),
@@ -28,11 +31,22 @@ impl SessionState {
     }
 
     pub fn reset(&mut self) {
+        self.active = false;
         self.connected = false;
         self.packet_id = 1;
         self.keep_alive_interval = 0;
         self.maximum_packet_size = None;
         self.pending_subscriptions.clear();
+    }
+
+    /// Called whenever an active connection has been made with a broker.
+    pub fn register_connection(&mut self) {
+        self.active = true;
+    }
+
+    /// Indicates if there is present session state available.
+    pub fn is_present(&self) -> bool {
+        self.active
     }
 
     pub fn get_packet_identifier(&mut self) -> u16 {
