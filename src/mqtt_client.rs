@@ -201,8 +201,7 @@ where
 
     fn socket_is_connected(&mut self) -> Result<bool, N::Error> {
         if self.socket.is_none() {
-            let socket = self.network_stack.socket()?;
-            self.socket.replace(socket);
+            return Ok(false);
         }
 
         let socket = self.socket.as_ref().unwrap();
@@ -244,6 +243,11 @@ where
     }
 
     fn connect_socket(&mut self) -> Result<(), Error<N::Error>> {
+        if self.socket.is_none() {
+            let socket = self.network_stack.socket()?;
+            self.socket.replace(socket);
+        }
+
         let socket = self.socket.as_mut().unwrap();
 
         // Connect to the broker's TCP port with a new socket.
@@ -349,7 +353,7 @@ where
 }
 
 impl<N: TcpClientStack, const T: usize> Minimq<N, T> {
-    /// Construct a new MQTT client.
+    /// Construct a new MQTT interface.
     ///
     /// # Args
     /// * `broker` - The IP address of the broker to connect to.
@@ -358,7 +362,8 @@ impl<N: TcpClientStack, const T: usize> Minimq<N, T> {
     /// * `network_stack` - The network stack to use for communication.
     ///
     /// # Returns
-    /// A `Minimq` interface that can be used for publishing messages and subscribing to topics.
+    /// A `Minimq` object that can be used for publishing messages, subscribing to topics, and
+    /// managing the MQTT state.
     pub fn new(broker: IpAddr, client_id: &str, network_stack: N) -> Result<Self, Error<N::Error>> {
         let session_state = SessionState::new(
             broker,
