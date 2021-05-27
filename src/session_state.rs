@@ -2,7 +2,7 @@
 ///
 ///
 use embedded_nal::IpAddr;
-use heapless::{consts, String, Vec};
+use heapless::{String, Vec};
 
 pub struct SessionState {
     // Indicates that we are connected to a broker.
@@ -10,14 +10,14 @@ pub struct SessionState {
     pub keep_alive_interval: u16,
     pub broker: IpAddr,
     pub maximum_packet_size: Option<u32>,
-    pub client_id: String<consts::U64>,
-    pub pending_subscriptions: Vec<u16, consts::U32>,
+    pub client_id: String<64>,
+    pub pending_subscriptions: Vec<u16, 32>,
     packet_id: u16,
     active: bool,
 }
 
 impl SessionState {
-    pub fn new<'a>(broker: IpAddr, id: String<consts::U64>) -> SessionState {
+    pub fn new<'a>(broker: IpAddr, id: String<64>) -> SessionState {
         SessionState {
             connected: false,
             active: false,

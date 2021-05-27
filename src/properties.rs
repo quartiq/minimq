@@ -5,7 +5,6 @@ use crate::{
 };
 
 use enum_iterator::IntoEnumIterator;
-use generic_array::ArrayLength;
 
 #[derive(Copy, Clone, IntoEnumIterator)]
 pub(crate) enum PropertyIdentifier {
@@ -132,7 +131,7 @@ impl<'a> Property<'a> {
         }
     }
 
-    pub(crate) fn parse<'reader: 'a, T: ArrayLength<u8>>(
+    pub(crate) fn parse<'reader: 'a, const T: usize>(
         packet: &'reader PacketReader<T>,
     ) -> Result<Property<'a>, Error> {
         let identifier: PropertyIdentifier = packet.read_variable_length_integer()?.into();

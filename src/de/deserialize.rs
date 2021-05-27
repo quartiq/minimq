@@ -2,8 +2,7 @@ use crate::{
     de::PacketReader, message_types::MessageType, mqtt_client::ProtocolError as Error, Property,
 };
 use bit_field::BitField;
-use generic_array::ArrayLength;
-use heapless::{consts, Vec};
+use heapless::Vec;
 
 #[derive(Debug)]
 pub struct ConnAck<'a> {
@@ -14,7 +13,7 @@ pub struct ConnAck<'a> {
     pub reason_code: u8,
 
     /// A list of properties associated with the connection.
-    pub properties: Vec<Property<'a>, consts::U8>,
+    pub properties: Vec<Property<'a>, 8>,
 }
 
 #[derive(Debug)]
@@ -23,7 +22,10 @@ pub struct Pub<'a> {
     pub topic: &'a str,
 
     /// The properties transmitted with the publish data.
-    pub properties: Vec<Property<'a>, consts::U8>,
+    pub properties: Vec<Property<'a>, 8>,
+
+    /// The payload of the message.
+    pub payload: &'a [u8],
 }
 
 #[derive(Debug)]
@@ -35,7 +37,7 @@ pub struct SubAck<'a> {
     pub reason_code: u8,
 
     /// A list of properties associated with the subscription.
-    pub properties: Vec<Property<'a>, consts::U8>,
+    pub properties: Vec<Property<'a>, 8>,
 }
 
 #[derive(Debug)]
@@ -53,7 +55,7 @@ impl<'a> ReceivedPacket<'a> {
     ///
     /// # Returns
     /// A packet describing the received content.
-    pub(crate) fn parse_message<'reader: 'a, T: ArrayLength<u8>>(
+    pub(crate) fn parse_message<'reader: 'a, const T: usize>(
         packet_reader: &'reader PacketReader<T>,
     ) -> Result<ReceivedPacket<'a>, Error> {
         let (message_type, flags, remaining_length) = packet_reader.read_fixed_header()?;
@@ -87,7 +89,7 @@ impl<'a> ReceivedPacket<'a> {
     }
 }
 
-fn parse_connack<T: ArrayLength<u8>>(p: &PacketReader<T>) -> Result<ConnAck, Error> {
+fn parse_connack<const T: usize>(p: &PacketReader<T>) -> Result<ConnAck, Error> {
     // Read the connect acknowledgement flags.
     let flags = p.read_u8()?;
     if flags != 0 && flags != 1 {
@@ -108,7 +110,7 @@ fn parse_connack<T: ArrayLength<u8>>(p: &PacketReader<T>) -> Result<ConnAck, Err
     })
 }
 
-fn parse_publish<'a, 'reader: 'a, T: ArrayLength<u8>>(
+fn parse_publish<'a, 'reader: 'a, const T: usize>(
     p: &'reader PacketReader<T>,
 ) -> Result<Pub<'a>, Error> {
     let topic = p.read_utf8_string()?;
@@ -116,12 +118,16 @@ fn parse_publish<'a, 'reader: 'a, T: ArrayLength<u8>>(
     let properties = p.read_properties()?;
     // TODO: Validate properties associated with this message.
 
-    // Note that we intentionally don't read the payload from the data reader so that it is
-    // available later to be borrowed directly to the handler for the payload data.
-    Ok(Pub { topic, properties })
+    let payload = p.payload()?;
+
+    Ok(Pub {
+        topic,
+        properties,
+        payload,
+    })
 }
 
-fn parse_suback<T: ArrayLength<u8>>(p: &PacketReader<T>) -> Result<SubAck, Error> {
+fn parse_suback<const T: usize>(p: &PacketReader<T>) -> Result<SubAck, Error> {
     // Read the variable length header.
     let id = p.read_u16()?;
 
@@ -142,7 +148,6 @@ fn parse_suback<T: ArrayLength<u8>>(p: &PacketReader<T>) -> Result<SubAck, Error
 #[cfg(test)]
 mod test {
     use super::{PacketReader, ReceivedPacket};
-    use generic_array::typenum;
 
     #[test]
     fn deserialize_good_connack() {
@@ -154,7 +159,7 @@ mod test {
                   // No payload.
         ];
 
-        let mut reader = PacketReader::<typenum::U32>::from_serialized(&mut serialized_connack);
+        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_connack);
         let connack = ReceivedPacket::parse_message(&mut reader).unwrap();
         match connack {
             ReceivedPacket::ConnAck(conn_ack) => {
@@ -175,7 +180,7 @@ mod test {
             0x05, // Payload
         ];
 
-        let mut reader = PacketReader::<typenum::U32>::from_serialized(&mut serialized_publish);
+        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_publish);
         let publish = ReceivedPacket::parse_message(&mut reader).unwrap();
         match publish {
             ReceivedPacket::Publish(pub_info) => {
@@ -195,7 +200,7 @@ mod test {
             0x02, // Response Code
         ];
 
-        let mut reader = PacketReader::<typenum::U32>::from_serialized(&mut serialized_suback);
+        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_suback);
         let suback = ReceivedPacket::parse_message(&mut reader).unwrap();
         match suback {
             ReceivedPacket::SubAck(sub_ack) => {
