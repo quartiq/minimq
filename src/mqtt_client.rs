@@ -59,13 +59,26 @@ impl<E> From<E> for Error<E> {
     }
 }
 
-#[derive(PartialEq, Debug, Copy, Clone)]
-enum ConnectionState {
-    Idle,
-    Init,
-    ConnectTransport,
-    Active,
+mod sm {
+
+    use smlang::statemachine;
+
+    statemachine! {
+        transitions: {
+            *Restart + Update = ConnectTransport,
+            ConnectTransport + Connect = ConnectBroker,
+            ConnectBroker + Update = Active,
+            ConnectBroker + Disconnect = Restart,
+            Active + Disconnect = Restart,
+        }
+    }
+
+    pub struct Context;
+
+    impl StateMachineContext for Context {}
 }
+
+use sm::{Context, Events, StateMachine, States};
 
 /// The general structure for managing MQTT via Minimq.
 pub struct Minimq<N, const T: usize>
@@ -81,7 +94,7 @@ pub struct MqttClient<N: TcpClientStack, const T: usize> {
     network_stack: N,
     socket: Option<N::TcpSocket>,
     session_state: SessionState,
-    connection_state: ConnectionState,
+    connection_state: StateMachine<Context>,
 }
 
 impl<N, const T: usize> MqttClient<N, T>
@@ -89,45 +102,27 @@ where
     N: TcpClientStack,
 {
     fn process(&mut self) -> Result<(), Error<N::Error>> {
-        match self.connection_state {
-            ConnectionState::Idle => {
-                self.transition_state(ConnectionState::Init).ok();
-            }
-            ConnectionState::Init => self.transition_state(ConnectionState::ConnectTransport)?,
-            ConnectionState::ConnectTransport => {
-                if self.socket_is_connected()? {
-                    self.transition_state(ConnectionState::Active)?;
-                } else {
-                    // If we still aren't connected, continue trying to connect the transport.
-                    self.transition_state(ConnectionState::ConnectTransport)?;
-                }
-            }
-            ConnectionState::Active => {
-                if !self.socket_is_connected()? {
-                    self.transition_state(ConnectionState::Init)?;
-                }
-            }
+        // Potentially update the state machine depending on the current socket connection status.
+        if !self.socket_is_connected()? {
+            self.connection_state.process_event(Events::Disconnect).ok();
+        } else {
+            self.connection_state.process_event(Events::Connect).ok();
         }
 
-        Ok(())
-    }
-
-    fn transition_state(&mut self, new_state: ConnectionState) -> Result<(), Error<N::Error>> {
-        match (self.connection_state, new_state) {
-            // It is always valid to transition to INIT.
-            (_, ConnectionState::Init) => {
-                // If we have an open network socket, we need to close it.
+        match self.connection_state.state() {
+            // In the RESTART state, we need to reopen the TCP socket.
+            &States::Restart => {
                 if self.socket.is_some() {
                     self.network_stack.close(self.socket.take().unwrap())?;
                 }
 
-                // Allocate a new socket to use.
+                // Allocate a new socket to use and begin connecting it.
                 self.socket.replace(self.network_stack.socket()?);
+                self.connection_state.process_event(Events::Update).unwrap();
             }
 
-            // We can connect the transport multiple times, or after coming out of INIT.
-            (ConnectionState::Init, ConnectionState::ConnectTransport)
-            | (ConnectionState::ConnectTransport, ConnectionState::ConnectTransport) => {
+            // In the connect transport state, we need to connect our TCP socket to the broker.
+            &States::ConnectTransport => {
                 self.network_stack
                     .connect(
                         self.socket.as_mut().unwrap(),
@@ -139,8 +134,8 @@ where
                     })?;
             }
 
-            // It is only valid to transition to the active state after the transport is connected.
-            (ConnectionState::ConnectTransport, ConnectionState::Active) => {
+            // Next, connect to the broker via the MQTT protocol.
+            &States::ConnectBroker => {
                 self.reset();
 
                 let properties = [
@@ -163,12 +158,12 @@ where
 
                 info!("Sending CONNECT");
                 self.write(packet)?;
+
+                self.connection_state.process_event(Events::Update).unwrap();
             }
 
-            _ => panic!("Invalid state transition"),
-        };
-
-        self.connection_state = new_state;
+            _ => {}
+        }
 
         Ok(())
     }
@@ -420,7 +415,7 @@ impl<N: TcpClientStack, const T: usize> Minimq<N, T> {
                 network_stack,
                 socket: None,
                 session_state,
-                connection_state: ConnectionState::Idle,
+                connection_state: StateMachine::new(Context),
             },
             packet_reader: PacketReader::new(),
         };
@@ -441,7 +436,7 @@ impl<N: TcpClientStack, const T: usize> Minimq<N, T> {
 
         // If the connection is no longer active, reset the packet reader state and return. There's
         // nothing more we can do.
-        if self.client.connection_state != ConnectionState::Active {
+        if self.client.connection_state.state() != &States::Active {
             self.packet_reader.reset();
             return Ok(());
         }
