@@ -13,6 +13,7 @@ This document describes the changes to Minimq between releases.
 * Refactoring client into `Minimq` and `MqttClient` to solve internal mutability issues.
 * Updating to `embedded-nal` v0.6
 * Removing using of `generic-array` in favor of const-generics.
+* Correcting an issue where the client would not reconnect if the broker was restarted.
 
 # Version 0.2.0
 Version 0.2.0 was published on 2021-02-15
