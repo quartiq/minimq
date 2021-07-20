@@ -59,6 +59,14 @@ impl<E> From<E> for Error<E> {
     }
 }
 
+#[derive(PartialEq, Debug, Copy, Clone)]
+enum ConnectionState {
+    Idle,
+    Init,
+    ConnectTransport,
+    Active,
+}
+
 /// The general structure for managing MQTT via Minimq.
 pub struct Minimq<N, const T: usize>
 where
@@ -73,13 +81,93 @@ pub struct MqttClient<N: TcpClientStack, const T: usize> {
     network_stack: N,
     socket: Option<N::TcpSocket>,
     session_state: SessionState,
-    connect_sent: bool,
+    connection_state: ConnectionState,
 }
 
 impl<N, const T: usize> MqttClient<N, T>
 where
     N: TcpClientStack,
 {
+    fn process(&mut self) -> Result<(), Error<N::Error>> {
+        match self.connection_state {
+            ConnectionState::Idle => {
+                self.transition_state(ConnectionState::Init).ok();
+            }
+            ConnectionState::Init => self.transition_state(ConnectionState::ConnectTransport)?,
+            ConnectionState::ConnectTransport => {
+                if self.socket_is_connected()? {
+                    self.transition_state(ConnectionState::Active)?;
+                } else {
+                    // If we still aren't connected, continue trying to connect the transport.
+                    self.transition_state(ConnectionState::ConnectTransport)?;
+                }
+            }
+            ConnectionState::Active => {
+                if !self.socket_is_connected()? {
+                    self.transition_state(ConnectionState::Init)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn transition_state(&mut self, new_state: ConnectionState) -> Result<(), Error<N::Error>> {
+        match new_state {
+            ConnectionState::Idle => {
+                panic!("Invalid state transition");
+            }
+            ConnectionState::Init => {
+                // If we have an open network socket, we need to close it.
+                if self.socket.is_some() {
+                    self.network_stack.close(self.socket.take().unwrap())?;
+                }
+
+                // Allocate a new socket to use.
+                self.socket.replace(self.network_stack.socket()?);
+            }
+            ConnectionState::ConnectTransport => {
+                self.network_stack
+                    .connect(
+                        self.socket.as_mut().unwrap(),
+                        SocketAddr::new(self.session_state.broker, 1883),
+                    )
+                    .map_err(|err| match err {
+                        nb::Error::WouldBlock => Error::WriteFail,
+                        nb::Error::Other(err) => Error::Network(err),
+                    })?;
+            }
+            ConnectionState::Active => {
+                self.reset();
+
+                let properties = [
+                    // Tell the broker our maximum packet size.
+                    Property::MaximumPacketSize(T as u32),
+                    // The session does not expire.
+                    Property::SessionExpiryInterval(u32::MAX),
+                ];
+
+                let mut buffer: [u8; T] = [0; T];
+                let packet = serialize::connect_message(
+                    &mut buffer,
+                    self.session_state.client_id.as_str().as_bytes(),
+                    self.session_state.keep_alive_interval,
+                    &properties,
+                    // Only perform a clean start if we do not have any session state.
+                    !self.session_state.is_present(),
+                )
+                .map_err(|e| Error::Protocol(e))?;
+
+                info!("Sending CONNECT");
+                self.write(packet)?;
+            }
+        };
+
+        self.connection_state = new_state;
+
+        Ok(())
+    }
+
     fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, Error<N::Error>> {
         // Atomically access the socket.
         let socket = self.socket.as_mut().unwrap();
@@ -209,55 +297,7 @@ where
     }
 
     fn reset(&mut self) {
-        self.connect_sent = false;
         self.session_state.connected = false;
-    }
-
-    fn connect_to_broker(&mut self) -> Result<(), Error<N::Error>> {
-        self.reset();
-
-        let properties = [
-            // Tell the broker our maximum packet size.
-            Property::MaximumPacketSize(T as u32),
-            // The session does not expire.
-            Property::SessionExpiryInterval(u32::MAX),
-        ];
-
-        let mut buffer: [u8; T] = [0; T];
-        let packet = serialize::connect_message(
-            &mut buffer,
-            self.session_state.client_id.as_str().as_bytes(),
-            self.session_state.keep_alive_interval,
-            &properties,
-            // Only perform a clean start if we do not have any session state.
-            !self.session_state.is_present(),
-        )
-        .map_err(|e| Error::Protocol(e))?;
-
-        info!("Sending CONNECT");
-        self.write(packet)?;
-
-        self.connect_sent = true;
-
-        Ok(())
-    }
-
-    fn connect_socket(&mut self) -> Result<(), Error<N::Error>> {
-        if self.socket.is_none() {
-            let socket = self.network_stack.socket()?;
-            self.socket.replace(socket);
-        }
-
-        let socket = self.socket.as_mut().unwrap();
-
-        // Connect to the broker's TCP port with a new socket.
-        // TODO: Limit the time between connect attempts to prevent network spam.
-        self.network_stack
-            .connect(socket, SocketAddr::new(self.session_state.broker, 1883))
-            .map_err(|err| match err {
-                nb::Error::WouldBlock => Error::WriteFail,
-                nb::Error::Other(err) => Error::Network(err),
-            })
     }
 
     fn handle_packet<'a, F>(
@@ -375,7 +415,7 @@ impl<N: TcpClientStack, const T: usize> Minimq<N, T> {
                 network_stack,
                 socket: None,
                 session_state,
-                connect_sent: false,
+                connection_state: ConnectionState::Idle,
             },
             packet_reader: PacketReader::new(),
         };
@@ -392,17 +432,12 @@ impl<N: TcpClientStack, const T: usize> Minimq<N, T> {
     where
         for<'a> F: FnMut(&mut MqttClient<N, T>, &'a str, &[u8], &[Property<'a>]),
     {
-        // If the socket is not connected, we can't do anything.
-        if self.client.socket_is_connected()? == false {
-            self.client.reset();
-            self.packet_reader.reset();
-            self.client.connect_socket()?;
-            return Ok(());
-        }
+        self.client.process()?;
 
-        // Connect to the MQTT broker.
-        if !self.client.connect_sent {
-            self.client.connect_to_broker()?;
+        // If the connection is no longer active, reset the packet reader state and return. There's
+        // nothing more we can do.
+        if self.client.connection_state != ConnectionState::Active {
+            self.packet_reader.reset();
             return Ok(());
         }
 
