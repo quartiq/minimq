@@ -113,11 +113,9 @@ where
     }
 
     fn transition_state(&mut self, new_state: ConnectionState) -> Result<(), Error<N::Error>> {
-        match new_state {
-            ConnectionState::Idle => {
-                panic!("Invalid state transition");
-            }
-            ConnectionState::Init => {
+        match (self.connection_state, new_state) {
+            // It is always valid to transition to INIT.
+            (_, ConnectionState::Init) => {
                 // If we have an open network socket, we need to close it.
                 if self.socket.is_some() {
                     self.network_stack.close(self.socket.take().unwrap())?;
@@ -126,7 +124,10 @@ where
                 // Allocate a new socket to use.
                 self.socket.replace(self.network_stack.socket()?);
             }
-            ConnectionState::ConnectTransport => {
+
+            // We can connect the transport multiple times, or after coming out of INIT.
+            (ConnectionState::Init, ConnectionState::ConnectTransport)
+            | (ConnectionState::ConnectTransport, ConnectionState::ConnectTransport) => {
                 self.network_stack
                     .connect(
                         self.socket.as_mut().unwrap(),
@@ -137,7 +138,9 @@ where
                         nb::Error::Other(err) => Error::Network(err),
                     })?;
             }
-            ConnectionState::Active => {
+
+            // It is only valid to transition to the active state after the transport is connected.
+            (ConnectionState::ConnectTransport, ConnectionState::Active) => {
                 self.reset();
 
                 let properties = [
@@ -161,6 +164,8 @@ where
                 info!("Sending CONNECT");
                 self.write(packet)?;
             }
+
+            _ => panic!("Invalid state transition"),
         };
 
         self.connection_state = new_state;
