@@ -118,7 +118,9 @@ where
 
                 // Allocate a new socket to use and begin connecting it.
                 self.socket.replace(self.network_stack.socket()?);
-                self.connection_state.process_event(Events::GotSocket).unwrap();
+                self.connection_state
+                    .process_event(Events::GotSocket)
+                    .unwrap();
             }
 
             // In the connect transport state, we need to connect our TCP socket to the broker.
@@ -159,7 +161,9 @@ where
                 info!("Sending CONNECT");
                 self.write(packet)?;
 
-                self.connection_state.process_event(Events::SentConnect).unwrap();
+                self.connection_state
+                    .process_event(Events::SentConnect)
+                    .unwrap();
             }
 
             _ => {}
