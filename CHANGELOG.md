@@ -2,7 +2,9 @@
 
 This document describes the changes to Minimq between releases.
 
-# Unreleased
+# Version 0.3.0
+Version 0.3.0 was published on 2021-08-06
+
 * Client ID may now be unspecified to allow the broker to automatically assign an ID.
 * Strict client ID check removed to allow broker-validated IDs.
 * Updated `generic-array` dependencies to address security vulnerability.
