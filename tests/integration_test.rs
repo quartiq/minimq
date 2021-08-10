@@ -1,86 +1,12 @@
 use minimq::{Minimq, Property, QoS};
-use std::io::{Read, Write};
 
-use embedded_nal::{self, nb, IpAddr, Ipv4Addr, SocketAddr};
-
-#[derive(Copy, Clone, Debug)]
-struct STACK;
-
-pub struct TcpSocket {
-    state: Option<std::net::TcpStream>,
-}
-
-impl TcpSocket {
-    pub fn new() -> Self {
-        Self { state: None }
-    }
-}
-
-fn to_nb(e: std::io::Error) -> nb::Error<std::io::Error> {
-    use std::io::ErrorKind::{TimedOut, WouldBlock};
-
-    match e.kind() {
-        WouldBlock | TimedOut => nb::Error::WouldBlock,
-        _ => e.into(),
-    }
-}
-
-impl embedded_nal::TcpClientStack for STACK {
-    type Error = std::io::Error;
-    type TcpSocket = TcpSocket;
-
-    fn socket(&mut self) -> Result<TcpSocket, Self::Error> {
-        Ok(TcpSocket::new())
-    }
-
-    fn connect(
-        &mut self,
-        socket: &mut TcpSocket,
-        remote: SocketAddr,
-    ) -> nb::Result<(), Self::Error> {
-        let octets: [u8; 4] = match remote.ip() {
-            IpAddr::V4(addr) => addr.octets(),
-            _ => panic!("Unsupported IP version"),
-        };
-
-        let soc = std::net::TcpStream::connect(std::net::SocketAddr::new(
-            std::net::IpAddr::V4(std::net::Ipv4Addr::from(octets)),
-            remote.port(),
-        ))?;
-        soc.set_nonblocking(true)?;
-        socket.state.replace(soc);
-
-        Ok(())
-    }
-
-    fn is_connected(&mut self, socket: &TcpSocket) -> Result<bool, Self::Error> {
-        Ok(socket.state.is_some())
-    }
-
-    fn send(&mut self, socket: &mut TcpSocket, buffer: &[u8]) -> nb::Result<usize, Self::Error> {
-        let socket = socket.state.as_mut().unwrap();
-        socket.write(buffer).map_err(to_nb)
-    }
-
-    fn receive(
-        &mut self,
-        socket: &mut TcpSocket,
-        buffer: &mut [u8],
-    ) -> nb::Result<usize, Self::Error> {
-        let socket = socket.state.as_mut().unwrap();
-        socket.read(buffer).map_err(to_nb)
-    }
-
-    fn close(&mut self, _socket: TcpSocket) -> Result<(), Self::Error> {
-        Ok(())
-    }
-}
+use embedded_nal::{self, IpAddr, Ipv4Addr};
 
 #[test]
 fn main() -> std::io::Result<()> {
     env_logger::init();
 
-    let stack = STACK.clone();
+    let stack = std_embedded_nal::Stack::default();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
     let mut mqtt = Minimq::<_, 256>::new(localhost, "", stack).unwrap();
 

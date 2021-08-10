@@ -30,4 +30,4 @@ logging = ["log"]
 
 [dev-dependencies]
 env_logger = "0.7"
-std-embedded-nal = "=0.0.1"
+std-embedded-nal = "0.1"
