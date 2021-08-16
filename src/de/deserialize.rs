@@ -45,6 +45,7 @@ pub enum ReceivedPacket<'a> {
     ConnAck(ConnAck<'a>),
     Publish(Pub<'a>),
     SubAck(SubAck<'a>),
+    PingResp,
 }
 
 impl<'a> ReceivedPacket<'a> {
@@ -82,6 +83,14 @@ impl<'a> ReceivedPacket<'a> {
                 }
 
                 Ok(ReceivedPacket::SubAck(parse_suback(packet_reader)?))
+            }
+
+            MessageType::PingResp => {
+                if flags != 0 || remaining_length != 0 {
+                    return Err(Error::MalformedPacket);
+                }
+
+                Ok(ReceivedPacket::PingResp)
             }
 
             _ => Err(Error::UnsupportedPacket),
@@ -207,6 +216,21 @@ mod test {
                 assert_eq!(sub_ack.reason_code, 2);
                 assert_eq!(sub_ack.packet_identifier, 5);
             }
+            _ => panic!("Invalid message"),
+        }
+    }
+
+    #[test]
+    fn deserialize_good_ping_resp() {
+        let mut serialized_ping_req: [u8; 2] = [
+            0xd0, // Ping resp
+            0x00, // Remaining length (0)
+        ];
+
+        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_ping_req);
+        let ping_req = ReceivedPacket::parse_message(&mut reader).unwrap();
+        match ping_req {
+            ReceivedPacket::PingResp => {}
             _ => panic!("Invalid message"),
         }
     }
