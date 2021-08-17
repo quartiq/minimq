@@ -12,7 +12,8 @@ use heapless::String;
 
 use core::str::FromStr;
 
-const PING_TIMEOUT: embedded_time::duration::Seconds = embedded_time::duration::Seconds(1);
+/// The default duration to wait for a ping response from the broker.
+const PING_TIMEOUT: embedded_time::duration::Seconds = embedded_time::duration::Seconds(5);
 
 /// The quality-of-service for an MQTT message.
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -447,10 +448,15 @@ where
             // Check if we need to ping the server.
             if self.session_state.ping_is_due(&now) {
                 let mut buffer: [u8; T] = [0; T];
+
+                // Note: The ping timeout is set at this point so that it's running even if we fail
+                // to write the ping message. This is intentional incase the underlying transport
+                // mechanism has stalled. The ping timeout will then allow us to recover the
+                // underlying TCP connection.
+                self.session_state.ping_timeout.replace(now + PING_TIMEOUT);
+
                 let packet = serialize::ping_req_message(&mut buffer)?;
                 self.write(packet)?;
-
-                self.session_state.ping_timeout.replace(now + PING_TIMEOUT);
             }
         }
 
