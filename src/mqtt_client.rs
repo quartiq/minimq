@@ -224,6 +224,28 @@ where
             })
     }
 
+    /// Configure the MQTT keep-alive interval.
+    ///
+    /// # Note
+    /// This must be completed before connecting to a broker.
+    ///
+    /// # Note
+    /// The broker may override the requested keep-alive interval. Any value requested by the
+    /// broker will be used instead.
+    ///
+    /// # Args
+    /// * `interval` - The keep-alive interval in seconds. A ping will be transmitted if no other
+    /// messages are sent within 50% of the keep-alive interval.
+    pub fn set_keepalive_interval(&mut self, interval: u16) -> Result<(), Error<N::Error>> {
+        match self.connection_state.state() {
+            &States::Active => Err(Error::NotReady),
+            _ => {
+                self.session_state.keep_alive_interval.replace(interval);
+                Ok(())
+            }
+        }
+    }
+
     /// Subscribe to a topic.
     ///
     /// # Note
