@@ -1,6 +1,35 @@
 use minimq::{Minimq, Property, QoS};
 
 use embedded_nal::{self, IpAddr, Ipv4Addr};
+use embedded_time::{fraction::Fraction, Clock};
+use std::time::Instant;
+
+#[derive(Default)]
+struct StdClock {
+    start: core::cell::UnsafeCell<Option<Instant>>,
+}
+
+impl Clock for StdClock {
+    type T = u32;
+
+    const SCALING_FACTOR: Fraction = Fraction::new(1, 1_000);
+
+    fn try_now(&self) -> Result<embedded_time::Instant<Self>, embedded_time::clock::Error> {
+        let std_now = Instant::now();
+        let start = unsafe {
+            if (*self.start.get()).is_none() {
+                (*self.start.get()).replace(std_now);
+                std_now
+            } else {
+                (*self.start.get()).unwrap()
+            }
+        };
+
+        let elapsed = std_now - start;
+
+        Ok(embedded_time::Instant::new(elapsed.as_millis() as u32))
+    }
+}
 
 #[test]
 fn main() -> std::io::Result<()> {
@@ -8,7 +37,7 @@ fn main() -> std::io::Result<()> {
 
     let stack = std_embedded_nal::Stack::default();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let mut mqtt = Minimq::<_, 256>::new(localhost, "", stack).unwrap();
+    let mut mqtt = Minimq::<_, _, 256>::new(localhost, "", stack, StdClock::default()).unwrap();
 
     let mut published = false;
     let mut subscribed = false;

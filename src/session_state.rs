@@ -4,27 +4,36 @@
 use embedded_nal::IpAddr;
 use heapless::{String, Vec};
 
-pub struct SessionState {
+use embedded_time::{
+    duration::{Extensions, Seconds},
+    Clock, Instant,
+};
+
+pub struct SessionState<C: Clock> {
     // Indicates that we are connected to a broker.
     pub connected: bool,
-    pub keep_alive_interval: u16,
+    pub keep_alive_interval: Option<Seconds<u32>>,
+    pub ping_timeout: Option<Instant<C>>,
     pub broker: IpAddr,
     pub maximum_packet_size: Option<u32>,
     pub client_id: String<64>,
+    last_transmission: Option<Instant<C>>,
     pub pending_subscriptions: Vec<u16, 32>,
     packet_id: u16,
     active: bool,
 }
 
-impl SessionState {
-    pub fn new<'a>(broker: IpAddr, id: String<64>) -> SessionState {
+impl<C: Clock> SessionState<C> {
+    pub fn new<'a>(broker: IpAddr, id: String<64>) -> SessionState<C> {
         SessionState {
             connected: false,
             active: false,
+            ping_timeout: None,
             broker,
             client_id: id,
             packet_id: 1,
-            keep_alive_interval: 0,
+            keep_alive_interval: Some(59.seconds()),
+            last_transmission: None,
             pending_subscriptions: Vec::new(),
             maximum_packet_size: None,
         }
@@ -34,9 +43,10 @@ impl SessionState {
         self.active = false;
         self.connected = false;
         self.packet_id = 1;
-        self.keep_alive_interval = 0;
+        self.keep_alive_interval = Some(59.seconds());
         self.maximum_packet_size = None;
         self.pending_subscriptions.clear();
+        self.last_transmission = None;
     }
 
     /// Called whenever an active connection has been made with a broker.
@@ -62,5 +72,18 @@ impl SessionState {
         } else {
             self.packet_id = result;
         }
+    }
+
+    pub fn register_transmission(&mut self, now: Instant<C>) {
+        self.last_transmission = Some(now);
+    }
+
+    pub fn ping_is_due(&self, now: &Instant<C>) -> bool {
+        // Send a ping if we haven't sent a transmission in the last 50% of the keepalive internal.
+        self.keep_alive_interval
+            .zip(self.last_transmission)
+            .map_or(false, |(interval, last)| {
+                *now > last + 500.milliseconds() * interval.0
+            })
     }
 }

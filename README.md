@@ -15,5 +15,4 @@ There is also an example on a standard computer in `tests/integration_test.rs`
 ## Not yet implemented features.
 
 - Support all QoS levels
-- Implement keepalive timeouts
 - Allow batch subscriptions to multiple topics
