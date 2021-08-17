@@ -4,12 +4,15 @@
 use embedded_nal::IpAddr;
 use heapless::{String, Vec};
 
-use embedded_time::{duration::Extensions, Clock, Instant};
+use embedded_time::{
+    duration::{Extensions, Seconds},
+    Clock, Instant,
+};
 
 pub struct SessionState<C: Clock> {
     // Indicates that we are connected to a broker.
     pub connected: bool,
-    pub keep_alive_interval: Option<u16>,
+    pub keep_alive_interval: Option<Seconds<u32>>,
     pub ping_timeout: Option<Instant<C>>,
     pub broker: IpAddr,
     pub maximum_packet_size: Option<u32>,
@@ -29,7 +32,7 @@ impl<C: Clock> SessionState<C> {
             broker,
             client_id: id,
             packet_id: 1,
-            keep_alive_interval: Some(60),
+            keep_alive_interval: Some(59.seconds()),
             last_transmission: None,
             pending_subscriptions: Vec::new(),
             maximum_packet_size: None,
@@ -40,7 +43,7 @@ impl<C: Clock> SessionState<C> {
         self.active = false;
         self.connected = false;
         self.packet_id = 1;
-        self.keep_alive_interval = Some(60);
+        self.keep_alive_interval = Some(59.seconds());
         self.maximum_packet_size = None;
         self.pending_subscriptions.clear();
         self.last_transmission = None;
@@ -77,9 +80,10 @@ impl<C: Clock> SessionState<C> {
 
     pub fn ping_is_due(&self, now: &Instant<C>) -> bool {
         // Send a ping if we haven't sent a transmission in the last 50% of the keepalive internal.
-        self.keep_alive_interval.zip(self.last_transmission)
-            .map_or(false, |(interval, last)|
-                *now > last + (interval as u32 * 500).milliseconds()
-            )
+        self.keep_alive_interval
+            .zip(self.last_transmission)
+            .map_or(false, |(interval, last)| {
+                *now > last + 500.milliseconds() * interval.0
+            })
     }
 }

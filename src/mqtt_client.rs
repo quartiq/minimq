@@ -6,7 +6,10 @@ use crate::{
 };
 
 use embedded_nal::{nb, IpAddr, SocketAddr, TcpClientStack};
-use embedded_time::Clock;
+use embedded_time::{
+    duration::{Extensions, Seconds},
+    Clock,
+};
 
 use heapless::String;
 
@@ -129,9 +132,9 @@ where
         match self.connection_state.state() {
             // In the RESTART state, we need to reopen the TCP socket.
             &States::Restart => {
-                if self.socket.is_some() {
+                if let Some(socket) = self.socket.take() {
                     self.network_stack
-                        .close(self.socket.take().unwrap())
+                        .close(socket)
                         .map_err(|err| Error::Network(err))?;
                 }
 
@@ -174,7 +177,10 @@ where
                 let packet = serialize::connect_message(
                     &mut buffer,
                     self.session_state.client_id.as_str().as_bytes(),
-                    self.session_state.keep_alive_interval.unwrap_or(0),
+                    self.session_state
+                        .keep_alive_interval
+                        .unwrap_or(0.seconds())
+                        .0 as u16,
                     &properties,
                     // Only perform a clean start if we do not have any session state.
                     !self.session_state.is_present(),
@@ -238,11 +244,20 @@ where
     /// # Args
     /// * `interval` - The keep-alive interval in seconds. A ping will be transmitted if no other
     /// messages are sent within 50% of the keep-alive interval.
-    pub fn set_keepalive_interval(&mut self, interval: u16) -> Result<(), Error<N::Error>> {
+    pub fn set_keepalive_interval(
+        &mut self,
+        interval: impl Into<Seconds<u32>>,
+    ) -> Result<(), Error<N::Error>> {
+        let interval = interval.into();
+        if interval.0 > u16::MAX as u32 {
+            return Err(ProtocolError::Invalid.into());
+        }
         match self.connection_state.state() {
             &States::Active => Err(Error::NotReady),
             _ => {
-                self.session_state.keep_alive_interval.replace(interval);
+                self.session_state
+                    .keep_alive_interval
+                    .replace(interval.into());
                 Ok(())
             }
         }
@@ -393,7 +408,9 @@ where
                                 String::from_str(id).or(Err(Error::ProvidedClientIdTooLong))?;
                         }
                         Property::ServerKeepAlive(keep_alive) => {
-                            self.session_state.keep_alive_interval.replace(keep_alive);
+                            self.session_state
+                                .keep_alive_interval
+                                .replace((keep_alive as u32).seconds());
                         }
                         _prop => info!("Ignoring property: {:?}", _prop),
                     };
