@@ -70,6 +70,7 @@ use message_types::MessageType;
 pub use properties::Property;
 
 pub use embedded_nal;
+pub use embedded_time;
 pub use mqtt_client::{Error, Minimq, ProtocolError, QoS};
 
 #[cfg(feature = "logging")]
