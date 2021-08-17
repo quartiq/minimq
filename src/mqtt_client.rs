@@ -191,6 +191,8 @@ where
             _ => {}
         }
 
+        self.handle_timers()?;
+
         Ok(())
     }
 
@@ -455,7 +457,7 @@ where
 
     fn handle_timers(&mut self) -> Result<(), Error<N::Error>> {
         // If we are not connected, there's no session state to manage.
-        if !self.session_state.is_present() {
+        if self.connection_state.state() != &States::Active {
             return Ok(());
         }
 
@@ -541,9 +543,6 @@ impl<N: TcpClientStack, C: Clock, const T: usize> Minimq<N, C, T> {
             self.packet_reader.reset();
             return Ok(());
         }
-
-        // Process any client timers.
-        self.client.handle_timers()?;
 
         let mut buf: [u8; 1024] = [0; 1024];
         let received = self.client.read(&mut buf)?;
