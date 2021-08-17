@@ -77,14 +77,9 @@ impl<C: Clock> SessionState<C> {
 
     pub fn ping_is_due(&self, now: &Instant<C>) -> bool {
         // Send a ping if we haven't sent a transmission in the last 50% of the keepalive internal.
-        if let Some(keep_alive_interval) = self.keep_alive_interval {
-            if let Some(timestamp) = self.last_transmission {
-                *now > timestamp + ((keep_alive_interval * 500) as u32).milliseconds()
-            } else {
-                false
-            }
-        } else {
-            false
-        }
+        self.keep_alive_interval.zip(self.last_transmission)
+            .map_or(false, |(interval, last)|
+                *now > last + (interval as u32 * 500).milliseconds()
+            )
     }
 }
