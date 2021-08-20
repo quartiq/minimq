@@ -75,6 +75,12 @@ impl<C: Clock> SessionState<C> {
         }
     }
 
+    pub fn handle_connection_reset(&mut self) {
+        self.last_transmission = None;
+        self.last_reception = None;
+        self.ping_timeout = None;
+    }
+
     pub fn register_transmission(&mut self, now: Instant<C>) {
         self.last_transmission = Some(now);
     }
