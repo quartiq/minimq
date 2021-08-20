@@ -192,6 +192,10 @@ where
                 self.connection_state
                     .process_event(Events::SentConnect)
                     .unwrap();
+
+                // If we just sent a CONNECT, clear any pending ping timeout. We're starting up a
+                // new connection.
+                self.session_state.ping_timeout = None;
             }
 
             _ => {}
@@ -485,6 +489,7 @@ where
         if let Some(timeout) = self.session_state.ping_timeout {
             if now > timeout {
                 // Reset network connection.
+                self.ping_timeout = None;
                 self.connection_state.process_event(Events::Disconnect).ok();
             }
         } else {
