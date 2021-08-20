@@ -17,8 +17,9 @@ pub struct SessionState<C: Clock> {
     pub broker: IpAddr,
     pub maximum_packet_size: Option<u32>,
     pub client_id: String<64>,
-    last_transmission: Option<Instant<C>>,
     pub pending_subscriptions: Vec<u16, 32>,
+    last_transmission: Option<Instant<C>>,
+    last_reception: Option<Instant<C>>,
     packet_id: u16,
     active: bool,
 }
@@ -34,6 +35,7 @@ impl<C: Clock> SessionState<C> {
             packet_id: 1,
             keep_alive_interval: Some(59.seconds()),
             last_transmission: None,
+            last_reception: None,
             pending_subscriptions: Vec::new(),
             maximum_packet_size: None,
         }
@@ -46,7 +48,6 @@ impl<C: Clock> SessionState<C> {
         self.keep_alive_interval = Some(59.seconds());
         self.maximum_packet_size = None;
         self.pending_subscriptions.clear();
-        self.last_transmission = None;
     }
 
     /// Called whenever an active connection has been made with a broker.
@@ -78,12 +79,24 @@ impl<C: Clock> SessionState<C> {
         self.last_transmission = Some(now);
     }
 
+    pub fn register_reception(&mut self, now: Instant<C>) {
+        self.last_reception = Some(now);
+    }
+
     pub fn ping_is_due(&self, now: &Instant<C>) -> bool {
-        // Send a ping if we haven't sent a transmission in the last 50% of the keepalive internal.
-        self.keep_alive_interval
-            .zip(self.last_transmission)
-            .map_or(false, |(interval, last)| {
-                *now > last + 500.milliseconds() * interval.0
-            })
+        // Send a ping if we haven't sent or received data within 50% of the keep-alive interval.
+        if let Some(interval) = self.keep_alive_interval {
+            let tx_timeout = self
+                .last_transmission
+                .map_or(false, |last| *now > last + 500.milliseconds() * interval.0);
+
+            let rx_timeout = self
+                .last_reception
+                .map_or(false, |last| *now > last + 500.milliseconds() * interval.0);
+
+            tx_timeout || rx_timeout
+        } else {
+            false
+        }
     }
 }

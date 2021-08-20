@@ -376,6 +376,8 @@ where
     where
         F: FnMut(&mut MqttClient<N, C, T>, &'a str, &[u8], &[Property<'a>]),
     {
+        self.session_state.register_reception(self.clock.try_now()?);
+
         if !self.session_state.connected {
             if let ReceivedPacket::ConnAck(acknowledge) = packet {
                 let mut result = Ok(());
