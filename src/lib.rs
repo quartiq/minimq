@@ -28,25 +28,26 @@
 //! in `examples/minimq-stm32h7`, which targets the Nucleo-H743 development board with an external
 //! temperature sensor installed.
 //!
-//! ```ignore
-//! use minimq::{MqttClient, consts, QoS, embedded_nal::{IpAddr, Ipv4Addr}};
+//! ```no_run
+//! use minimq::{Minimq, QoS};
 //!
 //! // Construct an MQTT client with a maximum packet size of 256 bytes.
 //! // Connect to a broker at 192.168.0.254 - Use a client ID of "test".
-//! let client: MqttClient<consts::U256, _> = MqttClient::new(
-//!         IpAddr::V4(Ipv4Addr::new(192, 168, 0, 254)),
+//! let mut mqtt: Minimq<_, _, 256> = Minimq::new(
+//!         "127.0.0.1".parse().unwrap(),
 //!         "test",
-//!         tcp_stack).unwrap();
+//!         std_embedded_nal::Stack::default(),
+//!         std_embedded_time::StandardClock::default()).unwrap();
 //!
 //! let mut subscribed = false;
 //!
 //! loop {
-//!     if client.is_connected() && !subscribed {
-//!         client.subscribe("topic").unwrap();
+//!     if mqtt.client.is_connected().unwrap() && !subscribed {
+//!         mqtt.client.subscribe("topic", &[]).unwrap();
 //!         subscribed = true;
 //!     }
 //!
-//!     client.poll(|client, topic, message, properties| {
+//!     mqtt.poll(|client, topic, message, properties| {
 //!         match topic {
 //!             "topic" => {
 //!                println!("{:?}", message);

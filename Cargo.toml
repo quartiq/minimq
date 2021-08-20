@@ -32,3 +32,4 @@ logging = ["log"]
 [dev-dependencies]
 env_logger = "0.7"
 std-embedded-nal = "0.1"
+std-embedded-time = { git = "https://github.com/quartiq/std-embedded-time", branch = "main" }
