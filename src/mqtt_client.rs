@@ -11,7 +11,7 @@ use embedded_time::{
     Clock,
 };
 
-use heapless::String;
+use heapless::{String, Vec};
 
 use core::str::FromStr;
 
@@ -320,16 +320,16 @@ where
     ///
     /// # Returns
     /// Number of pending messages with QoS 1.
-    pub fn pending_publish_count(&self) -> usize {
-        self.session_state.pending_publish_count()
+    pub fn pending_messages(&self, qos: QoS) -> usize {
+        self.session_state.pending_messages(qos)
     }
 
     /// Determine if the client is able to process QoS 1 publish requess.
     ///
     /// # Returns
     /// True if the client is able to service QoS 1 requests.
-    pub fn is_qos1_possible(&self) -> bool {
-        self.session_state.is_qos1_possible()
+    pub fn can_publish(&self, qos: QoS) -> bool {
+        self.session_state.can_publish(qos)
     }
 
     /// Publish a message over MQTT.
@@ -338,7 +338,7 @@ where
     /// If the client is not yet connected to the broker, the message will be silently ignored.
     ///
     /// # Note
-    /// Currently, Only QoS level 0 (at most once) delivery is supported.
+    /// Currently, QoS level 2 (exactly once) delivery is not supported.
     ///
     /// # Args
     /// * `topic` - The topic to publish the message to.
@@ -353,7 +353,7 @@ where
         qos: QoS,
         properties: &[Property],
     ) -> Result<(), Error<N::Error>> {
-        // TODO: QoS support.
+        // TODO: QoS 2 support.
         assert!(qos != QoS::ExactlyOnce);
 
         // If we are not yet connected to the broker, we can't transmit a message.
@@ -444,9 +444,13 @@ where
                 }
 
                 // Replay QoS 1 messages
-                let to_send = self.session_state.pending_publish.clone();
-                for (_id, (len, message)) in to_send.into_iter() {
-                    self.write(&message[..*len])?;
+                let mut keys: Vec<u16, 16> = Vec::new();
+                for key in self.session_state.pending_publish.keys() {
+                    let _ = keys.push(*key);
+                }
+                for k in keys {
+                    let message: Vec<u8, T> = Vec::from_slice(self.session_state.pending_publish.get(&k).unwrap().as_slice()).unwrap();
+                    self.write(&message)?;
                 }
 
                 return result;

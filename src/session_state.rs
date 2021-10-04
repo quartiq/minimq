@@ -1,6 +1,7 @@
 /// This module represents the session state of an MQTT communication session.
 ///
 ///
+use crate::QoS;
 use embedded_nal::IpAddr;
 use heapless::{String, Vec, LinearMap};
 
@@ -19,7 +20,7 @@ pub struct SessionState<C: Clock, const T: usize> {
     pub client_id: String<64>,
     last_transmission: Option<Instant<C>>,
     pub pending_subscriptions: Vec<u16, 32>,
-    pub pending_publish: LinearMap<u16, (usize, [u8; T]), 16>,
+    pub pending_publish: LinearMap<u16, Vec<u8, T>, 16>,
     packet_id: u16,
     active: bool,
 }
@@ -54,11 +55,10 @@ impl<C: Clock, const T: usize> SessionState<C, T> {
 
     /// Called when publish with QoS 1 is called so that we can keep track of PUBACK
     pub fn publish_at_least_once(&mut self, id: u16, packet: &[u8]) {
-        let mut buf: [u8; T] = [0; T];
-        buf[..packet.len()].clone_from_slice(packet);
+        let buf: Vec<u8, T> = Vec::from_slice(packet).unwrap();
         // If this fails and the PUBACK will be received and Client (minimq) should disconnect from server with 0x82 Protocol Error
         // This behaviour pretty much reverts this message to QoS 0 with a restart if the message is actually delivered
-        let _ = self.pending_publish.insert(id, (buf.len(), buf));
+        let _ = self.pending_publish.insert(id, buf);
     }
 
     /// Delete given pending publish as the server took ownership of it
@@ -67,12 +67,20 @@ impl<C: Clock, const T: usize> SessionState<C, T> {
     }
 
     /// Indicates if publish with QoS 1 is possible.
-    pub fn is_qos1_possible(&self) -> bool {
-        self.pending_publish.len() < T
+    pub fn can_publish(&self, qos: QoS) -> bool {
+        match qos {
+            QoS::AtMostOnce => true,
+            QoS::AtLeastOnce => self.pending_publish.len() < T,
+            QoS::ExactlyOnce => false,
+        }
     }
 
-    pub fn pending_publish_count(&self) -> usize {
-        self.pending_publish.len()
+    pub fn pending_messages(&self, qos: QoS) -> usize {
+        match qos {
+            QoS::AtMostOnce => 0,
+            QoS::AtLeastOnce => self.pending_publish.len(),
+            QoS::ExactlyOnce => 0
+        }
     }
 
     /// Called whenever an active connection has been made with a broker.

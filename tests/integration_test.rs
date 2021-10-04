@@ -32,7 +32,7 @@ fn main() -> std::io::Result<()> {
             if topic == "response" {
                 responses += 1;
                 if responses == 2 {
-                    assert_eq!(0, client.pending_publish_count());
+                    assert_eq!(0, client.pending_messages(QoS::AtLeastOnce));
                     std::process::exit(0);
                 }
             }
@@ -59,7 +59,7 @@ fn main() -> std::io::Result<()> {
                         .unwrap();
 
                     // The message cannot be ack'd until the next poll call
-                    assert_eq!(1, mqtt.client.pending_publish_count());
+                    assert_eq!(1, mqtt.client.pending_messages(QoS::AtLeastOnce));
 
                     published = true;
                 }
