@@ -90,7 +90,7 @@ impl<C: Clock> SessionState<C> {
     }
 
     pub fn ping_is_due(&self, now: &Instant<C>) -> bool {
-        // Send a ping if we haven't sent or received data within 50% of the keep-alive interval.
+        // Send a ping if we haven't both sent and received messages within 50% of the keep-alive interval.
         if let Some(interval) = self.keep_alive_interval {
             let tx_timeout = self
                 .last_transmission
