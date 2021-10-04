@@ -81,8 +81,10 @@ mod sm {
         transitions: {
             *Restart + GotSocket = ConnectTransport,
             ConnectTransport + Connect = ConnectBroker,
-            ConnectBroker + SentConnect = Active,
+            ConnectBroker + SentConnect = Establishing,
             ConnectBroker + Disconnect = Restart,
+            Establishing + ReceivedConnAck = Active,
+            Establishing + Disconnect = Restart,
             Active + Disconnect = Restart,
         }
     }
@@ -166,8 +168,6 @@ where
 
             // Next, connect to the broker via the MQTT protocol.
             &States::ConnectBroker => {
-                self.reset();
-
                 let properties = [
                     // Tell the broker our maximum packet size.
                     Property::MaximumPacketSize(T as u32),
@@ -196,12 +196,18 @@ where
                     .unwrap();
             }
 
+            &States::Establishing => {}
+
             _ => {}
         }
 
         self.handle_timers()?;
 
         Ok(())
+    }
+
+    fn reset(&mut self) {
+        self.connection_state.process_event(Events::Disconnect).ok();
     }
 
     fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, Error<N::Error>> {
@@ -279,7 +285,7 @@ where
         topic: &'a str,
         properties: &[Property<'b>],
     ) -> Result<(), Error<N::Error>> {
-        if !self.session_state.connected {
+        if self.connection_state.state() != &States::Active {
             return Err(Error::NotReady);
         }
 
@@ -311,11 +317,8 @@ where
     ///
     /// # Returns
     /// True if the client is connected to the broker.
-    pub fn is_connected(&mut self) -> Result<bool, Error<N::Error>> {
-        Ok(self
-            .socket_is_connected()
-            .map_err(|err| Error::Network(err))?
-            && self.session_state.connected)
+    pub fn is_connected(&mut self) -> bool {
+        self.connection_state.state() == &States::Active
     }
 
     /// Publish a message over MQTT.
@@ -343,7 +346,7 @@ where
         assert!(qos == QoS::AtMostOnce);
 
         // If we are not yet connected to the broker, we can't transmit a message.
-        if self.is_connected()? == false {
+        if self.is_connected() == false {
             return Ok(());
         }
 
@@ -366,10 +369,6 @@ where
         self.network_stack.is_connected(socket)
     }
 
-    fn reset(&mut self) {
-        self.session_state.connected = false;
-    }
-
     fn handle_packet<'a, F>(
         &mut self,
         packet: ReceivedPacket<'a>,
@@ -380,8 +379,24 @@ where
     {
         self.session_state.register_reception(self.clock.try_now()?);
 
-        if !self.session_state.connected {
-            if let ReceivedPacket::ConnAck(acknowledge) = packet {
+        // All packets must be received in the active state.
+        if self.connection_state.state() != &States::Active {
+            // If we are establishing and just received a connack, this packet is also acceptable.
+            if !(self.connection_state.state() == &States::Establishing
+                && matches!(packet, ReceivedPacket::ConnAck(_)))
+            {
+                error!(
+                    "Received invalid packet outside of connected state: {:?}",
+                    packet
+                );
+                return Err(Error::Protocol(ProtocolError::Invalid));
+            }
+        }
+
+        match packet {
+            ReceivedPacket::ConnAck(acknowledge)
+                if self.connection_state.state() == &States::Establishing =>
+            {
                 let mut result = Ok(());
 
                 if acknowledge.reason_code != 0 {
@@ -389,7 +404,7 @@ where
                 }
 
                 if !acknowledge.session_present {
-                    if self.session_state.connected {
+                    if self.session_state.is_present() {
                         result = Err(Error::SessionReset);
                     }
 
@@ -400,7 +415,9 @@ where
 
                 // Now that we are connected, we have session state that will be persisted.
                 self.session_state.register_connection();
-                self.session_state.connected = true;
+                self.connection_state
+                    .process_event(Events::ReceivedConnAck)
+                    .unwrap();
 
                 for property in acknowledge.properties {
                     match property {
@@ -420,19 +437,9 @@ where
                     };
                 }
 
-                return result;
-            } else {
-                // It is a protocol error to receive anything else when not connected.
-                // TODO: Verify it is a protocol error.
-                error!(
-                    "Received invalid packet outside of connected state: {:?}",
-                    packet
-                );
-                return Err(Error::Protocol(ProtocolError::Invalid));
+                result
             }
-        }
 
-        match packet {
             ReceivedPacket::Publish(info) => {
                 // Call a handler function to deal with the received data.
                 f(self, info.topic, info.payload, &info.properties);
@@ -560,7 +567,9 @@ impl<N: TcpClientStack, C: Clock, const T: usize> Minimq<N, C, T> {
 
         // If the connection is no longer active, reset the packet reader state and return. There's
         // nothing more we can do.
-        if self.client.connection_state.state() != &States::Active {
+        if self.client.connection_state.state() != &States::Active
+            && self.client.connection_state.state() != &States::Establishing
+        {
             self.packet_reader.reset();
             return Ok(());
         }

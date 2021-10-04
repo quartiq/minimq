@@ -10,8 +10,6 @@ use embedded_time::{
 };
 
 pub struct SessionState<C: Clock> {
-    // Indicates that we are connected to a broker.
-    pub connected: bool,
     pub keep_alive_interval: Option<Seconds<u32>>,
     pub ping_timeout: Option<Instant<C>>,
     pub broker: IpAddr,
@@ -27,7 +25,6 @@ pub struct SessionState<C: Clock> {
 impl<C: Clock> SessionState<C> {
     pub fn new<'a>(broker: IpAddr, id: String<64>) -> SessionState<C> {
         SessionState {
-            connected: false,
             active: false,
             ping_timeout: None,
             broker,
@@ -43,7 +40,6 @@ impl<C: Clock> SessionState<C> {
 
     pub fn reset(&mut self) {
         self.active = false;
-        self.connected = false;
         self.packet_id = 1;
         self.keep_alive_interval = Some(59.seconds());
         self.maximum_packet_size = None;
@@ -92,13 +88,15 @@ impl<C: Clock> SessionState<C> {
     pub fn ping_is_due(&self, now: &Instant<C>) -> bool {
         // Send a ping if we haven't both sent and received messages within 50% of the keep-alive interval.
         if let Some(interval) = self.keep_alive_interval {
+            // If there is no last transmit/receive timestamp, a ping will be deemed to be due
+            // immediately, which will result in both timestamps being properly set.
             let tx_timeout = self
                 .last_transmission
-                .map_or(false, |last| *now > last + 500.milliseconds() * interval.0);
+                .map_or(true, |last| *now > last + interval - 500.milliseconds());
 
             let rx_timeout = self
                 .last_reception
-                .map_or(false, |last| *now > last + 500.milliseconds() * interval.0);
+                .map_or(true, |last| *now > last + interval - 500.milliseconds());
 
             tx_timeout || rx_timeout
         } else {

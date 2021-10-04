@@ -62,7 +62,7 @@ fn main() -> std::io::Result<()> {
         .unwrap();
 
         if !subscribed {
-            if mqtt.client.is_connected().unwrap() {
+            if mqtt.client.is_connected() {
                 mqtt.client.subscribe("response", &[]).unwrap();
                 mqtt.client.subscribe("request", &[]).unwrap();
                 subscribed = true;
