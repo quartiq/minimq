@@ -2,14 +2,14 @@
 ///
 ///
 use embedded_nal::IpAddr;
-use heapless::{String, Vec};
+use heapless::{String, Vec, LinearMap};
 
 use embedded_time::{
     duration::{Extensions, Seconds},
     Clock, Instant,
 };
 
-pub struct SessionState<C: Clock> {
+pub struct SessionState<C: Clock, const T: usize> {
     // Indicates that we are connected to a broker.
     pub connected: bool,
     pub keep_alive_interval: Option<Seconds<u32>>,
@@ -19,12 +19,13 @@ pub struct SessionState<C: Clock> {
     pub client_id: String<64>,
     last_transmission: Option<Instant<C>>,
     pub pending_subscriptions: Vec<u16, 32>,
+    pub pending_publish: LinearMap<u16, (usize, [u8; T]), 16>,
     packet_id: u16,
     active: bool,
 }
 
-impl<C: Clock> SessionState<C> {
-    pub fn new<'a>(broker: IpAddr, id: String<64>) -> SessionState<C> {
+impl<C: Clock, const T: usize> SessionState<C, T> {
+    pub fn new<'a>(broker: IpAddr, id: String<64>) -> SessionState<C, T> {
         SessionState {
             connected: false,
             active: false,
@@ -35,6 +36,7 @@ impl<C: Clock> SessionState<C> {
             keep_alive_interval: Some(59.seconds()),
             last_transmission: None,
             pending_subscriptions: Vec::new(),
+            pending_publish: LinearMap::new(),
             maximum_packet_size: None,
         }
     }
@@ -46,7 +48,31 @@ impl<C: Clock> SessionState<C> {
         self.keep_alive_interval = Some(59.seconds());
         self.maximum_packet_size = None;
         self.pending_subscriptions.clear();
+        self.pending_publish.clear();
         self.last_transmission = None;
+    }
+
+    /// Called when publish with QoS 1 is called so that we can keep track of PUBACK
+    pub fn publish_at_least_once(&mut self, id: u16, packet: &[u8]) {
+        let mut buf: [u8; T] = [0; T];
+        buf[..packet.len()].clone_from_slice(packet);
+        // If this fails and the PUBACK will be received and Client (minimq) should disconnect from server with 0x82 Protocol Error
+        // This behaviour pretty much reverts this message to QoS 0 with a restart if the message is actually delivered
+        let _ = self.pending_publish.insert(id, (buf.len(), buf));
+    }
+
+    /// Delete given pending publish as the server took ownership of it
+    pub fn puback(&mut self, id: u16) {
+        self.pending_publish.remove(&id);
+    }
+
+    /// Indicates if publish with QoS 1 is possible.
+    pub fn is_qos1_possible(&self) -> bool {
+        self.pending_publish.len() < T
+    }
+
+    pub fn pending_publish_count(&self) -> usize {
+        self.pending_publish.len()
     }
 
     /// Called whenever an active connection has been made with a broker.

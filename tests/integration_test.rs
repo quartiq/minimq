@@ -14,6 +14,7 @@ fn main() -> std::io::Result<()> {
 
     let mut published = false;
     let mut subscribed = false;
+    let mut responses = 0;
 
     loop {
         mqtt.poll(|client, topic, payload, properties| {
@@ -29,7 +30,11 @@ fn main() -> std::io::Result<()> {
             }
 
             if topic == "response" {
-                std::process::exit(0);
+                responses += 1;
+                if responses == 2 {
+                    assert_eq!(0, client.pending_publish_count());
+                    std::process::exit(0);
+                }
             }
         })
         .unwrap();
@@ -48,6 +53,13 @@ fn main() -> std::io::Result<()> {
                     mqtt.client
                         .publish("request", "Ping".as_bytes(), QoS::AtMostOnce, &properties)
                         .unwrap();
+
+                    mqtt.client
+                        .publish("request", "Ping".as_bytes(), QoS::AtLeastOnce, &properties)
+                        .unwrap();
+
+                    // The message cannot be ack'd until the next poll call
+                    assert_eq!(1, mqtt.client.pending_publish_count());
 
                     published = true;
                 }

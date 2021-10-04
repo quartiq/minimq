@@ -28,7 +28,7 @@ pub enum QoS {
     AtLeastOnce,
 
     /// A packet will be delivered exactly one time.
-    ExactlyOne,
+    ExactlyOnce,
 }
 
 /// Possible errors encountered during an MQTT connection.
@@ -109,7 +109,7 @@ pub struct MqttClient<N: TcpClientStack, C: Clock, const T: usize> {
     network_stack: N,
     clock: C,
     socket: Option<N::TcpSocket>,
-    session_state: SessionState<C>,
+    session_state: SessionState<C, T>,
     connection_state: StateMachine<Context>,
 }
 
@@ -316,13 +316,29 @@ where
             && self.session_state.connected)
     }
 
+    /// Get the count of unacknowledged QoS 1 messages.
+    ///
+    /// # Returns
+    /// Number of pending messages with QoS 1.
+    pub fn pending_publish_count(&self) -> usize {
+        self.session_state.pending_publish_count()
+    }
+
+    /// Determine if the client is able to process QoS 1 publish requess.
+    ///
+    /// # Returns
+    /// True if the client is able to service QoS 1 requests.
+    pub fn is_qos1_possible(&self) -> bool {
+        self.session_state.is_qos1_possible()
+    }
+
     /// Publish a message over MQTT.
     ///
     /// # Note
     /// If the client is not yet connected to the broker, the message will be silently ignored.
     ///
     /// # Note
-    /// Currently, Only QoS level 1 (at most once) delivery is supported.
+    /// Currently, Only QoS level 0 (at most once) delivery is supported.
     ///
     /// # Args
     /// * `topic` - The topic to publish the message to.
@@ -330,15 +346,15 @@ where
     /// * `qos` - The desired quality-of-service level of the message. Must be QoS::AtMostOnce
     /// * `properties` - A list of properties to associate with the message being published. May be
     ///   empty.
-    pub fn publish<'a, 'b>(
+    pub fn publish(
         &mut self,
-        topic: &'a str,
+        topic: &str,
         data: &[u8],
         qos: QoS,
-        properties: &[Property<'a>],
+        properties: &[Property],
     ) -> Result<(), Error<N::Error>> {
         // TODO: QoS support.
-        assert!(qos == QoS::AtMostOnce);
+        assert!(qos != QoS::ExactlyOnce);
 
         // If we are not yet connected to the broker, we can't transmit a message.
         if self.is_connected()? == false {
@@ -350,9 +366,20 @@ where
             topic, data, properties
         );
 
+        // If QoS 0 the ID will be ignored
+        let id = self.session_state.get_packet_identifier();
+
         let mut buffer: [u8; T] = [0; T];
-        let packet = serialize::publish_message(&mut buffer, topic, data, properties)?;
-        self.write(packet)
+        let packet = serialize::publish_message(&mut buffer, topic, data, qos, id, properties)?;
+
+        self.write(packet)?;
+        self.session_state.increment_packet_identifier();
+
+        if qos == QoS::AtLeastOnce {
+            self.session_state.publish_at_least_once(id, packet);
+        }
+
+        Ok(())
     }
 
     fn socket_is_connected(&mut self) -> Result<bool, N::Error> {
@@ -416,6 +443,12 @@ where
                     };
                 }
 
+                // Replay QoS 1 messages
+                let to_send = self.session_state.pending_publish.clone();
+                for (_id, (len, message)) in to_send.into_iter() {
+                    self.write(&message[..*len])?;
+                }
+
                 return result;
             } else {
                 // It is a protocol error to receive anything else when not connected.
@@ -432,6 +465,13 @@ where
             ReceivedPacket::Publish(info) => {
                 // Call a handler function to deal with the received data.
                 f(self, info.topic, info.payload, &info.properties);
+
+                Ok(())
+            }
+
+            ReceivedPacket::PubAck(ack) => {
+                // No matter the status code the message is considered acknowledged at this point
+                self.session_state.puback(ack.packet_identifier);
 
                 Ok(())
             }
