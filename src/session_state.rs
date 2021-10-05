@@ -56,8 +56,13 @@ impl<Clock: HwClock, const MSG_SIZE: usize, const MSG_COUNT: usize> SessionState
     }
 
     /// Called when publish with QoS 1 is called so that we can keep track of PUBACK
-    pub fn publish_at_least_once(&mut self, id: u16, packet: &[u8]) {
-        let buf: Vec<u8, MSG_SIZE> = Vec::from_slice(packet).unwrap();
+    pub fn publish(&mut self, qos: QoS, id: u16, packet: &[u8]) {
+        // This is not called for QoS 0 and QoS 2 is not implemented yet
+        assert_eq!(qos, QoS::AtLeastOnce);
+
+        let mut buf: Vec<u8, MSG_SIZE> = Vec::from_slice(packet).unwrap();
+        // Set DUP = 1 (bit 3). If this packet is ever read it's just because we want to resend it
+        buf[0] |= 1 << 3;
         // If this fails and the PUBACK will be received and Client (minimq) should disconnect from server with 0x82 Protocol Error
         // This behaviour pretty much reverts this message to QoS 0 with a restart if the message is actually delivered
         let _ = self.pending_publish.insert(id, buf);

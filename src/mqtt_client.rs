@@ -22,13 +22,13 @@ const PING_TIMEOUT: embedded_time::duration::Seconds = embedded_time::duration::
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum QoS {
     /// A packet will be delivered at most once, but may not be delivered at all.
-    AtMostOnce,
+    AtMostOnce = 0,
 
     /// A packet will be delivered at least one time, but possibly more than once.
-    AtLeastOnce,
+    AtLeastOnce = 1,
 
     /// A packet will be delivered exactly one time.
-    ExactlyOnce,
+    ExactlyOnce = 2,
 }
 
 /// Possible errors encountered during an MQTT connection.
@@ -376,7 +376,7 @@ where
         self.session_state.increment_packet_identifier();
 
         if qos == QoS::AtLeastOnce {
-            self.session_state.publish_at_least_once(id, packet);
+            self.session_state.publish(qos, id, packet);
         }
 
         Ok(())
