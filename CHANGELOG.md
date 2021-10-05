@@ -7,6 +7,8 @@ This document describes the changes to Minimq between releases.
 * Updating to `std-embedded-nal` v0.1 (dev dependency only; now again used for integration tests)
 * Added support for PingReq/PingResp to handle broken TCP connections and configuration of the
 keep-alive interval
+* Updating tests to use `std-embedded-time`
+* Fixing main docs.
 
 # Version 0.3.0
 Version 0.3.0 was published on 2021-08-06
