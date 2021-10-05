@@ -8,7 +8,7 @@ use crate::{
 use embedded_nal::{nb, IpAddr, SocketAddr, TcpClientStack};
 use embedded_time::{
     duration::{Extensions, Seconds},
-    Clock,
+    Clock as HwClock,
 };
 
 use heapless::{String, Vec};
@@ -42,7 +42,7 @@ pub enum Error<E> {
     Failed(u8),
     Protocol(ProtocolError),
     SessionReset,
-    Clock(embedded_time::clock::Error),
+    HwClock(embedded_time::clock::Error),
 }
 
 /// Errors that are specific to the MQTT protocol implementation.
@@ -63,7 +63,7 @@ pub enum ProtocolError {
 
 impl<E> From<embedded_time::clock::Error> for Error<E> {
     fn from(clock: embedded_time::clock::Error) -> Self {
-        Error::Clock(clock)
+        Error::HwClock(clock)
     }
 }
 
@@ -95,30 +95,30 @@ mod sm {
 use sm::{Context, Events, StateMachine, States};
 
 /// The general structure for managing MQTT via Minimq.
-pub struct Minimq<N, C, const T: usize>
+pub struct Minimq<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
 where
-    N: TcpClientStack,
-    C: Clock,
+    TcpStack: TcpClientStack,
+    Clock: HwClock
 {
-    pub client: MqttClient<N, C, T>,
-    packet_reader: PacketReader<T>,
+    pub client: MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+    packet_reader: PacketReader<MSG_SIZE>,
 }
 
 /// A client for interacting with an MQTT Broker.
-pub struct MqttClient<N: TcpClientStack, C: Clock, const T: usize> {
-    network_stack: N,
-    clock: C,
-    socket: Option<N::TcpSocket>,
-    session_state: SessionState<C, T>,
+pub struct MqttClient<TcpStack: TcpClientStack, Clock: HwClock, const MSG_SIZE: usize, const MSG_COUNT: usize> {
+    network_stack: TcpStack,
+    clock: Clock,
+    socket: Option<TcpStack::TcpSocket>,
+    session_state: SessionState<Clock, MSG_SIZE, MSG_COUNT>,
     connection_state: StateMachine<Context>,
 }
 
-impl<N, C, const T: usize> MqttClient<N, C, T>
+impl<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize> MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
 where
-    N: TcpClientStack,
-    C: Clock,
+    TcpStack: TcpClientStack,
+    Clock: HwClock,
 {
-    fn process(&mut self) -> Result<(), Error<N::Error>> {
+    fn process(&mut self) -> Result<(), Error<TcpStack::Error>> {
         // Potentially update the state machine depending on the current socket connection status.
         if !self
             .socket_is_connected()
@@ -168,12 +168,12 @@ where
 
                 let properties = [
                     // Tell the broker our maximum packet size.
-                    Property::MaximumPacketSize(T as u32),
+                    Property::MaximumPacketSize(MSG_SIZE as u32),
                     // The session does not expire.
                     Property::SessionExpiryInterval(u32::MAX),
                 ];
 
-                let mut buffer: [u8; T] = [0; T];
+                let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
                 let packet = serialize::connect_message(
                     &mut buffer,
                     self.session_state.client_id.as_str().as_bytes(),
@@ -202,7 +202,7 @@ where
         Ok(())
     }
 
-    fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, Error<N::Error>> {
+    fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, Error<TcpStack::Error>> {
         // Atomically access the socket.
         let socket = self.socket.as_mut().unwrap();
         let result = self.network_stack.receive(socket, &mut buf);
@@ -213,7 +213,7 @@ where
         })
     }
 
-    fn write(&mut self, buf: &[u8]) -> Result<(), Error<N::Error>> {
+    fn write(&mut self, buf: &[u8]) -> Result<(), Error<TcpStack::Error>> {
         let socket = self.socket.as_mut().unwrap();
         self.network_stack
             .send(socket, &buf)
@@ -247,7 +247,7 @@ where
     pub fn set_keepalive_interval(
         &mut self,
         interval: impl Into<Seconds<u32>>,
-    ) -> Result<(), Error<N::Error>> {
+    ) -> Result<(), Error<TcpStack::Error>> {
         let interval = interval.into();
         if interval.0 > u16::MAX as u32 {
             return Err(ProtocolError::Invalid.into());
@@ -276,14 +276,14 @@ where
         &mut self,
         topic: &'a str,
         properties: &[Property<'b>],
-    ) -> Result<(), Error<N::Error>> {
+    ) -> Result<(), Error<TcpStack::Error>> {
         if !self.session_state.connected {
             return Err(Error::NotReady);
         }
 
         let packet_id = self.session_state.get_packet_identifier();
 
-        let mut buffer: [u8; T] = [0; T];
+        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
         let packet = serialize::subscribe_message(&mut buffer, topic, packet_id, properties)?;
 
         self.write(packet).and_then(|_| {
@@ -309,7 +309,7 @@ where
     ///
     /// # Returns
     /// True if the client is connected to the broker.
-    pub fn is_connected(&mut self) -> Result<bool, Error<N::Error>> {
+    pub fn is_connected(&mut self) -> Result<bool, Error<TcpStack::Error>> {
         Ok(self
             .socket_is_connected()
             .map_err(|err| Error::Network(err))?
@@ -352,7 +352,7 @@ where
         data: &[u8],
         qos: QoS,
         properties: &[Property],
-    ) -> Result<(), Error<N::Error>> {
+    ) -> Result<(), Error<TcpStack::Error>> {
         // TODO: QoS 2 support.
         assert!(qos != QoS::ExactlyOnce);
 
@@ -369,7 +369,7 @@ where
         // If QoS 0 the ID will be ignored
         let id = self.session_state.get_packet_identifier();
 
-        let mut buffer: [u8; T] = [0; T];
+        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
         let packet = serialize::publish_message(&mut buffer, topic, data, qos, id, properties)?;
 
         self.write(packet)?;
@@ -382,7 +382,7 @@ where
         Ok(())
     }
 
-    fn socket_is_connected(&mut self) -> Result<bool, N::Error> {
+    fn socket_is_connected(&mut self) -> Result<bool, TcpStack::Error> {
         if self.socket.is_none() {
             return Ok(false);
         }
@@ -399,9 +399,9 @@ where
         &mut self,
         packet: ReceivedPacket<'a>,
         f: &mut F,
-    ) -> Result<(), Error<N::Error>>
+    ) -> Result<(), Error<TcpStack::Error>>
     where
-        F: FnMut(&mut MqttClient<N, C, T>, &'a str, &[u8], &[Property<'a>]),
+        F: FnMut(&mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>, &'a str, &[u8], &[Property<'a>]),
     {
         if !self.session_state.connected {
             if let ReceivedPacket::ConnAck(acknowledge) = packet {
@@ -449,7 +449,7 @@ where
                     let _ = keys.push(*key);
                 }
                 for k in keys {
-                    let message: Vec<u8, T> = Vec::from_slice(self.session_state.pending_publish.get(&k).unwrap().as_slice()).unwrap();
+                    let message: Vec<u8, MSG_SIZE> = Vec::from_slice(self.session_state.pending_publish.get(&k).unwrap().as_slice()).unwrap();
                     self.write(&message)?;
                 }
 
@@ -516,7 +516,7 @@ where
         }
     }
 
-    fn handle_timers(&mut self) -> Result<(), Error<N::Error>> {
+    fn handle_timers(&mut self) -> Result<(), Error<TcpStack::Error>> {
         // If we are not connected, there's no session state to manage.
         if self.connection_state.state() != &States::Active {
             return Ok(());
@@ -532,7 +532,7 @@ where
         } else {
             // Check if we need to ping the server.
             if self.session_state.ping_is_due(&now) {
-                let mut buffer: [u8; T] = [0; T];
+                let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
 
                 // Note: The ping timeout is set at this point so that it's running even if we fail
                 // to write the ping message. This is intentional incase the underlying transport
@@ -549,7 +549,7 @@ where
     }
 }
 
-impl<N: TcpClientStack, C: Clock, const T: usize> Minimq<N, C, T> {
+impl<TcpStack: TcpClientStack, Clock: HwClock, const MSG_SIZE: usize, const MSG_COUNT: usize> Minimq<TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
     /// Construct a new MQTT interface.
     ///
     /// # Args
@@ -565,9 +565,9 @@ impl<N: TcpClientStack, C: Clock, const T: usize> Minimq<N, C, T> {
     pub fn new(
         broker: IpAddr,
         client_id: &str,
-        network_stack: N,
-        clock: C,
-    ) -> Result<Self, Error<N::Error>> {
+        network_stack: TcpStack,
+        clock: Clock,
+    ) -> Result<Self, Error<TcpStack::Error>> {
         let session_state = SessionState::new(
             broker,
             String::from_str(client_id).or(Err(Error::ProvidedClientIdTooLong))?,
@@ -592,9 +592,9 @@ impl<N: TcpClientStack, C: Clock, const T: usize> Minimq<N, C, T> {
     /// # Args
     /// * `f` - A closure to process any received messages. The closure should accept the client,
     /// topic, message, and list of proprties (in that order).
-    pub fn poll<F>(&mut self, mut f: F) -> Result<(), Error<N::Error>>
+    pub fn poll<F>(&mut self, mut f: F) -> Result<(), Error<TcpStack::Error>>
     where
-        for<'a> F: FnMut(&mut MqttClient<N, C, T>, &'a str, &[u8], &[Property<'a>]),
+        for<'a> F: FnMut(&mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>, &'a str, &[u8], &[Property<'a>]),
     {
         self.client.process()?;
 
