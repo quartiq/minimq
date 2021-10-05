@@ -1,7 +1,7 @@
 use crate::{
     de::PacketReader,
-    mqtt_client::ProtocolError as Error,
     ser::{serialize::integer_size, ReversedPacketWriter},
+    ProtocolError as Error,
 };
 
 use enum_iterator::IntoEnumIterator;
