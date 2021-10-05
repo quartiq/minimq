@@ -70,7 +70,7 @@ where
     pub fn connect(&mut self, remote: SocketAddr) -> Result<(), Error<N::Error>> {
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
         self.network_stack
-            .connect(self.socket.as_mut().unwrap(), remote)
+            .connect(socket, remote)
             .map_err(|err| match err {
                 nb::Error::WouldBlock => Error::WriteFail,
                 nb::Error::Other(err) => Error::Network(err),
