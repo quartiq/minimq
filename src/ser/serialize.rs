@@ -106,7 +106,7 @@ pub fn publish_message<'a, 'b, 'c>(
     packet.write_utf8_string(topic)?;
 
     // Set qos to fixed header bits 1 and 2 in binary
-    let flags = 0u8.set_bits(1..=2, qos as u8);
+    let flags = *0u8.set_bits(1..=2, qos as u8);
 
     // Write the fixed length header.
     packet.finalize(MessageType::Publish, flags)
