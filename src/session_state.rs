@@ -93,7 +93,7 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
     pub fn can_publish(&self, qos: QoS) -> bool {
         match qos {
             QoS::AtMostOnce => true,
-            QoS::AtLeastOnce => self.pending_publish.len() < MSG_SIZE,
+            QoS::AtLeastOnce => self.pending_publish.len() < MSG_COUNT,
             QoS::ExactlyOnce => false,
         }
     }
