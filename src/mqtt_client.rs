@@ -444,10 +444,7 @@ where
                 }
 
                 // Replay QoS 1 messages
-                let mut keys: Vec<u16, 16> = Vec::new();
-                for key in self.session_state.pending_publish.keys() {
-                    let _ = keys.push(*key);
-                }
+                let keys: Vec<u16, MSG_COUNT> = self.session_state.pending_publish_ordering.clone();
                 for k in keys {
                     let message: Vec<u8, MSG_SIZE> = Vec::from_slice(self.session_state.pending_publish.get(&k).unwrap().as_slice()).unwrap();
                     self.write(&message)?;

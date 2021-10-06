@@ -22,12 +22,13 @@ pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, cons
     last_transmission: Option<Instant<Clock>>,
     pub pending_subscriptions: Vec<u16, 32>,
     pub pending_publish: LinearMap<u16, Vec<u8, MSG_SIZE>, MSG_COUNT>,
+    pub pending_publish_ordering: Vec<u16, MSG_COUNT>,
     packet_id: u16,
     active: bool,
 }
 
 impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
-    pub fn new<'a>(broker: IpAddr, id: String<64>) -> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
+    pub fn new(broker: IpAddr, id: String<64>) -> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
         SessionState {
             connected: false,
             active: false,
@@ -39,6 +40,7 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
             last_transmission: None,
             pending_subscriptions: Vec::new(),
             pending_publish: LinearMap::new(),
+            pending_publish_ordering: Vec::new(),
             maximum_packet_size: None,
         }
     }
@@ -51,6 +53,7 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
         self.maximum_packet_size = None;
         self.pending_subscriptions.clear();
         self.pending_publish.clear();
+        self.pending_publish_ordering.clear();
         self.last_transmission = None;
     }
 
@@ -65,11 +68,23 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
         // If this fails and the PUBACK will be received and Client (minimq) should disconnect from server with 0x82 Protocol Error
         // This behaviour pretty much reverts this message to QoS 0 with a restart if the message is actually delivered
         let _ = self.pending_publish.insert(id, buf);
+        let _ = self.pending_publish_ordering.push(id);
     }
 
     /// Delete given pending publish as the server took ownership of it
     pub fn handle_puback(&mut self, id: u16) {
         self.pending_publish.remove(&id);
+        let mut found = false;
+        for i in 0..self.pending_publish_ordering.len() {
+            if found {
+                self.pending_publish_ordering[i - 1] = self.pending_publish_ordering[i];
+            } else {
+                if self.pending_publish_ordering[i] == id {
+                    found = true;
+                }
+            }
+        }
+        self.pending_publish_ordering.pop();
     }
 
     /// Indicates if publish with QoS 1 is possible.
