@@ -81,7 +81,7 @@ where
     ///
     /// # Args
     /// * `session_state` - The MQTT session state to update when the control packet is written.
-    /// * `now` - The current timestamp of the clock.
+    /// * `clock` - The clock used for keeping time in the system.
     /// * `packet` - The packet to write.
     pub fn write_packet<C: Clock>(
         &mut self,
