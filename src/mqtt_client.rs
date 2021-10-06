@@ -6,9 +6,9 @@ use crate::{
 };
 
 use embedded_nal::{nb, IpAddr, SocketAddr, TcpClientStack};
+use embedded_time;
 use embedded_time::{
     duration::{Extensions, Seconds},
-    Clock as HwClock,
 };
 
 use heapless::{String, Vec};
@@ -98,14 +98,14 @@ use sm::{Context, Events, StateMachine, States};
 pub struct Minimq<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
 where
     TcpStack: TcpClientStack,
-    Clock: HwClock
+    Clock: embedded_time::Clock
 {
     pub client: MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
     packet_reader: PacketReader<MSG_SIZE>,
 }
 
 /// A client for interacting with an MQTT Broker.
-pub struct MqttClient<TcpStack: TcpClientStack, Clock: HwClock, const MSG_SIZE: usize, const MSG_COUNT: usize> {
+pub struct MqttClient<TcpStack: TcpClientStack, Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize> {
     network_stack: TcpStack,
     clock: Clock,
     socket: Option<TcpStack::TcpSocket>,
@@ -116,7 +116,7 @@ pub struct MqttClient<TcpStack: TcpClientStack, Clock: HwClock, const MSG_SIZE: 
 impl<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize> MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
 where
     TcpStack: TcpClientStack,
-    Clock: HwClock,
+    Clock: embedded_time::Clock,
 {
     fn process(&mut self) -> Result<(), Error<TcpStack::Error>> {
         // Potentially update the state machine depending on the current socket connection status.
@@ -376,7 +376,7 @@ where
         self.session_state.increment_packet_identifier();
 
         if qos == QoS::AtLeastOnce {
-            self.session_state.publish(qos, id, packet);
+            self.session_state.handle_publish(qos, id, packet);
         }
 
         Ok(())
@@ -475,7 +475,7 @@ where
 
             ReceivedPacket::PubAck(ack) => {
                 // No matter the status code the message is considered acknowledged at this point
-                self.session_state.puback(ack.packet_identifier);
+                self.session_state.handle_puback(ack.packet_identifier);
 
                 Ok(())
             }
@@ -549,7 +549,7 @@ where
     }
 }
 
-impl<TcpStack: TcpClientStack, Clock: HwClock, const MSG_SIZE: usize, const MSG_COUNT: usize> Minimq<TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
+impl<TcpStack: TcpClientStack, Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize> Minimq<TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
     /// Construct a new MQTT interface.
     ///
     /// # Args

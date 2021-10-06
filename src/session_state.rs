@@ -7,11 +7,10 @@ use heapless::{String, Vec, LinearMap};
 
 use embedded_time::{
     duration::{Extensions, Seconds},
-    Clock as HwClock,
     Instant,
 };
 
-pub struct SessionState<Clock: HwClock, const MSG_SIZE: usize, const MSG_COUNT: usize>
+pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
 {
     // Indicates that we are connected to a broker.
     pub connected: bool,
@@ -27,7 +26,7 @@ pub struct SessionState<Clock: HwClock, const MSG_SIZE: usize, const MSG_COUNT: 
     active: bool,
 }
 
-impl<Clock: HwClock, const MSG_SIZE: usize, const MSG_COUNT: usize> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
+impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
     pub fn new<'a>(broker: IpAddr, id: String<64>) -> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
         SessionState {
             connected: false,
@@ -56,7 +55,7 @@ impl<Clock: HwClock, const MSG_SIZE: usize, const MSG_COUNT: usize> SessionState
     }
 
     /// Called when publish with QoS 1 is called so that we can keep track of PUBACK
-    pub fn publish(&mut self, qos: QoS, id: u16, packet: &[u8]) {
+    pub fn handle_publish(&mut self, qos: QoS, id: u16, packet: &[u8]) {
         // This is not called for QoS 0 and QoS 2 is not implemented yet
         assert_eq!(qos, QoS::AtLeastOnce);
 
@@ -69,7 +68,7 @@ impl<Clock: HwClock, const MSG_SIZE: usize, const MSG_COUNT: usize> SessionState
     }
 
     /// Delete given pending publish as the server took ownership of it
-    pub fn puback(&mut self, id: u16) {
+    pub fn handle_puback(&mut self, id: u16) {
         self.pending_publish.remove(&id);
     }
 
