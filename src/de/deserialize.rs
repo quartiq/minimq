@@ -162,7 +162,7 @@ fn parse_puback<'a, 'reader: 'a, const T: usize>(
             packet_identifier: id,
             reason: 0x00,
             properties: Vec::new(),
-        })
+        });
     }
 
     let reason = p.read_u8()?;
