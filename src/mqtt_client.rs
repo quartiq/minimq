@@ -7,9 +7,7 @@ use crate::{
 
 use embedded_nal::{nb, IpAddr, SocketAddr, TcpClientStack};
 use embedded_time;
-use embedded_time::{
-    duration::{Extensions, Seconds},
-};
+use embedded_time::duration::{Extensions, Seconds};
 
 use heapless::{String, Vec};
 
@@ -98,14 +96,19 @@ use sm::{Context, Events, StateMachine, States};
 pub struct Minimq<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
 where
     TcpStack: TcpClientStack,
-    Clock: embedded_time::Clock
+    Clock: embedded_time::Clock,
 {
     pub client: MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
     packet_reader: PacketReader<MSG_SIZE>,
 }
 
 /// A client for interacting with an MQTT Broker.
-pub struct MqttClient<TcpStack: TcpClientStack, Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize> {
+pub struct MqttClient<
+    TcpStack: TcpClientStack,
+    Clock: embedded_time::Clock,
+    const MSG_SIZE: usize,
+    const MSG_COUNT: usize,
+> {
     network_stack: TcpStack,
     clock: Clock,
     socket: Option<TcpStack::TcpSocket>,
@@ -113,7 +116,8 @@ pub struct MqttClient<TcpStack: TcpClientStack, Clock: embedded_time::Clock, con
     connection_state: StateMachine<Context>,
 }
 
-impl<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize> MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
+impl<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
+    MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
 where
     TcpStack: TcpClientStack,
     Clock: embedded_time::Clock,
@@ -401,7 +405,12 @@ where
         f: &mut F,
     ) -> Result<(), Error<TcpStack::Error>>
     where
-        F: FnMut(&mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>, &'a str, &[u8], &[Property<'a>]),
+        F: FnMut(
+            &mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+            &'a str,
+            &[u8],
+            &[Property<'a>],
+        ),
     {
         if !self.session_state.connected {
             if let ReceivedPacket::ConnAck(acknowledge) = packet {
@@ -446,7 +455,14 @@ where
                 // Replay QoS 1 messages
                 let keys: Vec<u16, MSG_COUNT> = self.session_state.pending_publish_ordering.clone();
                 for k in keys {
-                    let message: Vec<u8, MSG_SIZE> = Vec::from_slice(self.session_state.pending_publish.get(&k).unwrap().as_slice()).unwrap();
+                    let message: Vec<u8, MSG_SIZE> = Vec::from_slice(
+                        self.session_state
+                            .pending_publish
+                            .get(&k)
+                            .unwrap()
+                            .as_slice(),
+                    )
+                    .unwrap();
                     self.write(&message)?;
                 }
 
@@ -546,7 +562,13 @@ where
     }
 }
 
-impl<TcpStack: TcpClientStack, Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize> Minimq<TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
+impl<
+        TcpStack: TcpClientStack,
+        Clock: embedded_time::Clock,
+        const MSG_SIZE: usize,
+        const MSG_COUNT: usize,
+    > Minimq<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
+{
     /// Construct a new MQTT interface.
     ///
     /// # Args
@@ -591,7 +613,12 @@ impl<TcpStack: TcpClientStack, Clock: embedded_time::Clock, const MSG_SIZE: usiz
     /// topic, message, and list of proprties (in that order).
     pub fn poll<F>(&mut self, mut f: F) -> Result<(), Error<TcpStack::Error>>
     where
-        for<'a> F: FnMut(&mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>, &'a str, &[u8], &[Property<'a>]),
+        for<'a> F: FnMut(
+            &mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+            &'a str,
+            &[u8],
+            &[Property<'a>],
+        ),
     {
         self.client.process()?;
 

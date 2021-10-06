@@ -3,7 +3,7 @@
 ///
 use crate::QoS;
 use embedded_nal::IpAddr;
-use heapless::{String, Vec, LinearMap};
+use heapless::{LinearMap, String, Vec};
 
 use embedded_time::{
     duration::{Extensions, Seconds},
@@ -27,7 +27,9 @@ pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, cons
     active: bool,
 }
 
-impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
+impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
+    SessionState<Clock, MSG_SIZE, MSG_COUNT>
+{
     pub fn new(broker: IpAddr, id: String<64>) -> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
         SessionState {
             connected: false,
@@ -100,7 +102,7 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
         match qos {
             QoS::AtMostOnce => 0,
             QoS::AtLeastOnce => self.pending_publish.len(),
-            QoS::ExactlyOnce => 0
+            QoS::ExactlyOnce => 0,
         }
     }
 

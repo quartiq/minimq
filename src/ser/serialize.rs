@@ -172,11 +172,11 @@ pub fn serialize_publish_qos1() {
 
     let mut buffer: [u8; 900] = [0; 900];
     let payload: [u8; 2] = [0xAB, 0xCD];
-    let message = publish_message(&mut buffer, "ABC", &payload, QoS::AtLeastOnce, 0xbeef, &[]).unwrap();
+    let message =
+        publish_message(&mut buffer, "ABC", &payload, QoS::AtLeastOnce, 0xbeef, &[]).unwrap();
 
     assert_eq!(message, good_publish);
 }
-
 
 #[test]
 fn serialize_subscribe() {
