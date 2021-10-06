@@ -21,12 +21,11 @@ fn main() -> std::io::Result<()> {
             println!("{} < {}", topic, core::str::from_utf8(payload).unwrap());
 
             for property in properties {
-                match property {
-                    Property::ResponseTopic(topic) => client
+                if let Property::ResponseTopic(topic) = property {
+                    client
                         .publish(topic, "Pong".as_bytes(), QoS::AtMostOnce, &[])
-                        .unwrap(),
-                    _ => {}
-                };
+                        .unwrap();
+                }
             }
 
             if topic == "response" {
