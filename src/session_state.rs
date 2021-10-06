@@ -1,6 +1,5 @@
 /// This module represents the session state of an MQTT communication session.
-///
-///
+use crate::warn;
 use embedded_nal::IpAddr;
 use heapless::{String, Vec};
 
@@ -9,15 +8,17 @@ use embedded_time::{
     Clock, Instant,
 };
 
+/// The default duration to wait for a ping response from the broker.
+const PING_TIMEOUT: Seconds = Seconds(5);
+
 pub struct SessionState<C: Clock> {
     pub keep_alive_interval: Option<Seconds<u32>>,
-    pub ping_timeout: Option<Instant<C>>,
+    ping_timeout: Option<Instant<C>>,
+    next_ping: Option<Instant<C>>,
     pub broker: IpAddr,
     pub maximum_packet_size: Option<u32>,
     pub client_id: String<64>,
     pub pending_subscriptions: Vec<u16, 32>,
-    last_transmission: Option<Instant<C>>,
-    last_reception: Option<Instant<C>>,
     packet_id: u16,
     active: bool,
 }
@@ -27,12 +28,11 @@ impl<C: Clock> SessionState<C> {
         SessionState {
             active: false,
             ping_timeout: None,
+            next_ping: None,
             broker,
             client_id: id,
             packet_id: 1,
             keep_alive_interval: Some(59.seconds()),
-            last_transmission: None,
-            last_reception: None,
             pending_subscriptions: Vec::new(),
             maximum_packet_size: None,
         }
@@ -47,8 +47,15 @@ impl<C: Clock> SessionState<C> {
     }
 
     /// Called whenever an active connection has been made with a broker.
-    pub fn register_connection(&mut self) {
+    pub fn register_connection(&mut self, now: Instant<C>) {
         self.active = true;
+        self.ping_timeout = None;
+
+        // If the keep-alive interval is specified, set up a ping to go out before the interval
+        // elapses.
+        if let Some(interval) = self.keep_alive_interval {
+            self.next_ping.replace(now + interval - 500.milliseconds());
+        }
     }
 
     /// Indicates if there is present session state available.
@@ -71,36 +78,45 @@ impl<C: Clock> SessionState<C> {
         }
     }
 
-    pub fn handle_connection_reset(&mut self) {
-        self.last_transmission = None;
-        self.last_reception = None;
-        self.ping_timeout = None;
-    }
+    /// Callback function to register a PingResp packet reception.
+    pub fn register_ping_response(&mut self) {
+        // Take the current timeout to remove it.
+        let timeout = self.ping_timeout.take();
 
-    pub fn register_transmission(&mut self, now: Instant<C>) {
-        self.last_transmission = Some(now);
-    }
-
-    pub fn register_reception(&mut self, now: Instant<C>) {
-        self.last_reception = Some(now);
-    }
-
-    pub fn ping_is_due(&self, now: &Instant<C>) -> bool {
-        // Send a ping if we haven't both sent and received messages within 50% of the keep-alive interval.
-        if let Some(interval) = self.keep_alive_interval {
-            // If there is no last transmit/receive timestamp, a ping will be deemed to be due
-            // immediately, which will result in both timestamps being properly set.
-            let tx_timeout = self
-                .last_transmission
-                .map_or(true, |last| *now > last + interval - 500.milliseconds());
-
-            let rx_timeout = self
-                .last_reception
-                .map_or(true, |last| *now > last + interval - 500.milliseconds());
-
-            tx_timeout || rx_timeout
-        } else {
-            false
+        // If there was no timeout to begin with, log the spurious ping response.
+        if timeout.is_none() {
+            warn!("Got unexpected ping response");
         }
+    }
+
+    /// Handle ping time management.
+    ///
+    /// # Args
+    /// * `now` - The current instant in time.
+    ///
+    /// # Returns
+    /// An error if a pending ping is past the deadline. Otherwise, returns a bool indicating
+    /// whether or not a ping should be sent.
+    pub fn handle_ping(&mut self, now: Instant<C>) -> Result<bool, ()> {
+        // First, check if a ping is currently awaiting response.
+        if let Some(timeout) = self.ping_timeout {
+            if now > timeout {
+                return Err(());
+            }
+
+            return Ok(false);
+        }
+
+        if let Some(ping_deadline) = self.next_ping {
+            // Update the next ping deadline if the ping is due.
+            if now > ping_deadline {
+                self.next_ping
+                    .replace(now + self.keep_alive_interval.unwrap() - 500.milliseconds());
+                self.ping_timeout.replace(now + PING_TIMEOUT);
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 }

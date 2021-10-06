@@ -2,7 +2,7 @@ use crate::{
     de::{deserialize::ReceivedPacket, PacketReader},
     ser::serialize,
     session_state::SessionState,
-    Property, {debug, error, info, warn},
+    Property, {debug, error, info},
 };
 
 use embedded_nal::{nb, IpAddr, SocketAddr, TcpClientStack};
@@ -14,9 +14,6 @@ use embedded_time::{
 use heapless::String;
 
 use core::str::FromStr;
-
-/// The default duration to wait for a ping response from the broker.
-const PING_TIMEOUT: embedded_time::duration::Seconds = embedded_time::duration::Seconds(5);
 
 /// The quality-of-service for an MQTT message.
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -162,8 +159,6 @@ where
                         nb::Error::WouldBlock => Error::WriteFail,
                         nb::Error::Other(err) => Error::Network(err),
                     })?;
-
-                self.session_state.handle_connection_reset();
             }
 
             // Next, connect to the broker via the MQTT protocol.
@@ -233,8 +228,6 @@ where
                 if written != buf.len() {
                     Err(Error::WriteFail)
                 } else {
-                    self.session_state
-                        .register_transmission(self.clock.try_now()?);
                     Ok(())
                 }
             })
@@ -377,8 +370,6 @@ where
     where
         F: FnMut(&mut MqttClient<N, C, T>, &'a str, &[u8], &[Property<'a>]),
     {
-        self.session_state.register_reception(self.clock.try_now()?);
-
         // All packets must be received in the active state.
         if self.connection_state.state() != &States::Active {
             // If we are establishing and just received a connack, this packet is also acceptable.
@@ -413,8 +404,6 @@ where
                     self.session_state.reset();
                 }
 
-                // Now that we are connected, we have session state that will be persisted.
-                self.session_state.register_connection();
                 self.connection_state
                     .process_event(Events::ReceivedConnAck)
                     .unwrap();
@@ -436,6 +425,10 @@ where
                         _prop => info!("Ignoring property: {:?}", _prop),
                     };
                 }
+
+                // Now that we are connected, we have session state that will be persisted.
+                self.session_state
+                    .register_connection(self.clock.try_now()?);
 
                 result
             }
@@ -470,12 +463,7 @@ where
 
             ReceivedPacket::PingResp => {
                 // Cancel the ping response timeout.
-                if self.session_state.ping_timeout.is_some() {
-                    self.session_state.ping_timeout = None;
-                } else {
-                    warn!("Got unexpected ping response");
-                }
-
+                self.session_state.register_ping_response();
                 Ok(())
             }
 
@@ -491,25 +479,25 @@ where
 
         let now = self.clock.try_now()?;
 
-        if let Some(timeout) = self.session_state.ping_timeout {
-            if now > timeout {
-                // Reset network connection.
+        // Note: The ping timeout is set at this point so that it's running even if we fail
+        // to write the ping message. This is intentional incase the underlying transport
+        // mechanism has stalled. The ping timeout will then allow us to recover the
+        // underlying TCP connection.
+        match self.session_state.handle_ping(now) {
+            Err(()) => {
                 self.connection_state.process_event(Events::Disconnect).ok();
             }
-        } else {
-            // Check if we need to ping the server.
-            if self.session_state.ping_is_due(&now) {
+
+            Ok(true) => {
                 let mut buffer: [u8; T] = [0; T];
 
-                // Note: The ping timeout is set at this point so that it's running even if we fail
-                // to write the ping message. This is intentional incase the underlying transport
-                // mechanism has stalled. The ping timeout will then allow us to recover the
-                // underlying TCP connection.
-                self.session_state.ping_timeout.replace(now + PING_TIMEOUT);
-
+                // Note: If we fail to serialize or write the packet, the ping timeout timer is
+                // still running, so we will recover the TCP connection in the future.
                 let packet = serialize::ping_req_message(&mut buffer)?;
                 self.write(packet)?;
             }
+
+            Ok(false) => {}
         }
 
         Ok(())
