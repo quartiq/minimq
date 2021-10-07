@@ -64,6 +64,7 @@ pub(crate) mod ser;
 
 mod message_types;
 mod mqtt_client;
+mod network_manager;
 mod properties;
 mod session_state;
 
@@ -72,10 +73,52 @@ pub use properties::Property;
 
 pub use embedded_nal;
 pub use embedded_time;
-pub use mqtt_client::{Error, Minimq, ProtocolError, QoS};
+pub use mqtt_client::{Minimq, QoS};
 
 #[cfg(feature = "logging")]
 pub(crate) use log::{debug, error, info, warn};
+
+/// Errors that are specific to the MQTT protocol implementation.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum ProtocolError {
+    Bounds,
+    DataSize,
+    Invalid,
+    Failed,
+    PacketSize,
+    MalformedPacket,
+    MalformedInteger,
+    UnknownProperty,
+    UnsupportedPacket,
+    BufferSize,
+    InvalidProperty,
+}
+
+/// Possible errors encountered during an MQTT connection.
+#[derive(Debug, PartialEq)]
+pub enum Error<E> {
+    Network(E),
+    WriteFail,
+    NotReady,
+    Unsupported,
+    ProvidedClientIdTooLong,
+    Failed(u8),
+    Protocol(ProtocolError),
+    SessionReset,
+    Clock(embedded_time::clock::Error),
+}
+
+impl<E> From<embedded_time::clock::Error> for Error<E> {
+    fn from(clock: embedded_time::clock::Error) -> Self {
+        Error::Clock(clock)
+    }
+}
+
+impl<E> From<ProtocolError> for Error<E> {
+    fn from(error: ProtocolError) -> Self {
+        Error::Protocol(error)
+    }
+}
 
 #[doc(hidden)]
 #[cfg(not(feature = "logging"))]

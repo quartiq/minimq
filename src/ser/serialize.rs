@@ -1,7 +1,7 @@
 use crate::QoS;
 use crate::{
-    message_types::MessageType, mqtt_client::ProtocolError as Error,
-    properties::PropertyIdentifier, ser::ReversedPacketWriter, Property,
+    message_types::MessageType, properties::PropertyIdentifier, ser::ReversedPacketWriter,
+    Property, ProtocolError as Error,
 };
 
 use bit_field::BitField;

@@ -1,7 +1,6 @@
 use crate::{
     message_types::MessageType,
-    mqtt_client::ProtocolError as Error,
-    Property, {debug, warn},
+    Property, ProtocolError as Error, {debug, warn},
 };
 use bit_field::BitField;
 use heapless::Vec;
