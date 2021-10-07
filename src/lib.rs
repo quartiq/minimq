@@ -7,7 +7,7 @@
 //!
 //! # Limitations
 //! This library does not currently support the following elements:
-//! * Quality-of-service above `AtMostOnce`
+//! * Quality-of-service `ExactlyOnce`
 //! * Session timeouts
 //! * Server keep alive timeouts (ping)
 //! * Bulk subscriptions
@@ -32,8 +32,8 @@
 //! use minimq::{Minimq, QoS};
 //!
 //! // Construct an MQTT client with a maximum packet size of 256 bytes.
-//! // Connect to a broker at 192.168.0.254 - Use a client ID of "test".
-//! let mut mqtt: Minimq<_, _, 256> = Minimq::new(
+//! // Connect to a broker at localhost - Use a client ID of "test".
+//! let mut mqtt: Minimq<_, _, 256, 16> = Minimq::new(
 //!         "127.0.0.1".parse().unwrap(),
 //!         "test",
 //!         std_embedded_nal::Stack::default(),

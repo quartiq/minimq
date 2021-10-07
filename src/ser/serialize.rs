@@ -1,3 +1,4 @@
+use crate::QoS;
 use crate::{
     message_types::MessageType, mqtt_client::ProtocolError as Error,
     properties::PropertyIdentifier, ser::ReversedPacketWriter, Property,
@@ -70,6 +71,8 @@ pub fn publish_message<'a, 'b, 'c>(
     dest: &'b mut [u8],
     topic: &'a str,
     payload: &[u8],
+    qos: QoS,
+    id: u16,
     properties: &[Property<'c>],
 ) -> Result<&'b [u8], Error> {
     // Validate the properties for this packet.
@@ -96,11 +99,17 @@ pub fn publish_message<'a, 'b, 'c>(
     // Write the variable header into the packet.
     packet.write_properties(properties)?;
 
-    // TODO: Handle packet ID when QoS > 0.
+    if qos != QoS::AtMostOnce {
+        packet.write_u16(id)?;
+    }
+
     packet.write_utf8_string(topic)?;
 
+    // Set qos to fixed header bits 1 and 2 in binary
+    let flags = *0u8.set_bits(1..=2, qos as u8);
+
     // Write the fixed length header.
-    packet.finalize(MessageType::Publish, 0)
+    packet.finalize(MessageType::Publish, flags)
 }
 
 pub fn subscribe_message<'a, 'b, 'c>(
@@ -145,7 +154,26 @@ pub fn serialize_publish() {
 
     let mut buffer: [u8; 900] = [0; 900];
     let payload: [u8; 2] = [0xAB, 0xCD];
-    let message = publish_message(&mut buffer, "ABC", &payload, &[]).unwrap();
+    let message = publish_message(&mut buffer, "ABC", &payload, QoS::AtMostOnce, 0, &[]).unwrap();
+
+    assert_eq!(message, good_publish);
+}
+
+#[test]
+pub fn serialize_publish_qos1() {
+    let good_publish: [u8; 12] = [
+        0x32, // Publish message
+        0x0a, // Remaining length (10)
+        0x00, 0x03, 0x41, 0x42, 0x43, // Topic: ABC
+        0xBE, 0xEF, // Packet identifier
+        0x00, // Properties length
+        0xAB, 0xCD, // Payload
+    ];
+
+    let mut buffer: [u8; 900] = [0; 900];
+    let payload: [u8; 2] = [0xAB, 0xCD];
+    let message =
+        publish_message(&mut buffer, "ABC", &payload, QoS::AtLeastOnce, 0xbeef, &[]).unwrap();
 
     assert_eq!(message, good_publish);
 }
@@ -184,6 +212,8 @@ pub fn serialize_publish_with_properties() {
         &mut buffer,
         "ABC",
         &payload,
+        QoS::AtMostOnce,
+        0,
         &[Property::ResponseTopic("A")],
     )
     .unwrap();
