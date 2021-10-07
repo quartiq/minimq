@@ -12,7 +12,7 @@ use embedded_time::{
     duration::{Extensions, Seconds},
 };
 
-use heapless::{String, Vec};
+use heapless::String;
 
 use core::str::FromStr;
 
@@ -370,17 +370,9 @@ where
                     .register_connection(self.clock.try_now()?);
 
                 // Replay QoS 1 messages
-                let keys: Vec<u16, MSG_COUNT> = self.session_state.pending_publish_ordering.clone();
-                for k in keys {
-                    let message: Vec<u8, MSG_SIZE> = Vec::from_slice(
-                        self.session_state
-                            .pending_publish
-                            .get(&k)
-                            .unwrap()
-                            .as_slice(),
-                    )
-                    .unwrap();
-                    self.network.write(&message)?;
+                for key in self.session_state.pending_publish_ordering.iter() {
+                    let message = self.session_state.pending_publish.get(&key).unwrap();
+                    self.network.write(message)?;
                 }
 
                 result
