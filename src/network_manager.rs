@@ -13,17 +13,17 @@ use crate::session_state::SessionState;
 use crate::Error;
 
 /// Simple structure for maintaining state of the network connection.
-pub(crate) struct InterfaceHolder<N: TcpClientStack> {
-    socket: Option<N::TcpSocket>,
-    network_stack: N,
+pub(crate) struct InterfaceHolder<TcpStack: TcpClientStack> {
+    socket: Option<TcpStack::TcpSocket>,
+    network_stack: TcpStack,
 }
 
-impl<N> InterfaceHolder<N>
+impl<TcpStack> InterfaceHolder<TcpStack>
 where
-    N: TcpClientStack,
+    TcpStack: TcpClientStack,
 {
     /// Construct a new network holder utility.
-    pub fn new(stack: N) -> Self {
+    pub fn new(stack: TcpStack) -> Self {
         Self {
             socket: None,
             network_stack: stack,
@@ -31,7 +31,7 @@ where
     }
 
     /// Determine if an TCP connection exists and is connected.
-    pub fn tcp_connected(&mut self) -> Result<bool, Error<N::Error>> {
+    pub fn tcp_connected(&mut self) -> Result<bool, Error<TcpStack::Error>> {
         if self.socket.is_none() {
             return Ok(false);
         }
@@ -46,7 +46,7 @@ where
     ///
     /// # Note
     /// If a TCP socket was previously open, it will be closed and a new socket will be allocated.
-    pub fn allocate_socket(&mut self) -> Result<(), Error<N::Error>> {
+    pub fn allocate_socket(&mut self) -> Result<(), Error<TcpStack::Error>> {
         if let Some(socket) = self.socket.take() {
             self.network_stack
                 .close(socket)
@@ -67,7 +67,7 @@ where
     ///
     /// # Args
     /// * `remote` - The address of the remote to connect to.
-    pub fn connect(&mut self, remote: SocketAddr) -> Result<(), Error<N::Error>> {
+    pub fn connect(&mut self, remote: SocketAddr) -> Result<(), Error<TcpStack::Error>> {
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
         self.network_stack
             .connect(socket, remote)
@@ -83,12 +83,12 @@ where
     /// * `session_state` - The MQTT session state to update when the control packet is written.
     /// * `clock` - The clock used for keeping time in the system.
     /// * `packet` - The packet to write.
-    pub fn write_packet<C: Clock>(
+    pub fn write_packet<C: Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>(
         &mut self,
-        session_state: &mut SessionState<C>,
+        session_state: &mut SessionState<C, MSG_SIZE, MSG_COUNT>,
         clock: &C,
         packet: &[u8],
-    ) -> Result<(), Error<N::Error>> {
+    ) -> Result<(), Error<TcpStack::Error>> {
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
         self.network_stack
             .send(socket, &packet)
@@ -113,7 +113,7 @@ where
     ///
     /// # Returns
     /// The number of bytes successfully read.
-    pub fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, Error<N::Error>> {
+    pub fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, Error<TcpStack::Error>> {
         // Atomically access the socket.
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
         let result = self.network_stack.receive(socket, &mut buf);

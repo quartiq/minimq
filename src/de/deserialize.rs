@@ -27,6 +27,18 @@ pub struct Pub<'a> {
 }
 
 #[derive(Debug)]
+pub struct PubAck<'a> {
+    /// Packet identifier
+    pub packet_identifier: u16,
+
+    /// Reason code
+    pub reason: u8,
+
+    /// The properties transmitted with the publish data.
+    pub properties: Vec<Property<'a>, 8>,
+}
+
+#[derive(Debug)]
 pub struct SubAck<'a> {
     /// The identifier that the acknowledge is assocaited with.
     pub packet_identifier: u16,
@@ -42,6 +54,7 @@ pub struct SubAck<'a> {
 pub enum ReceivedPacket<'a> {
     ConnAck(ConnAck<'a>),
     Publish(Pub<'a>),
+    PubAck(PubAck<'a>),
     SubAck(SubAck<'a>),
     PingResp,
 }
@@ -74,6 +87,8 @@ impl<'a> ReceivedPacket<'a> {
             }
 
             MessageType::Publish => Ok(ReceivedPacket::Publish(parse_publish(packet_reader)?)),
+
+            MessageType::PubAck => Ok(ReceivedPacket::PubAck(parse_puback(packet_reader)?)),
 
             MessageType::SubAck => {
                 if flags != 0 {
@@ -131,6 +146,30 @@ fn parse_publish<'a, 'reader: 'a, const T: usize>(
         topic,
         properties,
         payload,
+    })
+}
+
+fn parse_puback<'a, 'reader: 'a, const T: usize>(
+    p: &'reader PacketReader<T>,
+) -> Result<PubAck<'a>, Error> {
+    let id = p.read_u16()?;
+    // If length = 4 -> 1 byte fixed header, 1 byte remaining length, 2 bytes variable header
+    // variable header has packet identifier only with no properties and default success 0x00 reason code
+    if p.packet_length() == Ok(4) {
+        return Ok(PubAck {
+            packet_identifier: id,
+            reason: 0x00,
+            properties: Vec::new(),
+        });
+    }
+
+    let reason = p.read_u8()?;
+    let properties = p.read_properties()?;
+
+    Ok(PubAck {
+        packet_identifier: id,
+        reason: reason,
+        properties,
     })
 }
 
@@ -192,6 +231,48 @@ mod test {
         match publish {
             ReceivedPacket::Publish(pub_info) => {
                 assert_eq!(pub_info.topic, "A");
+            }
+            _ => panic!("Invalid message"),
+        }
+    }
+
+    #[test]
+    fn deserialize_good_puback() {
+        let mut serialized_suback: [u8; 6] = [
+            0x40, // PubAck
+            0x04, // Remaining length
+            0x00, 0x05, // Identifier
+            0x10, // Response Code
+            0x00, // Properties length
+        ];
+
+        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_suback);
+        let puback = ReceivedPacket::parse_message(&mut reader).unwrap();
+        match puback {
+            ReceivedPacket::PubAck(pub_ack) => {
+                assert_eq!(pub_ack.reason, 0x10);
+                assert_eq!(pub_ack.packet_identifier, 5);
+                assert_eq!(pub_ack.properties.len(), 0);
+            }
+            _ => panic!("Invalid message"),
+        }
+    }
+
+    #[test]
+    fn deserialize_good_puback_without_reason() {
+        let mut serialized_suback: [u8; 4] = [
+            0x40, // PubAck
+            0x02, // Remaining length
+            0x00, 0x06, // Identifier
+        ];
+
+        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_suback);
+        let puback = ReceivedPacket::parse_message(&mut reader).unwrap();
+        match puback {
+            ReceivedPacket::PubAck(pub_ack) => {
+                assert_eq!(pub_ack.reason, 0x00);
+                assert_eq!(pub_ack.packet_identifier, 6);
+                assert_eq!(pub_ack.properties.len(), 0);
             }
             _ => panic!("Invalid message"),
         }
