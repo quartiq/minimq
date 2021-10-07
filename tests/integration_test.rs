@@ -10,26 +10,30 @@ fn main() -> std::io::Result<()> {
     let stack = std_embedded_nal::Stack::default();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
     let mut mqtt =
-        Minimq::<_, _, 256>::new(localhost, "", stack, StandardClock::default()).unwrap();
+        Minimq::<_, _, 256, 16>::new(localhost, "", stack, StandardClock::default()).unwrap();
 
     let mut published = false;
     let mut subscribed = false;
+    let mut responses = 0;
 
     loop {
         mqtt.poll(|client, topic, payload, properties| {
             println!("{} < {}", topic, core::str::from_utf8(payload).unwrap());
 
             for property in properties {
-                match property {
-                    Property::ResponseTopic(topic) => client
+                if let Property::ResponseTopic(topic) = property {
+                    client
                         .publish(topic, "Pong".as_bytes(), QoS::AtMostOnce, &[])
-                        .unwrap(),
-                    _ => {}
-                };
+                        .unwrap();
+                }
             }
 
             if topic == "response" {
-                std::process::exit(0);
+                responses += 1;
+                if responses == 2 {
+                    assert_eq!(0, client.pending_messages(QoS::AtLeastOnce));
+                    std::process::exit(0);
+                }
             }
         })
         .unwrap();
@@ -48,6 +52,13 @@ fn main() -> std::io::Result<()> {
                     mqtt.client
                         .publish("request", "Ping".as_bytes(), QoS::AtMostOnce, &properties)
                         .unwrap();
+
+                    mqtt.client
+                        .publish("request", "Ping".as_bytes(), QoS::AtLeastOnce, &properties)
+                        .unwrap();
+
+                    // The message cannot be ack'd until the next poll call
+                    assert_eq!(1, mqtt.client.pending_messages(QoS::AtLeastOnce));
 
                     published = true;
                 }

@@ -7,7 +7,7 @@
 //!
 //! # Limitations
 //! This library does not currently support the following elements:
-//! * Quality-of-service above `AtMostOnce`
+//! * Quality-of-service `ExactlyOnce`
 //! * Session timeouts
 //! * Server keep alive timeouts (ping)
 //! * Bulk subscriptions
@@ -32,8 +32,8 @@
 //! use minimq::{Minimq, QoS};
 //!
 //! // Construct an MQTT client with a maximum packet size of 256 bytes.
-//! // Connect to a broker at 192.168.0.254 - Use a client ID of "test".
-//! let mut mqtt: Minimq<_, _, 256> = Minimq::new(
+//! // Connect to a broker at localhost - Use a client ID of "test".
+//! let mut mqtt: Minimq<_, _, 256, 16> = Minimq::new(
 //!         "127.0.0.1".parse().unwrap(),
 //!         "test",
 //!         std_embedded_nal::Stack::default(),
@@ -64,6 +64,7 @@ pub(crate) mod ser;
 
 mod message_types;
 mod mqtt_client;
+mod network_manager;
 mod properties;
 mod session_state;
 
@@ -72,10 +73,52 @@ pub use properties::Property;
 
 pub use embedded_nal;
 pub use embedded_time;
-pub use mqtt_client::{Error, Minimq, ProtocolError, QoS};
+pub use mqtt_client::{Minimq, QoS};
 
 #[cfg(feature = "logging")]
 pub(crate) use log::{debug, error, info, warn};
+
+/// Errors that are specific to the MQTT protocol implementation.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum ProtocolError {
+    Bounds,
+    DataSize,
+    Invalid,
+    Failed,
+    PacketSize,
+    MalformedPacket,
+    MalformedInteger,
+    UnknownProperty,
+    UnsupportedPacket,
+    BufferSize,
+    InvalidProperty,
+}
+
+/// Possible errors encountered during an MQTT connection.
+#[derive(Debug, PartialEq)]
+pub enum Error<E> {
+    Network(E),
+    WriteFail,
+    NotReady,
+    Unsupported,
+    ProvidedClientIdTooLong,
+    Failed(u8),
+    Protocol(ProtocolError),
+    SessionReset,
+    Clock(embedded_time::clock::Error),
+}
+
+impl<E> From<embedded_time::clock::Error> for Error<E> {
+    fn from(clock: embedded_time::clock::Error) -> Self {
+        Error::Clock(clock)
+    }
+}
+
+impl<E> From<ProtocolError> for Error<E> {
+    fn from(error: ProtocolError) -> Self {
+        Error::Protocol(error)
+    }
+}
 
 #[doc(hidden)]
 #[cfg(not(feature = "logging"))]

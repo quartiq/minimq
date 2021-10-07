@@ -9,6 +9,8 @@ This document describes the changes to Minimq between releases.
 keep-alive interval
 * Updating tests to use `std-embedded-time`
 * Fixing main docs.
+* Added support for publishing with QoS 1
+* Refactoring network stack management into a separate container class
 
 # Version 0.3.0
 Version 0.3.0 was published on 2021-08-06

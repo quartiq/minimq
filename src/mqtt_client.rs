@@ -1,17 +1,18 @@
 use crate::{
     de::{deserialize::ReceivedPacket, PacketReader},
+    network_manager::InterfaceHolder,
     ser::serialize,
     session_state::SessionState,
-    Property, {debug, error, info},
+    Error, Property, ProtocolError, {debug, error, info},
 };
 
-use embedded_nal::{nb, IpAddr, SocketAddr, TcpClientStack};
+use embedded_nal::{IpAddr, SocketAddr, TcpClientStack};
 use embedded_time::{
+    self,
     duration::{Extensions, Seconds},
-    Clock,
 };
 
-use heapless::String;
+use heapless::{String, Vec};
 
 use core::str::FromStr;
 
@@ -19,55 +20,13 @@ use core::str::FromStr;
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum QoS {
     /// A packet will be delivered at most once, but may not be delivered at all.
-    AtMostOnce,
+    AtMostOnce = 0,
 
     /// A packet will be delivered at least one time, but possibly more than once.
-    AtLeastOnce,
+    AtLeastOnce = 1,
 
     /// A packet will be delivered exactly one time.
-    ExactlyOne,
-}
-
-/// Possible errors encountered during an MQTT connection.
-#[derive(Debug, PartialEq)]
-pub enum Error<E> {
-    Network(E),
-    WriteFail,
-    NotReady,
-    Unsupported,
-    ProvidedClientIdTooLong,
-    Failed(u8),
-    Protocol(ProtocolError),
-    SessionReset,
-    Clock(embedded_time::clock::Error),
-}
-
-/// Errors that are specific to the MQTT protocol implementation.
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum ProtocolError {
-    Bounds,
-    DataSize,
-    Invalid,
-    Failed,
-    PacketSize,
-    MalformedPacket,
-    MalformedInteger,
-    UnknownProperty,
-    UnsupportedPacket,
-    BufferSize,
-    InvalidProperty,
-}
-
-impl<E> From<embedded_time::clock::Error> for Error<E> {
-    fn from(clock: embedded_time::clock::Error) -> Self {
-        Error::Clock(clock)
-    }
-}
-
-impl<E> From<ProtocolError> for Error<E> {
-    fn from(error: ProtocolError) -> Self {
-        Error::Protocol(error)
-    }
+    ExactlyOnce = 2,
 }
 
 mod sm {
@@ -94,35 +53,37 @@ mod sm {
 use sm::{Context, Events, StateMachine, States};
 
 /// The general structure for managing MQTT via Minimq.
-pub struct Minimq<N, C, const T: usize>
+pub struct Minimq<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
 where
-    N: TcpClientStack,
-    C: Clock,
+    TcpStack: TcpClientStack,
+    Clock: embedded_time::Clock,
 {
-    pub client: MqttClient<N, C, T>,
-    packet_reader: PacketReader<T>,
+    pub client: MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+    packet_reader: PacketReader<MSG_SIZE>,
 }
 
 /// A client for interacting with an MQTT Broker.
-pub struct MqttClient<N: TcpClientStack, C: Clock, const T: usize> {
-    network_stack: N,
-    clock: C,
-    socket: Option<N::TcpSocket>,
-    session_state: SessionState<C>,
+pub struct MqttClient<
+    TcpStack: TcpClientStack,
+    Clock: embedded_time::Clock,
+    const MSG_SIZE: usize,
+    const MSG_COUNT: usize,
+> {
+    pub(crate) network: InterfaceHolder<TcpStack>,
+    clock: Clock,
+    session_state: SessionState<Clock, MSG_SIZE, MSG_COUNT>,
     connection_state: StateMachine<Context>,
 }
 
-impl<N, C, const T: usize> MqttClient<N, C, T>
+impl<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
+    MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
 where
-    N: TcpClientStack,
-    C: Clock,
+    TcpStack: TcpClientStack,
+    Clock: embedded_time::Clock,
 {
-    fn process(&mut self) -> Result<(), Error<N::Error>> {
+    fn process(&mut self) -> Result<(), Error<TcpStack::Error>> {
         // Potentially update the state machine depending on the current socket connection status.
-        if !self
-            .socket_is_connected()
-            .map_err(|err| Error::Network(err))?
-        {
+        if !self.network.tcp_connected()? {
             self.connection_state.process_event(Events::Disconnect).ok();
         } else {
             self.connection_state.process_event(Events::Connect).ok();
@@ -131,18 +92,8 @@ where
         match self.connection_state.state() {
             // In the RESTART state, we need to reopen the TCP socket.
             &States::Restart => {
-                if let Some(socket) = self.socket.take() {
-                    self.network_stack
-                        .close(socket)
-                        .map_err(|err| Error::Network(err))?;
-                }
+                self.network.allocate_socket()?;
 
-                // Allocate a new socket to use and begin connecting it.
-                self.socket.replace(
-                    self.network_stack
-                        .socket()
-                        .map_err(|err| Error::Network(err))?,
-                );
                 self.connection_state
                     .process_event(Events::GotSocket)
                     .unwrap();
@@ -150,27 +101,20 @@ where
 
             // In the connect transport state, we need to connect our TCP socket to the broker.
             &States::ConnectTransport => {
-                self.network_stack
-                    .connect(
-                        self.socket.as_mut().unwrap(),
-                        SocketAddr::new(self.session_state.broker, 1883),
-                    )
-                    .map_err(|err| match err {
-                        nb::Error::WouldBlock => Error::WriteFail,
-                        nb::Error::Other(err) => Error::Network(err),
-                    })?;
+                self.network
+                    .connect(SocketAddr::new(self.session_state.broker, 1883))?;
             }
 
             // Next, connect to the broker via the MQTT protocol.
             &States::ConnectBroker => {
                 let properties = [
                     // Tell the broker our maximum packet size.
-                    Property::MaximumPacketSize(T as u32),
+                    Property::MaximumPacketSize(MSG_SIZE as u32),
                     // The session does not expire.
                     Property::SessionExpiryInterval(u32::MAX),
                 ];
 
-                let mut buffer: [u8; T] = [0; T];
+                let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
                 let packet = serialize::connect_message(
                     &mut buffer,
                     self.session_state.client_id.as_str().as_bytes(),
@@ -184,7 +128,7 @@ where
                 )?;
 
                 info!("Sending CONNECT");
-                self.write(packet)?;
+                self.network.write(packet)?;
 
                 self.connection_state
                     .process_event(Events::SentConnect)
@@ -205,34 +149,6 @@ where
         self.connection_state.process_event(Events::Disconnect).ok();
     }
 
-    fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, Error<N::Error>> {
-        // Atomically access the socket.
-        let socket = self.socket.as_mut().unwrap();
-        let result = self.network_stack.receive(socket, &mut buf);
-
-        result.or_else(|err| match err {
-            nb::Error::WouldBlock => Ok(0),
-            nb::Error::Other(err) => Err(Error::Network(err)),
-        })
-    }
-
-    fn write(&mut self, buf: &[u8]) -> Result<(), Error<N::Error>> {
-        let socket = self.socket.as_mut().unwrap();
-        self.network_stack
-            .send(socket, &buf)
-            .map_err(|err| match err {
-                nb::Error::WouldBlock => Error::WriteFail,
-                nb::Error::Other(err) => Error::Network(err),
-            })
-            .and_then(|written| {
-                if written != buf.len() {
-                    Err(Error::WriteFail)
-                } else {
-                    Ok(())
-                }
-            })
-    }
-
     /// Configure the MQTT keep-alive interval.
     ///
     /// # Note
@@ -248,7 +164,7 @@ where
     pub fn set_keepalive_interval(
         &mut self,
         interval: impl Into<Seconds<u32>>,
-    ) -> Result<(), Error<N::Error>> {
+    ) -> Result<(), Error<TcpStack::Error>> {
         let interval = interval.into();
         if interval.0 > u16::MAX as u32 {
             return Err(ProtocolError::Invalid.into());
@@ -277,17 +193,17 @@ where
         &mut self,
         topic: &'a str,
         properties: &[Property<'b>],
-    ) -> Result<(), Error<N::Error>> {
+    ) -> Result<(), Error<TcpStack::Error>> {
         if self.connection_state.state() != &States::Active {
             return Err(Error::NotReady);
         }
 
         let packet_id = self.session_state.get_packet_identifier();
 
-        let mut buffer: [u8; T] = [0; T];
+        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
         let packet = serialize::subscribe_message(&mut buffer, topic, packet_id, properties)?;
 
-        self.write(packet).and_then(|_| {
+        self.network.write(packet).and_then(|_| {
             info!("Subscribing to `{}`: {}", topic, packet_id);
             self.session_state
                 .pending_subscriptions
@@ -314,13 +230,29 @@ where
         self.connection_state.state() == &States::Active
     }
 
+    /// Get the count of unacknowledged QoS 1 messages.
+    ///
+    /// # Returns
+    /// Number of pending messages with QoS 1.
+    pub fn pending_messages(&self, qos: QoS) -> usize {
+        self.session_state.pending_messages(qos)
+    }
+
+    /// Determine if the client is able to process QoS 1 publish requess.
+    ///
+    /// # Returns
+    /// True if the client is able to service QoS 1 requests.
+    pub fn can_publish(&self, qos: QoS) -> bool {
+        self.session_state.can_publish(qos)
+    }
+
     /// Publish a message over MQTT.
     ///
     /// # Note
     /// If the client is not yet connected to the broker, the message will be silently ignored.
     ///
     /// # Note
-    /// Currently, Only QoS level 1 (at most once) delivery is supported.
+    /// Currently, QoS level 2 (exactly once) delivery is not supported.
     ///
     /// # Args
     /// * `topic` - The topic to publish the message to.
@@ -328,15 +260,15 @@ where
     /// * `qos` - The desired quality-of-service level of the message. Must be QoS::AtMostOnce
     /// * `properties` - A list of properties to associate with the message being published. May be
     ///   empty.
-    pub fn publish<'a, 'b>(
+    pub fn publish(
         &mut self,
-        topic: &'a str,
+        topic: &str,
         data: &[u8],
         qos: QoS,
-        properties: &[Property<'a>],
-    ) -> Result<(), Error<N::Error>> {
-        // TODO: QoS support.
-        assert!(qos == QoS::AtMostOnce);
+        properties: &[Property],
+    ) -> Result<(), Error<TcpStack::Error>> {
+        // TODO: QoS 2 support.
+        assert!(qos != QoS::ExactlyOnce);
 
         // If we are not yet connected to the broker, we can't transmit a message.
         if self.is_connected() == false {
@@ -348,27 +280,34 @@ where
             topic, data, properties
         );
 
-        let mut buffer: [u8; T] = [0; T];
-        let packet = serialize::publish_message(&mut buffer, topic, data, properties)?;
-        self.write(packet)
-    }
+        // If QoS 0 the ID will be ignored
+        let id = self.session_state.get_packet_identifier();
 
-    fn socket_is_connected(&mut self) -> Result<bool, N::Error> {
-        if self.socket.is_none() {
-            return Ok(false);
+        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
+        let packet = serialize::publish_message(&mut buffer, topic, data, qos, id, properties)?;
+
+        self.network.write(packet)?;
+        self.session_state.increment_packet_identifier();
+
+        if qos == QoS::AtLeastOnce {
+            self.session_state.handle_publish(qos, id, packet);
         }
 
-        let socket = self.socket.as_ref().unwrap();
-        self.network_stack.is_connected(socket)
+        Ok(())
     }
 
     fn handle_packet<'a, F>(
         &mut self,
         packet: ReceivedPacket<'a>,
         f: &mut F,
-    ) -> Result<(), Error<N::Error>>
+    ) -> Result<(), Error<TcpStack::Error>>
     where
-        F: FnMut(&mut MqttClient<N, C, T>, &'a str, &[u8], &[Property<'a>]),
+        F: FnMut(
+            &mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+            &'a str,
+            &[u8],
+            &[Property<'a>],
+        ),
     {
         // All packets must be received in the active state.
         if self.connection_state.state() != &States::Active {
@@ -430,12 +369,33 @@ where
                 self.session_state
                     .register_connection(self.clock.try_now()?);
 
+                // Replay QoS 1 messages
+                let keys: Vec<u16, MSG_COUNT> = self.session_state.pending_publish_ordering.clone();
+                for k in keys {
+                    let message: Vec<u8, MSG_SIZE> = Vec::from_slice(
+                        self.session_state
+                            .pending_publish
+                            .get(&k)
+                            .unwrap()
+                            .as_slice(),
+                    )
+                    .unwrap();
+                    self.network.write(&message)?;
+                }
+
                 result
             }
 
             ReceivedPacket::Publish(info) => {
                 // Call a handler function to deal with the received data.
                 f(self, info.topic, info.payload, &info.properties);
+
+                Ok(())
+            }
+
+            ReceivedPacket::PubAck(ack) => {
+                // No matter the status code the message is considered acknowledged at this point
+                self.session_state.handle_puback(ack.packet_identifier);
 
                 Ok(())
             }
@@ -471,7 +431,7 @@ where
         }
     }
 
-    fn handle_timers(&mut self) -> Result<(), Error<N::Error>> {
+    fn handle_timers(&mut self) -> Result<(), Error<TcpStack::Error>> {
         // If we are not connected, there's no session state to manage.
         if self.connection_state.state() != &States::Active {
             return Ok(());
@@ -489,12 +449,12 @@ where
             }
 
             Ok(true) => {
-                let mut buffer: [u8; T] = [0; T];
+                let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
 
                 // Note: If we fail to serialize or write the packet, the ping timeout timer is
                 // still running, so we will recover the TCP connection in the future.
                 let packet = serialize::ping_req_message(&mut buffer)?;
-                self.write(packet)?;
+                self.network.write(packet)?;
             }
 
             Ok(false) => {}
@@ -504,7 +464,13 @@ where
     }
 }
 
-impl<N: TcpClientStack, C: Clock, const T: usize> Minimq<N, C, T> {
+impl<
+        TcpStack: TcpClientStack,
+        Clock: embedded_time::Clock,
+        const MSG_SIZE: usize,
+        const MSG_COUNT: usize,
+    > Minimq<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
+{
     /// Construct a new MQTT interface.
     ///
     /// # Args
@@ -520,9 +486,9 @@ impl<N: TcpClientStack, C: Clock, const T: usize> Minimq<N, C, T> {
     pub fn new(
         broker: IpAddr,
         client_id: &str,
-        network_stack: N,
-        clock: C,
-    ) -> Result<Self, Error<N::Error>> {
+        network_stack: TcpStack,
+        clock: Clock,
+    ) -> Result<Self, Error<TcpStack::Error>> {
         let session_state = SessionState::new(
             broker,
             String::from_str(client_id).or(Err(Error::ProvidedClientIdTooLong))?,
@@ -530,9 +496,8 @@ impl<N: TcpClientStack, C: Clock, const T: usize> Minimq<N, C, T> {
 
         let minimq = Minimq {
             client: MqttClient {
-                network_stack,
+                network: InterfaceHolder::new(network_stack),
                 clock,
-                socket: None,
                 session_state,
                 connection_state: StateMachine::new(Context),
             },
@@ -547,9 +512,14 @@ impl<N: TcpClientStack, C: Clock, const T: usize> Minimq<N, C, T> {
     /// # Args
     /// * `f` - A closure to process any received messages. The closure should accept the client,
     /// topic, message, and list of proprties (in that order).
-    pub fn poll<F>(&mut self, mut f: F) -> Result<(), Error<N::Error>>
+    pub fn poll<F>(&mut self, mut f: F) -> Result<(), Error<TcpStack::Error>>
     where
-        for<'a> F: FnMut(&mut MqttClient<N, C, T>, &'a str, &[u8], &[Property<'a>]),
+        for<'a> F: FnMut(
+            &mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+            &'a str,
+            &[u8],
+            &[Property<'a>],
+        ),
     {
         self.client.process()?;
 
@@ -563,7 +533,7 @@ impl<N: TcpClientStack, C: Clock, const T: usize> Minimq<N, C, T> {
         }
 
         let mut buf: [u8; 1024] = [0; 1024];
-        let received = self.client.read(&mut buf)?;
+        let received = self.client.network.read(&mut buf)?;
         if received > 0 {
             debug!("Received {} bytes", received);
         }
