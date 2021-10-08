@@ -1,5 +1,8 @@
 use crate::{
-    de::{deserialize::ReceivedPacket, PacketReader},
+    de::{
+        deserialize::{ConnAck, ReceivedPacket},
+        PacketReader,
+    },
     network_manager::InterfaceHolder,
     ser::serialize,
     session_state::SessionState,
@@ -296,6 +299,65 @@ where
         Ok(())
     }
 
+    fn handle_connection_acknowledge(
+        &mut self,
+        acknowledge: ConnAck,
+    ) -> Result<(), Error<TcpStack::Error>> {
+        if self.connection_state.state() != &States::Establishing {
+            return Err(Error::Protocol(ProtocolError::Invalid));
+        }
+
+        let mut result = Ok(());
+
+        if acknowledge.reason_code != 0 {
+            return Err(Error::Failed(acknowledge.reason_code));
+        }
+
+        if !acknowledge.session_present {
+            if self.session_state.is_present() {
+                result = Err(Error::SessionReset);
+            }
+
+            // Reset the session state upon connection with a broker that doesn't have a
+            // session state saved for us.
+            self.session_state.reset();
+        }
+
+        self.connection_state
+            .process_event(Events::ReceivedConnAck)
+            .unwrap();
+
+        for property in acknowledge.properties {
+            match property {
+                Property::MaximumPacketSize(size) => {
+                    self.session_state.maximum_packet_size.replace(size);
+                }
+                Property::AssignedClientIdentifier(id) => {
+                    self.session_state.client_id =
+                        String::from_str(id).or(Err(Error::ProvidedClientIdTooLong))?;
+                }
+                Property::ServerKeepAlive(keep_alive) => {
+                    self.session_state
+                        .keep_alive_interval
+                        .replace((keep_alive as u32).seconds());
+                }
+                _prop => info!("Ignoring property: {:?}", _prop),
+            };
+        }
+
+        // Now that we are connected, we have session state that will be persisted.
+        self.session_state
+            .register_connection(self.clock.try_now()?);
+
+        // Replay QoS 1 messages
+        for key in self.session_state.pending_publish_ordering.iter() {
+            let message = self.session_state.pending_publish.get(&key).unwrap();
+            self.network.write(message)?;
+        }
+
+        result
+    }
+
     fn handle_packet<'a, F>(
         &mut self,
         packet: ReceivedPacket<'a>,
@@ -309,75 +371,21 @@ where
             &[Property<'a>],
         ),
     {
-        // All packets must be received in the active state.
-        if self.connection_state.state() != &States::Active {
-            // If we are establishing and just received a connack, this packet is also acceptable.
-            if !(self.connection_state.state() == &States::Establishing
-                && matches!(packet, ReceivedPacket::ConnAck(_)))
-            {
-                error!(
-                    "Received invalid packet outside of connected state: {:?}",
-                    packet
-                );
-                return Err(Error::Protocol(ProtocolError::Invalid));
-            }
+        // ConnAck packets are received outside of the connection state.
+        if let ReceivedPacket::ConnAck(ack) = packet {
+            return self.handle_connection_acknowledge(ack);
+        }
+
+        // All other packets must be received in the active state.
+        if !self.is_connected() {
+            error!(
+                "Received invalid packet outside of connected state: {:?}",
+                packet
+            );
+            return Err(Error::Protocol(ProtocolError::Invalid));
         }
 
         match packet {
-            ReceivedPacket::ConnAck(acknowledge)
-                if self.connection_state.state() == &States::Establishing =>
-            {
-                let mut result = Ok(());
-
-                if acknowledge.reason_code != 0 {
-                    return Err(Error::Failed(acknowledge.reason_code));
-                }
-
-                if !acknowledge.session_present {
-                    if self.session_state.is_present() {
-                        result = Err(Error::SessionReset);
-                    }
-
-                    // Reset the session state upon connection with a broker that doesn't have a
-                    // session state saved for us.
-                    self.session_state.reset();
-                }
-
-                self.connection_state
-                    .process_event(Events::ReceivedConnAck)
-                    .unwrap();
-
-                for property in acknowledge.properties {
-                    match property {
-                        Property::MaximumPacketSize(size) => {
-                            self.session_state.maximum_packet_size.replace(size);
-                        }
-                        Property::AssignedClientIdentifier(id) => {
-                            self.session_state.client_id =
-                                String::from_str(id).or(Err(Error::ProvidedClientIdTooLong))?;
-                        }
-                        Property::ServerKeepAlive(keep_alive) => {
-                            self.session_state
-                                .keep_alive_interval
-                                .replace((keep_alive as u32).seconds());
-                        }
-                        _prop => info!("Ignoring property: {:?}", _prop),
-                    };
-                }
-
-                // Now that we are connected, we have session state that will be persisted.
-                self.session_state
-                    .register_connection(self.clock.try_now()?);
-
-                // Replay QoS 1 messages
-                for key in self.session_state.pending_publish_ordering.iter() {
-                    let message = self.session_state.pending_publish.get(&key).unwrap();
-                    self.network.write(message)?;
-                }
-
-                result
-            }
-
             ReceivedPacket::Publish(info) => {
                 // Call a handler function to deal with the received data.
                 f(self, info.topic, info.payload, &info.properties);
