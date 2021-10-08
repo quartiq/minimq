@@ -42,7 +42,7 @@
 //! let mut subscribed = false;
 //!
 //! loop {
-//!     if mqtt.client.is_connected().unwrap() && !subscribed {
+//!     if mqtt.client.is_connected() && !subscribed {
 //!         mqtt.client.subscribe("topic", &[]).unwrap();
 //!         subscribed = true;
 //!     }

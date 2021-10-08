@@ -1,7 +1,5 @@
 /// This module represents the session state of an MQTT communication session.
-///
-///
-use crate::QoS;
+use crate::{warn, QoS};
 use embedded_nal::IpAddr;
 use heapless::{LinearMap, String, Vec};
 
@@ -10,16 +8,17 @@ use embedded_time::{
     Instant,
 };
 
+/// The default duration to wait for a ping response from the broker.
+const PING_TIMEOUT: Seconds = Seconds(5);
+
 pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
 {
-    // Indicates that we are connected to a broker.
-    pub connected: bool,
     pub keep_alive_interval: Option<Seconds<u32>>,
-    pub ping_timeout: Option<Instant<Clock>>,
+    ping_timeout: Option<Instant<Clock>>,
+    next_ping: Option<Instant<Clock>>,
     pub broker: IpAddr,
     pub maximum_packet_size: Option<u32>,
     pub client_id: String<64>,
-    last_transmission: Option<Instant<Clock>>,
     pub pending_subscriptions: Vec<u16, 32>,
     pub pending_publish: LinearMap<u16, Vec<u8, MSG_SIZE>, MSG_COUNT>,
     pub pending_publish_ordering: Vec<u16, MSG_COUNT>,
@@ -32,14 +31,13 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
 {
     pub fn new(broker: IpAddr, id: String<64>) -> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
         SessionState {
-            connected: false,
             active: false,
             ping_timeout: None,
+            next_ping: None,
             broker,
             client_id: id,
             packet_id: 1,
             keep_alive_interval: Some(59.seconds()),
-            last_transmission: None,
             pending_subscriptions: Vec::new(),
             pending_publish: LinearMap::new(),
             pending_publish_ordering: Vec::new(),
@@ -49,14 +47,12 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
 
     pub fn reset(&mut self) {
         self.active = false;
-        self.connected = false;
         self.packet_id = 1;
         self.keep_alive_interval = Some(59.seconds());
         self.maximum_packet_size = None;
         self.pending_subscriptions.clear();
         self.pending_publish.clear();
         self.pending_publish_ordering.clear();
-        self.last_transmission = None;
     }
 
     /// Called when publish with QoS 1 is called so that we can keep track of PUBACK
@@ -107,8 +103,17 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
     }
 
     /// Called whenever an active connection has been made with a broker.
-    pub fn register_connection(&mut self) {
+    pub fn register_connection(&mut self, now: Instant<Clock>) {
         self.active = true;
+        self.ping_timeout = None;
+
+        // The next ping should be sent out in half the keep-alive interval from now.  To calculate
+        // that, we take the integral number of seconds in the keep-alive interval and multiply it
+        // by 500ms (1/2 seconds) to get half the interval.
+        if let Some(interval) = self.keep_alive_interval {
+            self.next_ping
+                .replace(now + 500.milliseconds() * interval.0);
+        }
     }
 
     /// Indicates if there is present session state available.
@@ -131,16 +136,51 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
         }
     }
 
-    pub fn register_transmission(&mut self, now: Instant<Clock>) {
-        self.last_transmission = Some(now);
+    /// Callback function to register a PingResp packet reception.
+    pub fn register_ping_response(&mut self) {
+        // Take the current timeout to remove it.
+        let timeout = self.ping_timeout.take();
+
+        // If there was no timeout to begin with, log the spurious ping response.
+        if timeout.is_none() {
+            warn!("Got unexpected ping response");
+        }
     }
 
-    pub fn ping_is_due(&self, now: &Instant<Clock>) -> bool {
-        // Send a ping if we haven't sent a transmission in the last 50% of the keepalive internal.
-        self.keep_alive_interval
-            .zip(self.last_transmission)
-            .map_or(false, |(interval, last)| {
-                *now > last + 500.milliseconds() * interval.0
-            })
+    /// Handle ping time management.
+    ///
+    /// # Args
+    /// * `now` - The current instant in time.
+    ///
+    /// # Returns
+    /// An error if a pending ping is past the deadline. Otherwise, returns a bool indicating
+    /// whether or not a ping should be sent.
+    pub fn handle_ping(&mut self, now: Instant<Clock>) -> Result<bool, ()> {
+        // First, check if a ping is currently awaiting response.
+        if let Some(timeout) = self.ping_timeout {
+            if now > timeout {
+                return Err(());
+            }
+
+            return Ok(false);
+        }
+
+        if let Some((keep_alive_interval, ping_deadline)) =
+            self.keep_alive_interval.zip(self.next_ping)
+        {
+            // Update the next ping deadline if the ping is due.
+            if now > ping_deadline {
+                // The next ping should be sent out in half the keep-alive interval from now.
+                // To calculate that, we take the integral number of seconds in the keep-alive
+                // interval and multiply it by 500ms (1/2 seconds) to get half the interval.
+                self.next_ping
+                    .replace(now + 500.milliseconds() * keep_alive_interval.0);
+
+                self.ping_timeout.replace(now + PING_TIMEOUT);
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 }

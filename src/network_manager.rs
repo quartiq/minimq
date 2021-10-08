@@ -6,9 +6,6 @@
 //! stack to be used to transmit buffers that may be stored internally in other structs without
 //! violating Rust's borrow rules.
 use embedded_nal::{nb, SocketAddr, TcpClientStack};
-use embedded_time::Clock;
-
-use crate::session_state::SessionState;
 
 use crate::Error;
 
@@ -80,15 +77,8 @@ where
     /// Write an MQTT control packet to the interface.
     ///
     /// # Args
-    /// * `session_state` - The MQTT session state to update when the control packet is written.
-    /// * `clock` - The clock used for keeping time in the system.
     /// * `packet` - The packet to write.
-    pub fn write_packet<C: Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>(
-        &mut self,
-        session_state: &mut SessionState<C, MSG_SIZE, MSG_COUNT>,
-        clock: &C,
-        packet: &[u8],
-    ) -> Result<(), Error<TcpStack::Error>> {
+    pub fn write(&mut self, packet: &[u8]) -> Result<(), Error<TcpStack::Error>> {
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
         self.network_stack
             .send(socket, &packet)
@@ -100,7 +90,6 @@ where
                 if written != packet.len() {
                     Err(Error::WriteFail)
                 } else {
-                    session_state.register_transmission(clock.try_now()?);
                     Ok(())
                 }
             })
