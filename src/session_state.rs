@@ -107,10 +107,12 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
         self.active = true;
         self.ping_timeout = None;
 
-        // If the keep-alive interval is specified, set up a ping to go out before the interval
-        // elapses.
+        // The next ping should be sent out in half the keep-alive interval from now.  To calculate
+        // that, we take the integral number of seconds in the keep-alive interval and multiply it
+        // by 500ms (1/2 seconds) to get half the interval.
         if let Some(interval) = self.keep_alive_interval {
-            self.next_ping.replace(now + interval - 500.milliseconds());
+            self.next_ping
+                .replace(now + 500.milliseconds() * interval.0);
         }
     }
 
@@ -163,11 +165,17 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
             return Ok(false);
         }
 
-        if let Some(ping_deadline) = self.next_ping {
+        if let Some((keep_alive_interval, ping_deadline)) =
+            self.keep_alive_interval.zip(self.next_ping)
+        {
             // Update the next ping deadline if the ping is due.
             if now > ping_deadline {
+                // The next ping should be sent out in half the keep-alive interval from now.
+                // To calculate that, we take the integral number of seconds in the keep-alive
+                // interval and multiply it by 500ms (1/2 seconds) to get half the interval.
                 self.next_ping
-                    .replace(now + self.keep_alive_interval.unwrap() - 500.milliseconds());
+                    .replace(now + 500.milliseconds() * keep_alive_interval.0);
+
                 self.ping_timeout.replace(now + PING_TIMEOUT);
                 return Ok(true);
             }
