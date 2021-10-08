@@ -4,7 +4,7 @@ use embedded_nal::IpAddr;
 use heapless::{LinearMap, String, Vec};
 
 use embedded_time::{
-    duration::{Extensions, Seconds},
+    duration::{Extensions, Milliseconds, Seconds},
     Instant,
 };
 
@@ -13,7 +13,7 @@ const PING_TIMEOUT: Seconds = Seconds(5);
 
 pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
 {
-    pub keep_alive_interval: Option<Seconds<u32>>,
+    pub keep_alive_interval: Option<Milliseconds<u32>>,
     ping_timeout: Option<Instant<Clock>>,
     next_ping: Option<Instant<Clock>>,
     pub broker: IpAddr,
@@ -37,7 +37,7 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
             broker,
             client_id: id,
             packet_id: 1,
-            keep_alive_interval: Some(59.seconds()),
+            keep_alive_interval: Some(59_000.milliseconds()),
             pending_subscriptions: Vec::new(),
             pending_publish: LinearMap::new(),
             pending_publish_ordering: Vec::new(),
@@ -48,11 +48,28 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
     pub fn reset(&mut self) {
         self.active = false;
         self.packet_id = 1;
-        self.keep_alive_interval = Some(59.seconds());
+        self.keep_alive_interval = Some(59_000.milliseconds());
         self.maximum_packet_size = None;
         self.pending_subscriptions.clear();
         self.pending_publish.clear();
         self.pending_publish_ordering.clear();
+    }
+
+    /// Get the keep-alive interval as an integer number of seconds.
+    ///
+    /// # Note
+    /// If no keep-alive interval is specified, zero is returned.
+    pub fn keepalive_interval(&self) -> u16 {
+        (self.keep_alive_interval.unwrap_or(0.milliseconds()).0 * 1000) as u16
+    }
+
+    /// Update the keep-alive interval.
+    ///
+    /// # Args
+    /// * `seconds` - The number of seconds in the keep-alive interval.
+    pub fn set_keepalive(&mut self, seconds: u16) {
+        self.keep_alive_interval
+            .replace(Milliseconds(seconds as u32 * 1000));
     }
 
     /// Called when publish with QoS 1 is called so that we can keep track of PUBACK
@@ -107,12 +124,9 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
         self.active = true;
         self.ping_timeout = None;
 
-        // The next ping should be sent out in half the keep-alive interval from now.  To calculate
-        // that, we take the integral number of seconds in the keep-alive interval and multiply it
-        // by 500ms (1/2 seconds) to get half the interval.
+        // The next ping should be sent out in half the keep-alive interval from now.
         if let Some(interval) = self.keep_alive_interval {
-            self.next_ping
-                .replace(now + 500.milliseconds() * interval.0);
+            self.next_ping.replace(now + interval / 2);
         }
     }
 
@@ -171,10 +185,7 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
             // Update the next ping deadline if the ping is due.
             if now > ping_deadline {
                 // The next ping should be sent out in half the keep-alive interval from now.
-                // To calculate that, we take the integral number of seconds in the keep-alive
-                // interval and multiply it by 500ms (1/2 seconds) to get half the interval.
-                self.next_ping
-                    .replace(now + 500.milliseconds() * keep_alive_interval.0);
+                self.next_ping.replace(now + keep_alive_interval / 2);
 
                 self.ping_timeout.replace(now + PING_TIMEOUT);
                 return Ok(true);
