@@ -11,6 +11,7 @@ keep-alive interval
 * Fixing main docs.
 * Added support for publishing with QoS 1
 * Refactoring network stack management into a separate container class
+* Keep-alive settings now take a u16 integer number of seconds
 
 # Version 0.3.0
 Version 0.3.0 was published on 2021-08-06
