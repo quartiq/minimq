@@ -10,10 +10,6 @@ use crate::{
 };
 
 use embedded_nal::{IpAddr, SocketAddr, TcpClientStack};
-use embedded_time::{
-    self,
-    duration::{Extensions, Seconds},
-};
 
 use heapless::String;
 
@@ -121,10 +117,7 @@ where
                 let packet = serialize::connect_message(
                     &mut buffer,
                     self.session_state.client_id.as_str().as_bytes(),
-                    self.session_state
-                        .keep_alive_interval
-                        .unwrap_or(0.seconds())
-                        .0 as u16,
+                    self.session_state.keepalive_interval(),
                     &properties,
                     // Only perform a clean start if we do not have any session state.
                     !self.session_state.is_present(),
@@ -166,21 +159,14 @@ where
     /// messages are sent within 50% of the keep-alive interval.
     pub fn set_keepalive_interval(
         &mut self,
-        interval: impl Into<Seconds<u32>>,
+        interval_seconds: u16,
     ) -> Result<(), Error<TcpStack::Error>> {
-        let interval = interval.into();
-        if interval.0 > u16::MAX as u32 {
-            return Err(ProtocolError::Invalid.into());
+        if self.connection_state.state() != &States::Active {
+            return Err(Error::NotReady);
         }
-        match self.connection_state.state() {
-            &States::Active => Err(Error::NotReady),
-            _ => {
-                self.session_state
-                    .keep_alive_interval
-                    .replace(interval.into());
-                Ok(())
-            }
-        }
+
+        self.session_state.set_keepalive(interval_seconds);
+        Ok(())
     }
 
     /// Subscribe to a topic.
@@ -337,9 +323,7 @@ where
                         String::from_str(id).or(Err(Error::ProvidedClientIdTooLong))?;
                 }
                 Property::ServerKeepAlive(keep_alive) => {
-                    self.session_state
-                        .keep_alive_interval
-                        .replace((keep_alive as u32).seconds());
+                    self.session_state.set_keepalive(keep_alive);
                 }
                 _prop => info!("Ignoring property: {:?}", _prop),
             };
