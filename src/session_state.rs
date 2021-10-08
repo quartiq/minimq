@@ -13,7 +13,7 @@ const PING_TIMEOUT: Seconds = Seconds(5);
 
 pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
 {
-    pub keep_alive_interval: Option<Milliseconds<u32>>,
+    keep_alive_interval: Option<Milliseconds<u32>>,
     ping_timeout: Option<Instant<Clock>>,
     next_ping: Option<Instant<Clock>>,
     pub broker: IpAddr,
