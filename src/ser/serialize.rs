@@ -84,6 +84,7 @@ pub fn publish_message<'a, 'b, 'c>(
     topic: &'a str,
     payload: &[u8],
     qos: QoS,
+    retain: bool,
     id: u16,
     properties: &[Property<'c>],
 ) -> Result<&'b [u8], Error> {
@@ -118,7 +119,7 @@ pub fn publish_message<'a, 'b, 'c>(
     packet.write_utf8_string(topic)?;
 
     // Set qos to fixed header bits 1 and 2 in binary
-    let flags = *0u8.set_bits(1..=2, qos as u8);
+    let flags = *0u8.set_bits(1..=2, qos as u8).set_bit(0, retain);
 
     // Write the fixed length header.
     packet.finalize(MessageType::Publish, flags)
@@ -166,7 +167,8 @@ pub fn serialize_publish() {
 
     let mut buffer: [u8; 900] = [0; 900];
     let payload: [u8; 2] = [0xAB, 0xCD];
-    let message = publish_message(&mut buffer, "ABC", &payload, QoS::AtMostOnce, 0, &[]).unwrap();
+    let message =
+        publish_message(&mut buffer, "ABC", &payload, QoS::AtMostOnce, false, 0, &[]).unwrap();
 
     assert_eq!(message, good_publish);
 }
@@ -184,8 +186,16 @@ pub fn serialize_publish_qos1() {
 
     let mut buffer: [u8; 900] = [0; 900];
     let payload: [u8; 2] = [0xAB, 0xCD];
-    let message =
-        publish_message(&mut buffer, "ABC", &payload, QoS::AtLeastOnce, 0xbeef, &[]).unwrap();
+    let message = publish_message(
+        &mut buffer,
+        "ABC",
+        &payload,
+        QoS::AtLeastOnce,
+        false,
+        0xbeef,
+        &[],
+    )
+    .unwrap();
 
     assert_eq!(message, good_publish);
 }
@@ -225,6 +235,7 @@ pub fn serialize_publish_with_properties() {
         "ABC",
         &payload,
         QoS::AtMostOnce,
+        false,
         0,
         &[Property::ResponseTopic("A")],
     )

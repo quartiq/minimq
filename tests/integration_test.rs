@@ -33,7 +33,7 @@ fn main() -> std::io::Result<()> {
             for property in properties {
                 if let Property::ResponseTopic(topic) = property {
                     client
-                        .publish(topic, "Pong".as_bytes(), QoS::AtMostOnce, &[])
+                        .publish(topic, "Pong".as_bytes(), QoS::AtMostOnce, false, &[])
                         .unwrap();
                 }
             }
@@ -60,11 +60,23 @@ fn main() -> std::io::Result<()> {
                     println!("PUBLISH request");
                     let properties = [Property::ResponseTopic("response")];
                     mqtt.client
-                        .publish("request", "Ping".as_bytes(), QoS::AtMostOnce, &properties)
+                        .publish(
+                            "request",
+                            "Ping".as_bytes(),
+                            QoS::AtMostOnce,
+                            false,
+                            &properties,
+                        )
                         .unwrap();
 
                     mqtt.client
-                        .publish("request", "Ping".as_bytes(), QoS::AtLeastOnce, &properties)
+                        .publish(
+                            "request",
+                            "Ping".as_bytes(),
+                            QoS::AtLeastOnce,
+                            false,
+                            &properties,
+                        )
                         .unwrap();
 
                     // The message cannot be ack'd until the next poll call

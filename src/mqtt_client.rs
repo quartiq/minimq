@@ -268,6 +268,7 @@ where
         topic: &str,
         data: &[u8],
         qos: QoS,
+        retain: bool,
         properties: &[Property],
     ) -> Result<(), Error<TcpStack::Error>> {
         // TODO: QoS 2 support.
@@ -287,7 +288,8 @@ where
         let id = self.session_state.get_packet_identifier();
 
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = serialize::publish_message(&mut buffer, topic, data, qos, id, properties)?;
+        let packet =
+            serialize::publish_message(&mut buffer, topic, data, qos, retain, id, properties)?;
 
         self.network.write(packet)?;
         self.session_state.increment_packet_identifier();

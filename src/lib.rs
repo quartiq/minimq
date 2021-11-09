@@ -51,7 +51,7 @@
 //!         match topic {
 //!             "topic" => {
 //!                println!("{:?}", message);
-//!                client.publish("echo", message, QoS::AtMostOnce, &[]).unwrap();
+//!                client.publish("echo", message, QoS::AtMostOnce, false, &[]).unwrap();
 //!             },
 //!             topic => println!("Unknown topic: {}", topic),
 //!         };
