@@ -1,7 +1,6 @@
-use crate::QoS;
 use crate::{
     message_types::MessageType, properties::PropertyIdentifier, ser::ReversedPacketWriter,
-    will::Will, Property, ProtocolError as Error,
+    will::Will, Property, ProtocolError as Error, QoS, Retain,
 };
 
 use bit_field::BitField;
@@ -58,7 +57,7 @@ pub fn connect_message<'a, const S: usize>(
         // the will message, and whether or not the will message should be retained.
         flags.set_bit(2, true);
         flags.set_bits(3..=4, will.qos as u8);
-        flags.set_bit(5, will.retain);
+        flags.set_bit(5, will.retain == Retain::Retained);
     }
 
     // Write the the client ID payload.
@@ -295,7 +294,7 @@ fn serialize_connect_with_will() {
     let client_id = "ABC".as_bytes();
     let mut will = Will::<100>::new("EFG", &[0xAB, 0xCD], &[]).unwrap();
     will.qos(QoS::AtMostOnce);
-    will.retained(false);
+    will.retained(Retain::NotRetained);
 
     let message = connect_message(&mut buffer, client_id, 10, &[], true, Some(&will)).unwrap();
 

@@ -1,7 +1,7 @@
 use crate::{
     properties::{Property, PropertyIdentifier},
     ser::ReversedPacketWriter,
-    ProtocolError, QoS,
+    ProtocolError, QoS, Retain,
 };
 
 use heapless::Vec;
@@ -9,7 +9,7 @@ use heapless::Vec;
 pub struct Will<const MSG_SIZE: usize> {
     pub payload: Vec<u8, MSG_SIZE>,
     pub qos: QoS,
-    pub retain: bool,
+    pub retain: Retain,
 }
 
 impl<const MSG_SIZE: usize> Will<MSG_SIZE> {
@@ -44,7 +44,7 @@ impl<const MSG_SIZE: usize> Will<MSG_SIZE> {
 
         Ok(Self {
             qos: QoS::AtMostOnce,
-            retain: false,
+            retain: Retain::NotRetained,
             // Note(unwrap): The vectro is declared as identical size to the vector, so it will
             // always fit.
             payload: Vec::from_slice(packet.finish()).unwrap(),
@@ -55,7 +55,7 @@ impl<const MSG_SIZE: usize> Will<MSG_SIZE> {
     ///
     /// # Args
     /// * `retained` - True if the will message should be retained by the broker.
-    pub fn retained(&mut self, retained: bool) {
+    pub fn retained(&mut self, retained: Retain) {
         self.retain = retained;
     }
 

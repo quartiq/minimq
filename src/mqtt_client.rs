@@ -148,7 +148,7 @@ where
         properties: &[Property],
     ) -> Result<(), Error<TcpStack::Error>> {
         let mut will = Will::new(topic, data, properties)?;
-        will.retained(retained == Retain::Retained);
+        will.retained(retained);
         will.qos(qos);
 
         self.will.replace(will);
