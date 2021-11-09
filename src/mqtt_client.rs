@@ -7,7 +7,7 @@ use crate::{
     ser::serialize,
     session_state::SessionState,
     will::Will,
-    Error, Property, ProtocolError, QoS, {debug, error, info},
+    Error, Property, ProtocolError, QoS, Retain, {debug, error, info},
 };
 
 use embedded_nal::{IpAddr, SocketAddr, TcpClientStack};
@@ -144,11 +144,11 @@ where
         topic: &str,
         data: &[u8],
         qos: QoS,
-        retained: bool,
+        retained: Retain,
         properties: &[Property],
     ) -> Result<(), Error<TcpStack::Error>> {
         let mut will = Will::new(topic, data, properties)?;
-        will.retained(retained);
+        will.retained(retained == Retain::Retained);
         will.qos(qos);
 
         self.will.replace(will);
@@ -268,7 +268,7 @@ where
         topic: &str,
         data: &[u8],
         qos: QoS,
-        retain: bool,
+        retain: Retain,
         properties: &[Property],
     ) -> Result<(), Error<TcpStack::Error>> {
         // TODO: QoS 2 support.
@@ -288,8 +288,15 @@ where
         let id = self.session_state.get_packet_identifier();
 
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet =
-            serialize::publish_message(&mut buffer, topic, data, qos, retain, id, properties)?;
+        let packet = serialize::publish_message(
+            &mut buffer,
+            topic,
+            data,
+            qos,
+            retain == Retain::Retained,
+            id,
+            properties,
+        )?;
 
         self.network.write(packet)?;
         self.session_state.increment_packet_identifier();

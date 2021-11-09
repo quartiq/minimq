@@ -29,7 +29,7 @@
 //! temperature sensor installed.
 //!
 //! ```no_run
-//! use minimq::{Minimq, QoS};
+//! use minimq::{Minimq, QoS, Retain};
 //!
 //! // Construct an MQTT client with a maximum packet size of 256 bytes.
 //! // Connect to a broker at localhost - Use a client ID of "test".
@@ -51,7 +51,7 @@
 //!         match topic {
 //!             "topic" => {
 //!                println!("{:?}", message);
-//!                client.publish("echo", message, QoS::AtMostOnce, false, &[]).unwrap();
+//!                client.publish("echo", message, QoS::AtMostOnce, Retain::NotRetained, &[]).unwrap();
 //!             },
 //!             topic => println!("Unknown topic: {}", topic),
 //!         };
@@ -90,6 +90,16 @@ pub enum QoS {
 
     /// A packet will be delivered exactly one time.
     ExactlyOnce = 2,
+}
+
+/// The retained status for an MQTT message.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum Retain {
+    /// The message shall not be retained by the broker.
+    NotRetained = 0,
+
+    /// The message shall be marked for retention by the broker.
+    Retained = 1,
 }
 
 /// Errors that are specific to the MQTT protocol implementation.

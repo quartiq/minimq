@@ -1,4 +1,4 @@
-use minimq::{Minimq, Property, QoS};
+use minimq::{Minimq, Property, QoS, Retain};
 
 use embedded_nal::{self, IpAddr, Ipv4Addr};
 use std_embedded_time::StandardClock;
@@ -21,7 +21,7 @@ fn main() -> std::io::Result<()> {
             "exit",
             "Test complete".as_bytes(),
             QoS::AtMostOnce,
-            false,
+            Retain::NotRetained,
             &[],
         )
         .unwrap();
@@ -33,7 +33,13 @@ fn main() -> std::io::Result<()> {
             for property in properties {
                 if let Property::ResponseTopic(topic) = property {
                     client
-                        .publish(topic, "Pong".as_bytes(), QoS::AtMostOnce, false, &[])
+                        .publish(
+                            topic,
+                            "Pong".as_bytes(),
+                            QoS::AtMostOnce,
+                            Retain::NotRetained,
+                            &[],
+                        )
                         .unwrap();
                 }
             }
@@ -64,7 +70,7 @@ fn main() -> std::io::Result<()> {
                             "request",
                             "Ping".as_bytes(),
                             QoS::AtMostOnce,
-                            false,
+                            Retain::NotRetained,
                             &properties,
                         )
                         .unwrap();
@@ -74,7 +80,7 @@ fn main() -> std::io::Result<()> {
                             "request",
                             "Ping".as_bytes(),
                             QoS::AtLeastOnce,
-                            false,
+                            Retain::NotRetained,
                             &properties,
                         )
                         .unwrap();
