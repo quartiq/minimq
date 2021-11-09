@@ -1,7 +1,6 @@
-use crate::QoS;
 use crate::{
     message_types::MessageType, properties::PropertyIdentifier, ser::ReversedPacketWriter,
-    Property, ProtocolError as Error,
+    will::Will, Property, ProtocolError as Error, QoS, Retain,
 };
 
 use bit_field::BitField;
@@ -20,13 +19,14 @@ pub fn integer_size(value: usize) -> usize {
     }
 }
 
-pub fn connect_message<'a, 'b>(
-    dest: &'b mut [u8],
+pub fn connect_message<'a, const S: usize>(
+    dest: &'a mut [u8],
     client_id: &[u8],
     keep_alive: u16,
-    properties: &[Property<'a>],
+    properties: &[Property],
     clean_start: bool,
-) -> Result<&'b [u8], Error> {
+    will: Option<&Will<S>>,
+) -> Result<&'a [u8], Error> {
     // Validate the properties for this packet.
     for property in properties {
         match property.id() {
@@ -49,7 +49,18 @@ pub fn connect_message<'a, 'b>(
 
     let mut packet = ReversedPacketWriter::new(dest);
 
-    // Write the payload, which is the client ID.
+    if let Some(will) = will {
+        // Serialize the will data into the packet
+        packet.write(&will.payload)?;
+
+        // Update the flags for the will parameters. Indicate that the will is present, the QoS of
+        // the will message, and whether or not the will message should be retained.
+        flags.set_bit(2, true);
+        flags.set_bits(3..=4, will.qos as u8);
+        flags.set_bit(5, will.retain == Retain::Retained);
+    }
+
+    // Write the the client ID payload.
     packet.write_binary_data(client_id)?;
 
     // Write the variable header.
@@ -72,6 +83,7 @@ pub fn publish_message<'a, 'b, 'c>(
     topic: &'a str,
     payload: &[u8],
     qos: QoS,
+    retain: Retain,
     id: u16,
     properties: &[Property<'c>],
 ) -> Result<&'b [u8], Error> {
@@ -106,7 +118,9 @@ pub fn publish_message<'a, 'b, 'c>(
     packet.write_utf8_string(topic)?;
 
     // Set qos to fixed header bits 1 and 2 in binary
-    let flags = *0u8.set_bits(1..=2, qos as u8);
+    let flags = *0u8
+        .set_bits(1..=2, qos as u8)
+        .set_bit(0, retain == Retain::Retained);
 
     // Write the fixed length header.
     packet.finalize(MessageType::Publish, flags)
@@ -154,7 +168,16 @@ pub fn serialize_publish() {
 
     let mut buffer: [u8; 900] = [0; 900];
     let payload: [u8; 2] = [0xAB, 0xCD];
-    let message = publish_message(&mut buffer, "ABC", &payload, QoS::AtMostOnce, 0, &[]).unwrap();
+    let message = publish_message(
+        &mut buffer,
+        "ABC",
+        &payload,
+        QoS::AtMostOnce,
+        Retain::NotRetained,
+        0,
+        &[],
+    )
+    .unwrap();
 
     assert_eq!(message, good_publish);
 }
@@ -172,8 +195,16 @@ pub fn serialize_publish_qos1() {
 
     let mut buffer: [u8; 900] = [0; 900];
     let payload: [u8; 2] = [0xAB, 0xCD];
-    let message =
-        publish_message(&mut buffer, "ABC", &payload, QoS::AtLeastOnce, 0xbeef, &[]).unwrap();
+    let message = publish_message(
+        &mut buffer,
+        "ABC",
+        &payload,
+        QoS::AtLeastOnce,
+        Retain::NotRetained,
+        0xbeef,
+        &[],
+    )
+    .unwrap();
 
     assert_eq!(message, good_publish);
 }
@@ -213,6 +244,7 @@ pub fn serialize_publish_with_properties() {
         "ABC",
         &payload,
         QoS::AtMostOnce,
+        Retain::NotRetained,
         0,
         &[Property::ResponseTopic("A")],
     )
@@ -235,7 +267,46 @@ fn serialize_connect() {
 
     let mut buffer: [u8; 900] = [0; 900];
     let client_id = "ABC".as_bytes();
-    let message = connect_message(&mut buffer, client_id, 10, &[], true).unwrap();
+    let message = connect_message::<100>(&mut buffer, client_id, 10, &[], true, None).unwrap();
+
+    assert_eq!(message, good_serialized_connect)
+}
+
+#[test]
+fn serialize_connect_with_will() {
+    #[rustfmt::skip]
+    let good_serialized_connect: [u8; 28] = [
+        0x10, // Connect
+        26, // Remaining length
+
+        // Header: "MQTT5"
+        0x00, 0x04, 0x4d, 0x51, 0x54, 0x54, 0x05,
+
+        // Flags: Clean start, will present, will not retained, will QoS = 0,
+        0b0000_0110,
+
+        // Keep-alive: 10 seconds
+        0x00, 0x0a,
+
+        // Connected Properties: None
+        0x00,
+        // Client ID: "ABC"
+        0x00, 0x03, 0x41, 0x42, 0x43,
+        // Will properties: None
+        0x00,
+        // Will topic: "EFG"
+        0x00, 0x03, 0x45, 0x46, 0x47,
+        // Will payload: [0xAB, 0xCD]
+        0x00, 0x02, 0xAB, 0xCD,
+    ];
+
+    let mut buffer: [u8; 900] = [0; 900];
+    let client_id = "ABC".as_bytes();
+    let mut will = Will::<100>::new("EFG", &[0xAB, 0xCD], &[]).unwrap();
+    will.qos(QoS::AtMostOnce);
+    will.retained(Retain::NotRetained);
+
+    let message = connect_message(&mut buffer, client_id, 10, &[], true, Some(&will)).unwrap();
 
     assert_eq!(message, good_serialized_connect)
 }

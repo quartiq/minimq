@@ -1,4 +1,4 @@
-use minimq::{Minimq, Property, QoS};
+use minimq::{Minimq, Property, QoS, Retain};
 
 use embedded_nal::{self, IpAddr, Ipv4Addr};
 use std_embedded_time::StandardClock;
@@ -16,6 +16,16 @@ fn main() -> std::io::Result<()> {
     let mut subscribed = false;
     let mut responses = 0;
 
+    mqtt.client
+        .set_will(
+            "exit",
+            "Test complete".as_bytes(),
+            QoS::AtMostOnce,
+            Retain::NotRetained,
+            &[],
+        )
+        .unwrap();
+
     loop {
         mqtt.poll(|client, topic, payload, properties| {
             println!("{} < {}", topic, core::str::from_utf8(payload).unwrap());
@@ -23,7 +33,13 @@ fn main() -> std::io::Result<()> {
             for property in properties {
                 if let Property::ResponseTopic(topic) = property {
                     client
-                        .publish(topic, "Pong".as_bytes(), QoS::AtMostOnce, &[])
+                        .publish(
+                            topic,
+                            "Pong".as_bytes(),
+                            QoS::AtMostOnce,
+                            Retain::NotRetained,
+                            &[],
+                        )
                         .unwrap();
                 }
             }
@@ -50,11 +66,23 @@ fn main() -> std::io::Result<()> {
                     println!("PUBLISH request");
                     let properties = [Property::ResponseTopic("response")];
                     mqtt.client
-                        .publish("request", "Ping".as_bytes(), QoS::AtMostOnce, &properties)
+                        .publish(
+                            "request",
+                            "Ping".as_bytes(),
+                            QoS::AtMostOnce,
+                            Retain::NotRetained,
+                            &properties,
+                        )
                         .unwrap();
 
                     mqtt.client
-                        .publish("request", "Ping".as_bytes(), QoS::AtLeastOnce, &properties)
+                        .publish(
+                            "request",
+                            "Ping".as_bytes(),
+                            QoS::AtLeastOnce,
+                            Retain::NotRetained,
+                            &properties,
+                        )
                         .unwrap();
 
                     // The message cannot be ack'd until the next poll call
