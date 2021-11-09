@@ -173,7 +173,6 @@ impl<'a> ReversedPacketWriter<'a> {
         }
     }
 
-    #[cfg(test)]
     pub fn finish(self) -> &'a [u8] {
         &self.buffer[self.index..]
     }

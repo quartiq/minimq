@@ -6,7 +6,8 @@ use crate::{
     network_manager::InterfaceHolder,
     ser::serialize,
     session_state::SessionState,
-    Error, Property, ProtocolError, {debug, error, info},
+    will::Will,
+    Error, Property, ProtocolError, QoS, {debug, error, info},
 };
 
 use embedded_nal::{IpAddr, SocketAddr, TcpClientStack};
@@ -14,19 +15,6 @@ use embedded_nal::{IpAddr, SocketAddr, TcpClientStack};
 use heapless::String;
 
 use core::str::FromStr;
-
-/// The quality-of-service for an MQTT message.
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum QoS {
-    /// A packet will be delivered at most once, but may not be delivered at all.
-    AtMostOnce = 0,
-
-    /// A packet will be delivered at least one time, but possibly more than once.
-    AtLeastOnce = 1,
-
-    /// A packet will be delivered exactly one time.
-    ExactlyOnce = 2,
-}
 
 mod sm {
 
@@ -72,6 +60,7 @@ pub struct MqttClient<
     clock: Clock,
     session_state: SessionState<Clock, MSG_SIZE, MSG_COUNT>,
     connection_state: StateMachine<Context>,
+    will: Option<Will<MSG_SIZE>>,
 }
 
 impl<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
@@ -121,6 +110,7 @@ where
                     &properties,
                     // Only perform a clean start if we do not have any session state.
                     !self.session_state.is_present(),
+                    self.will.as_ref(),
                 )?;
 
                 info!("Sending CONNECT");
@@ -138,6 +128,30 @@ where
 
         self.handle_timers()?;
 
+        Ok(())
+    }
+
+    /// Specify the Will message to be sent if the client disconnects.
+    ///
+    /// # Args
+    /// * `topic` - The topic to send the message on
+    /// * `data` - The message to transmit
+    /// * `qos` - The quality of service at which to send the message.
+    /// * `retained` - Specified true if the will message should be retained by the broker.
+    /// * `properties` - Any properties to send with the will message.
+    pub fn set_will(
+        &mut self,
+        topic: &str,
+        data: &[u8],
+        qos: QoS,
+        retained: bool,
+        properties: &[Property],
+    ) -> Result<(), Error<TcpStack::Error>> {
+        let mut will = Will::new(topic, data, properties)?;
+        will.retained(retained);
+        will.qos(qos);
+
+        self.will.replace(will);
         Ok(())
     }
 
@@ -484,6 +498,7 @@ impl<
                 clock,
                 session_state,
                 connection_state: StateMachine::new(Context),
+                will: None,
             },
             packet_reader: PacketReader::new(),
         };

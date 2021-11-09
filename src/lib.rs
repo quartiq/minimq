@@ -67,16 +67,30 @@ mod mqtt_client;
 mod network_manager;
 mod properties;
 mod session_state;
+mod will;
 
 use message_types::MessageType;
 pub use properties::Property;
 
 pub use embedded_nal;
 pub use embedded_time;
-pub use mqtt_client::{Minimq, QoS};
+pub use mqtt_client::Minimq;
 
 #[cfg(feature = "logging")]
 pub(crate) use log::{debug, error, info, warn};
+
+/// The quality-of-service for an MQTT message.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum QoS {
+    /// A packet will be delivered at most once, but may not be delivered at all.
+    AtMostOnce = 0,
+
+    /// A packet will be delivered at least one time, but possibly more than once.
+    AtLeastOnce = 1,
+
+    /// A packet will be delivered exactly one time.
+    ExactlyOnce = 2,
+}
 
 /// Errors that are specific to the MQTT protocol implementation.
 #[derive(Debug, Copy, Clone, PartialEq)]

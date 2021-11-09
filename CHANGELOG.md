@@ -4,6 +4,9 @@ This document describes the changes to Minimq between releases.
 
 # Unreleased
 
+## Added
+* Support for the `Will` message specification.
+
 # Version 0.4.0
 Version 0.4.0 was published on 2021-10-08
 

@@ -16,6 +16,16 @@ fn main() -> std::io::Result<()> {
     let mut subscribed = false;
     let mut responses = 0;
 
+    mqtt.client
+        .set_will(
+            "exit",
+            "Test complete".as_bytes(),
+            QoS::AtMostOnce,
+            false,
+            &[],
+        )
+        .unwrap();
+
     loop {
         mqtt.poll(|client, topic, payload, properties| {
             println!("{} < {}", topic, core::str::from_utf8(payload).unwrap());
