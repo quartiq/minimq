@@ -137,7 +137,7 @@ where
     /// * `topic` - The topic to send the message on
     /// * `data` - The message to transmit
     /// * `qos` - The quality of service at which to send the message.
-    /// * `retained` - Specified true if the will message should be retained by the broker.
+    /// * `retained` - Specifies whether the will message should be retained by the broker.
     /// * `properties` - Any properties to send with the will message.
     pub fn set_will(
         &mut self,

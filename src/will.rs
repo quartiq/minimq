@@ -54,7 +54,7 @@ impl<const MSG_SIZE: usize> Will<MSG_SIZE> {
     /// Set the retained status of the will.
     ///
     /// # Args
-    /// * `retained` - True if the will message should be retained by the broker.
+    /// * `retained` - Specifies the retained state of the will.
     pub fn retained(&mut self, retained: Retain) {
         self.retain = retained;
     }
