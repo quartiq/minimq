@@ -59,9 +59,9 @@ Version 0.1.0 was published on 2020-08-27
 
 * Initial library release and publish to crates.io
 
-[Unreleased]: https://github.com/quartiq/idsp/compare/0.5.0...HEAD
-[0.5.0]: https://github.com/quartiq/idsp/releases/tag/0.5.0
-[0.4.0]: https://github.com/quartiq/idsp/releases/tag/0.4.0
-[0.3.0]: https://github.com/quartiq/idsp/releases/tag/0.3.0
-[0.2.0]: https://github.com/quartiq/idsp/releases/tag/0.2.0
-[0.1.0]: https://github.com/quartiq/idsp/releases/tag/0.1.0
+[Unreleased]: https://github.com/quartiq/minimq/compare/0.5.0...HEAD
+[0.5.0]: https://github.com/quartiq/minimq/releases/tag/0.5.0
+[0.4.0]: https://github.com/quartiq/minimq/releases/tag/0.4.0
+[0.3.0]: https://github.com/quartiq/minimq/releases/tag/0.3.0
+[0.2.0]: https://github.com/quartiq/minimq/releases/tag/0.2.0
+[0.1.0]: https://github.com/quartiq/minimq/releases/tag/0.1.0
