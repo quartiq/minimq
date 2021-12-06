@@ -68,7 +68,7 @@ pub struct MqttClient<
     const MSG_SIZE: usize,
     const MSG_COUNT: usize,
 > {
-    pub(crate) network: InterfaceHolder<TcpStack>,
+    pub(crate) network: InterfaceHolder<TcpStack, MSG_SIZE>,
     clock: Clock,
     session_state: SessionState<Clock, MSG_SIZE, MSG_COUNT>,
     connection_state: StateMachine<Context>,
@@ -283,6 +283,16 @@ where
         }
 
         Ok(())
+    }
+
+    /// Finish sending last packet if the previous operation returned Error::PartialWrite
+    ///
+    /// # Note
+    /// If this function is not called after partial write until the packet is
+    /// fully sent, the packets will most likely seem malformed to the receiving
+    /// party and they will close the connection.
+    pub fn finish_write(&mut self) -> Result<(), Error<TcpStack::Error>> {
+        self.network.finish_write()
     }
 
     fn handle_connection_acknowledge(

@@ -99,6 +99,7 @@ pub enum ProtocolError {
 pub enum Error<E> {
     Network(E),
     WriteFail,
+    PartialWrite,
     NotReady,
     Unsupported,
     ProvidedClientIdTooLong,
