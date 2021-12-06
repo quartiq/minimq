@@ -5,6 +5,13 @@ This document describes the changes to Minimq between releases.
 # Unreleased
 
 ## Added
+## Removed
+## Changed
+
+# Version 0.5.0
+Version 0.5.0 was published on 2021-12-06
+
+## Added
 * Support for the `Will` message specification.
 * [breaking] Adding `retained` flag to `publish()` to allow messages to be published in a retained
   manner.
