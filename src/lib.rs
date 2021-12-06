@@ -8,8 +8,7 @@
 //! # Limitations
 //! This library does not currently support the following elements:
 //! * Quality-of-service `ExactlyOnce`
-//! * Session timeouts
-//! * Server keep alive timeouts (ping)
+//! * Quality-of-service above `AtMostOnce` for inbound messages.
 //! * Bulk subscriptions
 //! * Server Authentication
 //! * Encryption
