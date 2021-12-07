@@ -1,6 +1,6 @@
 [package]
 name = "minimq"
-version = "0.5.0"
+version = "0.5.1"
 authors = ["Ryan Summers <ryan.summers@vertigo-designs.com>", "Max Rottenkolber <max@mr.gy>"]
 edition = "2018"
 
