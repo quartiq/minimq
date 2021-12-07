@@ -13,6 +13,8 @@ Version 0.5.1 was published on 2021-12-07
 ## Fixed
 * Fixed an issue where the keepalive interval could not be set properly. See
   [#69](https://github.com/quartiq/minimq/issues/69).
+* Fixed an issue where the keepalive interval was not set properly. See
+  [#70](https://github.com/quartiq/minimq/issues/70).
 
 # Version [0.5.0]
 Version 0.5.0 was published on 2021-12-06
