@@ -12,6 +12,9 @@ fn main() -> std::io::Result<()> {
     let mut mqtt =
         Minimq::<_, _, 256, 16>::new(localhost, "", stack, StandardClock::default()).unwrap();
 
+    // Use a keepalive interval for the client.
+    mqtt.client.set_keepalive_interval(60).unwrap();
+
     let mut published = false;
     let mut subscribed = false;
     let mut responses = 0;

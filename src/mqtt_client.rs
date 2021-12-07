@@ -175,7 +175,9 @@ where
         &mut self,
         interval_seconds: u16,
     ) -> Result<(), Error<TcpStack::Error>> {
-        if self.connection_state.state() != &States::Active {
+        if (self.connection_state.state() == &States::Active)
+            || (self.connection_state.state() == &States::Establishing)
+        {
             return Err(Error::NotReady);
         }
 

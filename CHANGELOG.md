@@ -5,8 +5,14 @@ This document describes the changes to Minimq between releases.
 # [Unreleased]
 
 ## Added
-## Removed
-## Changed
+## Fixed
+
+# Version [0.5.1]
+Version 0.5.1 was published on 2021-12-07
+
+## Fixed
+* Fixed an issue where the keepalive interval could not be set properly. See
+  [#69](https://github.com/quartiq/minimq/issues/69).
 
 # Version [0.5.0]
 Version 0.5.0 was published on 2021-12-06
@@ -59,7 +65,8 @@ Version 0.1.0 was published on 2020-08-27
 
 * Initial library release and publish to crates.io
 
-[Unreleased]: https://github.com/quartiq/minimq/compare/0.5.0...HEAD
+[Unreleased]: https://github.com/quartiq/minimq/compare/0.5.1...HEAD
+[0.5.0]: https://github.com/quartiq/minimq/releases/tag/0.5.1
 [0.5.0]: https://github.com/quartiq/minimq/releases/tag/0.5.0
 [0.4.0]: https://github.com/quartiq/minimq/releases/tag/0.4.0
 [0.3.0]: https://github.com/quartiq/minimq/releases/tag/0.3.0
