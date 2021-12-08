@@ -62,7 +62,7 @@ pub(crate) mod de;
 pub(crate) mod ser;
 
 mod message_types;
-mod mqtt_client;
+pub mod mqtt_client;
 mod network_manager;
 mod properties;
 mod session_state;

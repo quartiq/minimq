@@ -6,6 +6,7 @@ This document describes the changes to Minimq between releases.
 
 ## Added
 ## Fixed
+* Made `mqtt_client` module public to correct documentation
 
 # Version [0.5.1]
 Version 0.5.1 was published on 2021-12-07
