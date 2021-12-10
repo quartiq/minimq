@@ -6,16 +6,18 @@
 //! stack to be used to transmit buffers that may be stored internally in other structs without
 //! violating Rust's borrow rules.
 use embedded_nal::{nb, SocketAddr, TcpClientStack};
+use heapless::Vec;
 
 use crate::Error;
 
 /// Simple structure for maintaining state of the network connection.
-pub(crate) struct InterfaceHolder<TcpStack: TcpClientStack> {
+pub(crate) struct InterfaceHolder<TcpStack: TcpClientStack, const MSG_SIZE: usize> {
     socket: Option<TcpStack::TcpSocket>,
     network_stack: TcpStack,
+    pending_write: Option<Vec<u8, MSG_SIZE>>,
 }
 
-impl<TcpStack> InterfaceHolder<TcpStack>
+impl<TcpStack, const MSG_SIZE: usize> InterfaceHolder<TcpStack, MSG_SIZE>
 where
     TcpStack: TcpClientStack,
 {
@@ -24,7 +26,13 @@ where
         Self {
             socket: None,
             network_stack: stack,
+            pending_write: None,
         }
+    }
+
+    /// Determine if there is a pending packet write that needs to be completed.
+    pub fn has_pending_write(&self) -> bool {
+        self.pending_write.is_some()
     }
 
     /// Determine if an TCP connection exists and is connected.
@@ -66,6 +74,10 @@ where
     /// * `remote` - The address of the remote to connect to.
     pub fn connect(&mut self, remote: SocketAddr) -> Result<(), Error<TcpStack::Error>> {
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
+
+        // Drop any pending unfinished packets, as we're establishing a new connection.
+        self.pending_write.take();
+
         self.network_stack
             .connect(socket, remote)
             .map_err(|err| match err {
@@ -74,25 +86,40 @@ where
             })
     }
 
-    /// Write an MQTT control packet to the interface.
+    /// Write data to the interface.
     ///
     /// # Args
-    /// * `packet` - The packet to write.
-    pub fn write(&mut self, packet: &[u8]) -> Result<(), Error<TcpStack::Error>> {
+    /// * `packet` - The data to write.
+    pub fn write(&mut self, data: &[u8]) -> Result<(), Error<TcpStack::Error>> {
+        // If there's an unfinished write pending, it's invalid to try to write new data. The
+        // previous write must first be completed.
+        assert!(self.pending_write.is_none());
+
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
         self.network_stack
-            .send(socket, &packet)
+            .send(socket, &data)
             .map_err(|err| match err {
                 nb::Error::WouldBlock => Error::WriteFail,
                 nb::Error::Other(err) => Error::Network(err),
             })
             .and_then(|written| {
-                if written != packet.len() {
-                    Err(Error::WriteFail)
-                } else {
-                    Ok(())
+                if written != data.len() {
+                    // Note(unwrap): The packet should always be smaller than a single message.
+                    self.pending_write
+                        .replace(Vec::from_slice(&data[written..]).unwrap());
                 }
+
+                Ok(())
             })
+    }
+
+    /// Finish writing an MQTT control packet to the interface if one exists.
+    pub fn finish_write(&mut self) -> Result<(), Error<TcpStack::Error>> {
+        if let Some(ref packet) = self.pending_write.take() {
+            self.write(packet.as_slice())?;
+        }
+
+        Ok(())
     }
 
     /// Read data from the TCP interface.

@@ -6,6 +6,8 @@ This document describes the changes to Minimq between releases.
 
 ## Added
 ## Fixed
+* Partial packet writes no longer cause the connection to the broker to break down.
+  [#74](https://github.com/quartiq/minimq/issues/74)
 
 # Version [0.5.1]
 Version 0.5.1 was published on 2021-12-07
