@@ -5,7 +5,6 @@
 //! simple ownership semantics of reading and writing to the network stack. This allows the network
 //! stack to be used to transmit buffers that may be stored internally in other structs without
 //! violating Rust's borrow rules.
-
 use embedded_nal::{nb, SocketAddr, TcpClientStack};
 use heapless::Vec;
 
