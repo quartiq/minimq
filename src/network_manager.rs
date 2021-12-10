@@ -5,17 +5,21 @@
 //! simple ownership semantics of reading and writing to the network stack. This allows the network
 //! stack to be used to transmit buffers that may be stored internally in other structs without
 //! violating Rust's borrow rules.
+use core::mem;
+
 use embedded_nal::{nb, SocketAddr, TcpClientStack};
+use heapless::Vec;
 
 use crate::Error;
 
 /// Simple structure for maintaining state of the network connection.
-pub(crate) struct InterfaceHolder<TcpStack: TcpClientStack> {
+pub(crate) struct InterfaceHolder<TcpStack: TcpClientStack, const MSG_SIZE: usize> {
     socket: Option<TcpStack::TcpSocket>,
     network_stack: TcpStack,
+    unfinished_packet: Option<Vec<u8, MSG_SIZE>>,
 }
 
-impl<TcpStack> InterfaceHolder<TcpStack>
+impl<TcpStack, const MSG_SIZE: usize> InterfaceHolder<TcpStack, MSG_SIZE>
 where
     TcpStack: TcpClientStack,
 {
@@ -24,6 +28,7 @@ where
         Self {
             socket: None,
             network_stack: stack,
+            unfinished_packet: None,
         }
     }
 
@@ -88,11 +93,22 @@ where
             })
             .and_then(|written| {
                 if written != packet.len() {
-                    Err(Error::WriteFail)
+                    self.unfinished_packet = Some(Vec::from_slice(&packet[written..]).unwrap());
+                    Err(Error::PartialWrite)
                 } else {
                     Ok(())
                 }
             })
+    }
+
+    /// Finish writing an MQTT control packet to the interface if the last write returned Error::PartialWrite
+    ///
+    pub fn finish_write(&mut self) -> Result<(), Error<TcpStack::Error>> {
+        let packet = mem::replace(&mut self.unfinished_packet, None);
+        if let Some(packet) = packet {
+            self.write(packet.as_slice())?;
+        }
+        Ok(())
     }
 
     /// Read data from the TCP interface.
