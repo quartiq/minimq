@@ -5,7 +5,6 @@
 //! simple ownership semantics of reading and writing to the network stack. This allows the network
 //! stack to be used to transmit buffers that may be stored internally in other structs without
 //! violating Rust's borrow rules.
-use core::mem;
 
 use embedded_nal::{nb, SocketAddr, TcpClientStack};
 use heapless::Vec;
@@ -30,6 +29,11 @@ where
             network_stack: stack,
             unfinished_packet: None,
         }
+    }
+
+    /// Determine if there is a pending packet write that needs to be completed.
+    pub fn has_pending_write(&self) -> bool {
+        self.unfinished_packet.is_some()
     }
 
     /// Determine if an TCP connection exists and is connected.
@@ -71,6 +75,10 @@ where
     /// * `remote` - The address of the remote to connect to.
     pub fn connect(&mut self, remote: SocketAddr) -> Result<(), Error<TcpStack::Error>> {
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
+
+        // Drop any pending unfinished packets, as we're establishing a new connection.
+        self.unfinished_packet.take();
+
         self.network_stack
             .connect(socket, remote)
             .map_err(|err| match err {
@@ -84,6 +92,9 @@ where
     /// # Args
     /// * `packet` - The packet to write.
     pub fn write(&mut self, packet: &[u8]) -> Result<(), Error<TcpStack::Error>> {
+        // If there's an unfinished packet pending, it's invalid to try to write a new one.
+        assert!(self.unfinished_packet.is_none());
+
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
         self.network_stack
             .send(socket, &packet)
@@ -93,21 +104,21 @@ where
             })
             .and_then(|written| {
                 if written != packet.len() {
-                    self.unfinished_packet = Some(Vec::from_slice(&packet[written..]).unwrap());
-                    Err(Error::PartialWrite)
-                } else {
-                    Ok(())
+                    // Note(unwrap): The packet should always be smaller than a single message.
+                    self.unfinished_packet
+                        .replace(Vec::from_slice(&packet[written..]).unwrap());
                 }
+
+                Ok(())
             })
     }
 
-    /// Finish writing an MQTT control packet to the interface if the last write returned Error::PartialWrite
-    ///
+    /// Finish writing an MQTT control packet to the interface if one exists.
     pub fn finish_write(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        let packet = mem::replace(&mut self.unfinished_packet, None);
-        if let Some(packet) = packet {
+        if let Some(ref packet) = self.unfinished_packet.take() {
             self.write(packet.as_slice())?;
         }
+
         Ok(())
     }
 

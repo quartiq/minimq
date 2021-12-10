@@ -126,6 +126,9 @@ where
             _ => {}
         }
 
+        // Attempt to finish any pending packets.
+        self.network.finish_write()?;
+
         self.handle_timers()?;
 
         Ok(())
@@ -203,6 +206,11 @@ where
             return Err(Error::NotReady);
         }
 
+        // We can't subscribe if there's a pending write in the network.
+        if self.network.has_pending_write() {
+            return Err(Error::NotReady);
+        }
+
         let packet_id = self.session_state.get_packet_identifier();
 
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
@@ -248,6 +256,12 @@ where
     /// # Returns
     /// True if the client is able to service QoS 1 requests.
     pub fn can_publish(&self, qos: QoS) -> bool {
+        // We cannot publish if there's a pending write in the network stack. That message must be
+        // completed first.
+        if self.network.has_pending_write() {
+            return false;
+        }
+
         self.session_state.can_publish(qos)
     }
 
@@ -273,12 +287,13 @@ where
         retain: Retain,
         properties: &[Property],
     ) -> Result<(), Error<TcpStack::Error>> {
-        // TODO: QoS 2 support.
-        assert!(qos != QoS::ExactlyOnce);
-
         // If we are not yet connected to the broker, we can't transmit a message.
         if self.is_connected() == false {
             return Ok(());
+        }
+
+        if !self.can_publish(qos) {
+            return Err(Error::NotReady);
         }
 
         debug!(
@@ -301,16 +316,6 @@ where
         }
 
         Ok(())
-    }
-
-    /// Finish sending last packet if the previous operation returned Error::PartialWrite
-    ///
-    /// # Note
-    /// If this function is not called after partial write until the packet is
-    /// fully sent, the packets will most likely seem malformed to the receiving
-    /// party and they will close the connection.
-    pub fn finish_write(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        self.network.finish_write()
     }
 
     fn handle_connection_acknowledge(
@@ -363,6 +368,11 @@ where
 
         // Replay QoS 1 messages
         for key in self.session_state.pending_publish_ordering.iter() {
+            // If the network stack cannot send another message, do not attempt to send one.
+            if self.network.has_pending_write() {
+                break;
+            }
+
             let message = self.session_state.pending_publish.get(&key).unwrap();
             self.network.write(message)?;
         }
@@ -446,6 +456,11 @@ where
     fn handle_timers(&mut self) -> Result<(), Error<TcpStack::Error>> {
         // If we are not connected, there's no session state to manage.
         if self.connection_state.state() != &States::Active {
+            return Ok(());
+        }
+
+        // If there's a pending write, we can't send a ping no matter if it is due.
+        if self.network.has_pending_write() {
             return Ok(());
         }
 
