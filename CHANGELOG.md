@@ -6,6 +6,7 @@ This document describes the changes to Minimq between releases.
 
 ## Added
 ## Fixed
+* Made `mqtt_client` module public to correct documentation
 * Partial packet writes no longer cause the connection to the broker to break down.
   [#74](https://github.com/quartiq/minimq/issues/74)
 
