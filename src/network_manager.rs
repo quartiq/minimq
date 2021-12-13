@@ -98,9 +98,9 @@ where
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
         self.network_stack
             .send(socket, &data)
-            .map_err(|err| match err {
-                nb::Error::WouldBlock => Error::WriteFail,
-                nb::Error::Other(err) => Error::Network(err),
+            .or_else(|err| match err {
+                nb::Error::WouldBlock => Ok(0),
+                nb::Error::Other(err) => Err(Error::Network(err)),
             })
             .and_then(|written| {
                 if written != data.len() {
