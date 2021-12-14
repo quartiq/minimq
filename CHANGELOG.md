@@ -6,12 +6,15 @@ This document describes the changes to Minimq between releases.
 
 ## Added
 ## Fixed
+
+# [0.5.2] - 2021-12-14
+
+## Fixed
 * Made `mqtt_client` module public to correct documentation
 * Partial packet writes no longer cause the connection to the broker to break down.
   [#74](https://github.com/quartiq/minimq/issues/74)
 
-# Version [0.5.1]
-Version 0.5.1 was published on 2021-12-07
+# [0.5.1] - 2021-12-07
 
 ## Fixed
 * Fixed an issue where the keepalive interval could not be set properly. See
@@ -19,16 +22,14 @@ Version 0.5.1 was published on 2021-12-07
 * Fixed an issue where the keepalive interval was not set properly. See
   [#70](https://github.com/quartiq/minimq/issues/70).
 
-# Version [0.5.0]
-Version 0.5.0 was published on 2021-12-06
+# [0.5.0] - 2021-12-06
 
 ## Added
 * Support for the `Will` message specification.
 * [breaking] Adding `retained` flag to `publish()` to allow messages to be published in a retained
   manner.
 
-# Version [0.4.0]
-Version 0.4.0 was published on 2021-10-08
+# [0.4.0] - 2021-10-08
 
 * Updating to `std-embedded-nal` v0.1 (dev dependency only; now again used for integration tests)
 * Added support for PingReq/PingResp to handle broken TCP connections and configuration of the
@@ -39,8 +40,7 @@ keep-alive interval
 * Refactoring network stack management into a separate container class
 * Keep-alive settings now take a u16 integer number of seconds
 
-# Version [0.3.0]
-Version 0.3.0 was published on 2021-08-06
+# [0.3.0] - 2021-08-06
 
 * Client ID may now be unspecified to allow the broker to automatically assign an ID.
 * Strict client ID check removed to allow broker-validated IDs.
@@ -54,8 +54,7 @@ Version 0.3.0 was published on 2021-08-06
 * Removing using of `generic-array` in favor of const-generics.
 * Correcting an issue where the client would not reconnect if the broker was restarted.
 
-# Version [0.2.0]
-Version 0.2.0 was published on 2021-02-15
+# [0.2.0] - 2021-02-15
 
 * Updating the `MqttClient::poll()` function to take a `FnMut` closure to allow internal state
   mutation.
@@ -65,13 +64,13 @@ Version 0.2.0 was published on 2021-02-15
   stack errors out to the user.
 * Updating library to re-export `generic-array` publicly.
 
-## Version [0.1.0]
-Version 0.1.0 was published on 2020-08-27
+## [0.1.0] - 2020-08-27
 
 * Initial library release and publish to crates.io
 
-[Unreleased]: https://github.com/quartiq/minimq/compare/0.5.1...HEAD
-[0.5.0]: https://github.com/quartiq/minimq/releases/tag/0.5.1
+[Unreleased]: https://github.com/quartiq/minimq/compare/0.5.2...HEAD
+[0.5.2]: https://github.com/quartiq/minimq/releases/tag/0.5.2
+[0.5.1]: https://github.com/quartiq/minimq/releases/tag/0.5.1
 [0.5.0]: https://github.com/quartiq/minimq/releases/tag/0.5.0
 [0.4.0]: https://github.com/quartiq/minimq/releases/tag/0.4.0
 [0.3.0]: https://github.com/quartiq/minimq/releases/tag/0.3.0
