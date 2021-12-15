@@ -30,7 +30,10 @@
 //! ```no_run
 //! use minimq::{Minimq, QoS, Retain};
 //!
-//! // Construct an MQTT client with a maximum packet size of 256 bytes.
+//! // Construct an MQTT client with a maximum packet size of 256 bytes
+//! // and a maximum of 16 messages that are allowed to be "in flight".
+//! // Messages are "in flight" if QoS::AtLeastOnce has not yet been acknowledged (PUBACK)
+//! // or QoS::ExactlyOnce has not been completed (PUBCOMP).
 //! // Connect to a broker at localhost - Use a client ID of "test".
 //! let mut mqtt: Minimq<_, _, 256, 16> = Minimq::new(
 //!         "127.0.0.1".parse().unwrap(),
