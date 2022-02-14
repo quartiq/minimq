@@ -5,9 +5,12 @@ This document describes the changes to Minimq between releases.
 # [Unreleased]
 
 ## Added
-* Property comparison now implements PartialEq
-
 ## Fixed
+
+# [0.5.3] - 2022-02-14
+
+## Added
+* Property comparison now implements PartialEq
 
 # [0.5.2] - 2021-12-14
 
@@ -70,7 +73,8 @@ keep-alive interval
 
 * Initial library release and publish to crates.io
 
-[Unreleased]: https://github.com/quartiq/minimq/compare/0.5.2...HEAD
+[Unreleased]: https://github.com/quartiq/minimq/compare/0.5.3...HEAD
+[0.5.2]: https://github.com/quartiq/minimq/releases/tag/0.5.3
 [0.5.2]: https://github.com/quartiq/minimq/releases/tag/0.5.2
 [0.5.1]: https://github.com/quartiq/minimq/releases/tag/0.5.1
 [0.5.0]: https://github.com/quartiq/minimq/releases/tag/0.5.0
