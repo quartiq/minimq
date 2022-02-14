@@ -5,6 +5,8 @@ This document describes the changes to Minimq between releases.
 # [Unreleased]
 
 ## Added
+* Property comparison now implements PartialEq
+
 ## Fixed
 
 # [0.5.2] - 2021-12-14
