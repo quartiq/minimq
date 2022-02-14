@@ -6,7 +6,7 @@ use crate::{
 
 use enum_iterator::IntoEnumIterator;
 
-#[derive(Copy, Clone, IntoEnumIterator)]
+#[derive(Copy, Clone, PartialEq, IntoEnumIterator)]
 pub(crate) enum PropertyIdentifier {
     Invalid = -1,
 
@@ -47,7 +47,7 @@ pub(crate) enum PropertyIdentifier {
 }
 
 /// All of the possible properties that MQTT version 5 supports.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Property<'a> {
     PayloadFormatIndicator(u8),
     MessageExpiryInterval(u32),
