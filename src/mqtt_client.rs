@@ -7,7 +7,7 @@ use crate::{
     ser::serialize,
     session_state::SessionState,
     will::Will,
-    Error, Property, ProtocolError, QoS, Retain, {debug, error, info},
+    Error, Property, ProtocolError, QoS, Retain, MQTT_INSECURE_DEFAULT_PORT, {debug, error, info},
 };
 
 use embedded_nal::{IpAddr, SocketAddr, TcpClientStack};
@@ -89,8 +89,7 @@ where
 
             // In the connect transport state, we need to connect our TCP socket to the broker.
             &States::ConnectTransport => {
-                self.network
-                    .connect(SocketAddr::new(self.session_state.broker, 1883))?;
+                self.network.connect(self.session_state.broker)?;
             }
 
             // Next, connect to the broker via the MQTT protocol.
@@ -185,6 +184,22 @@ where
         }
 
         self.session_state.set_keepalive(interval_seconds);
+        Ok(())
+    }
+
+    /// Set custom MQTT port to connect to.
+    ///
+    /// # Note
+    /// This must be completed before connecting to a broker.
+    ///
+    /// # Args
+    /// * `port` - The Port number to connect to.
+    pub fn set_broker_port(&mut self, port: u16) -> Result<(), Error<TcpStack::Error>> {
+        if *self.connection_state.state() != States::Restart {
+            return Err(Error::NotReady);
+        }
+
+        self.session_state.broker.set_port(port);
         Ok(())
     }
 
@@ -517,7 +532,7 @@ impl<
         clock: Clock,
     ) -> Result<Self, Error<TcpStack::Error>> {
         let session_state = SessionState::new(
-            broker,
+            SocketAddr::new(broker, MQTT_INSECURE_DEFAULT_PORT),
             String::from_str(client_id).or(Err(Error::ProvidedClientIdTooLong))?,
         );
 
