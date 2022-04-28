@@ -5,6 +5,8 @@ This document describes the changes to Minimq between releases.
 # [Unreleased]
 
 ## Added
+* Allow configuration of non-default broker port numbers
+
 ## Fixed
 
 # [0.5.3] - 2022-02-14

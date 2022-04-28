@@ -1,6 +1,6 @@
 /// This module represents the session state of an MQTT communication session.
 use crate::{warn, QoS};
-use embedded_nal::IpAddr;
+use embedded_nal::SocketAddr;
 use heapless::{LinearMap, String, Vec};
 
 use embedded_time::{
@@ -16,7 +16,7 @@ pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, cons
     keep_alive_interval: Option<Milliseconds<u32>>,
     ping_timeout: Option<Instant<Clock>>,
     next_ping: Option<Instant<Clock>>,
-    pub broker: IpAddr,
+    pub broker: SocketAddr,
     pub maximum_packet_size: Option<u32>,
     pub client_id: String<64>,
     pub pending_subscriptions: Vec<u16, 32>,
@@ -29,7 +29,7 @@ pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, cons
 impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
     SessionState<Clock, MSG_SIZE, MSG_COUNT>
 {
-    pub fn new(broker: IpAddr, id: String<64>) -> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
+    pub fn new(broker: SocketAddr, id: String<64>) -> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
         SessionState {
             active: false,
             ping_timeout: None,

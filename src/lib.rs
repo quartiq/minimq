@@ -81,6 +81,18 @@ pub use mqtt_client::Minimq;
 #[cfg(feature = "logging")]
 pub(crate) use log::{debug, error, info, warn};
 
+/// Default port number for unencrypted MQTT traffic
+///
+/// # Note:
+/// See [IANA Port Numbers](https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.txt)
+pub const MQTT_INSECURE_DEFAULT_PORT: u16 = 1883;
+
+/// Default port number for encrypted MQTT traffic
+///
+/// # Note:
+/// See [IANA Port Numbers](https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.txt)
+pub const MQTT_SECURE_DEFAULT_PORT: u16 = 8883;
+
 /// The quality-of-service for an MQTT message.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum QoS {
