@@ -36,7 +36,7 @@ impl<const T: usize> PacketReader<T> {
             index: core::cell::RefCell::new(0),
         };
 
-        reader.buffer[..buffer.len()].copy_from_slice(&buffer);
+        reader.buffer[..buffer.len()].copy_from_slice(buffer);
 
         reader.probe_fixed_header();
 
@@ -82,7 +82,7 @@ impl<const T: usize> PacketReader<T> {
         for i in 0..4 {
             let mut byte = [0u8; 1];
             self.read(&mut byte)?;
-            accumulator += ((byte[0] & 0x7F) as usize) << i * 7;
+            accumulator += ((byte[0] & 0x7F) as usize) << (i * 7);
 
             if (byte[0] & 0x80) == 0 {
                 return Ok(accumulator);
@@ -111,8 +111,8 @@ impl<const T: usize> PacketReader<T> {
             return Err(Error::DataSize);
         }
 
-        Ok(core::str::from_utf8(self.read_borrowed(string_length)?)
-            .map_err(|_| Error::MalformedPacket)?)
+        core::str::from_utf8(self.read_borrowed(string_length)?)
+            .map_err(|_| Error::MalformedPacket)
     }
 
     pub fn read_binary_data(&self) -> Result<&[u8], Error> {
@@ -237,7 +237,7 @@ impl<const T: usize> PacketReader<T> {
         self.packet_length = if let Some((rlen, nbytes)) = {
             let int = &self.buffer[1..self.read_bytes];
 
-            let len = if int.len() >= 1 && (int[0] & 0b1000_0000) == 0 {
+            let len = if !int.is_empty() && (int[0] & 0b1000_0000) == 0 {
                 1
             } else if int.len() >= 2 && (int[1] & 0b1000_0000) == 0 {
                 2
@@ -250,7 +250,7 @@ impl<const T: usize> PacketReader<T> {
             };
             let mut acc = 0;
             for i in 0..len {
-                acc += ((int[i] & 0b0111_1111) as usize) << i * 7;
+                acc += ((int[i] & 0b0111_1111) as usize) << (i * 7);
             }
             Some((acc, len))
         } {

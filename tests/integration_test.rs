@@ -63,37 +63,33 @@ fn main() -> std::io::Result<()> {
                 mqtt.client.subscribe("request", &[]).unwrap();
                 subscribed = true;
             }
-        } else {
-            if mqtt.client.subscriptions_pending() == false {
-                if !published {
-                    println!("PUBLISH request");
-                    let properties = [Property::ResponseTopic("response")];
-                    mqtt.client
-                        .publish(
-                            "request",
-                            "Ping".as_bytes(),
-                            QoS::AtMostOnce,
-                            Retain::NotRetained,
-                            &properties,
-                        )
-                        .unwrap();
+        } else if !mqtt.client.subscriptions_pending() && !published {
+            println!("PUBLISH request");
+            let properties = [Property::ResponseTopic("response")];
+            mqtt.client
+                .publish(
+                    "request",
+                    "Ping".as_bytes(),
+                    QoS::AtMostOnce,
+                    Retain::NotRetained,
+                    &properties,
+                )
+                .unwrap();
 
-                    mqtt.client
-                        .publish(
-                            "request",
-                            "Ping".as_bytes(),
-                            QoS::AtLeastOnce,
-                            Retain::NotRetained,
-                            &properties,
-                        )
-                        .unwrap();
+            mqtt.client
+                .publish(
+                    "request",
+                    "Ping".as_bytes(),
+                    QoS::AtLeastOnce,
+                    Retain::NotRetained,
+                    &properties,
+                )
+                .unwrap();
 
-                    // The message cannot be ack'd until the next poll call
-                    assert_eq!(1, mqtt.client.pending_messages(QoS::AtLeastOnce));
+            // The message cannot be ack'd until the next poll call
+            assert_eq!(1, mqtt.client.pending_messages(QoS::AtLeastOnce));
 
-                    published = true;
-                }
-            }
+            published = true;
         }
     }
 }

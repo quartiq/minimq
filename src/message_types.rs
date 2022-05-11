@@ -30,6 +30,6 @@ impl From<u8> for MessageType {
             }
         }
 
-        return MessageType::Invalid;
+        MessageType::Invalid
     }
 }

@@ -86,7 +86,7 @@ impl From<usize> for PropertyIdentifier {
             }
         }
 
-        return PropertyIdentifier::Invalid;
+        PropertyIdentifier::Invalid
     }
 }
 

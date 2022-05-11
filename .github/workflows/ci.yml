@@ -54,9 +54,9 @@ jobs:
           target: thumbv7em-none-eabihf
           override: true
           components: clippy
+
       - name: cargo clippy
         uses: actions-rs/cargo@v1
-        continue-on-error: true
         with:
           command: clippy
 
