@@ -111,8 +111,7 @@ impl<const T: usize> PacketReader<T> {
             return Err(Error::DataSize);
         }
 
-        core::str::from_utf8(self.read_borrowed(string_length)?)
-            .map_err(|_| Error::MalformedPacket)
+        core::str::from_utf8(self.read_borrowed(string_length)?).map_err(|_| Error::MalformedPacket)
     }
 
     pub fn read_binary_data(&self) -> Result<&[u8], Error> {

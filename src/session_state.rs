@@ -60,7 +60,11 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
     /// # Note
     /// If no keep-alive interval is specified, zero is returned.
     pub fn keepalive_interval(&self) -> u16 {
-        (self.keep_alive_interval.unwrap_or_else(|| 0.milliseconds()).0 / 1000) as u16
+        (self
+            .keep_alive_interval
+            .unwrap_or_else(|| 0.milliseconds())
+            .0
+            / 1000) as u16
     }
 
     /// Update the keep-alive interval.

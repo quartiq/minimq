@@ -53,17 +53,12 @@ where
     /// If a TCP socket was previously open, it will be closed and a new socket will be allocated.
     pub fn allocate_socket(&mut self) -> Result<(), Error<TcpStack::Error>> {
         if let Some(socket) = self.socket.take() {
-            self.network_stack
-                .close(socket)
-                .map_err(Error::Network)?;
+            self.network_stack.close(socket).map_err(Error::Network)?;
         }
 
         // Allocate a new socket to use and begin connecting it.
-        self.socket.replace(
-            self.network_stack
-                .socket()
-                .map_err(Error::Network)?,
-        );
+        self.socket
+            .replace(self.network_stack.socket().map_err(Error::Network)?);
 
         Ok(())
     }
@@ -108,8 +103,6 @@ where
                     self.pending_write
                         .replace(Vec::from_slice(&data[written..]).unwrap());
                 }
-
-                
             })
     }
 
