@@ -232,33 +232,19 @@ impl<const T: usize> PacketReader<T> {
             return None;
         }
 
-        // Attempt to parse a variable byte integer out of the currently available data.
-        self.packet_length = if let Some((rlen, nbytes)) = {
-            let int = &self.buffer[1..self.read_bytes];
+        let mut packet_length = 0;
+        for (index, value) in self.buffer[1..self.read_bytes].iter().enumerate() {
+            packet_length += ((value & 0x7F) as usize) << (index * 7);
+            if (value & 0x80) == 0 {
+                let length_size_bytes = 1 + index;
 
-            let len = if !int.is_empty() && (int[0] & 0b1000_0000) == 0 {
-                1
-            } else if int.len() >= 2 && (int[1] & 0b1000_0000) == 0 {
-                2
-            } else if int.len() >= 3 && (int[2] & 0b1000_0000) == 0 {
-                3
-            } else if int.len() >= 4 && (int[3] & 0b1000_0000) == 0 {
-                4
-            } else {
-                return None;
-            };
-
-            let mut acc = 0;
-            for (i, value) in int.iter().enumerate().take(len) {
-                acc += ((value & 0b0111_1111) as usize) << (i * 7);
+                // MQTT headers encode the packet type in the first byte followed by the packet
+                // length as a varint
+                let header_size_bytes = 1 + length_size_bytes;
+                self.packet_length = Some(header_size_bytes + packet_length);
+                break;
             }
-
-            Some((acc, len))
-        } {
-            Some(1 + rlen + nbytes)
-        } else {
-            None
-        };
+        }
 
         self.packet_length
     }
