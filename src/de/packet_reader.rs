@@ -232,8 +232,10 @@ impl<const T: usize> PacketReader<T> {
             return None;
         }
 
+        self.packet_length = None;
+
         let mut packet_length = 0;
-        for (index, value) in self.buffer[1..self.read_bytes].iter().enumerate() {
+        for (index, value) in self.buffer[1..self.read_bytes].iter().take(4).enumerate() {
             packet_length += ((value & 0x7F) as usize) << (index * 7);
             if (value & 0x80) == 0 {
                 let length_size_bytes = 1 + index;
