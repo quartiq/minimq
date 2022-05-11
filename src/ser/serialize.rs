@@ -74,7 +74,7 @@ pub fn connect_message<'a, const S: usize>(
     packet.finalize(MessageType::Connect, 0)
 }
 
-pub fn ping_req_message<'a>(dest: &'a mut [u8]) -> Result<&'a [u8], Error> {
+pub fn ping_req_message(dest: &mut [u8]) -> Result<&[u8], Error> {
     ReversedPacketWriter::new(dest).finalize(MessageType::PingReq, 0x00)
 }
 

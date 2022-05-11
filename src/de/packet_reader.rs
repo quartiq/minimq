@@ -248,10 +248,12 @@ impl<const T: usize> PacketReader<T> {
             } else {
                 return None;
             };
+
             let mut acc = 0;
-            for i in 0..len {
-                acc += ((int[i] & 0b0111_1111) as usize) << (i * 7);
+            for (i, value) in int.iter().enumerate().take(len) {
+                acc += ((value & 0b0111_1111) as usize) << (i * 7);
             }
+
             Some((acc, len))
         } {
             Some(1 + rlen + nbytes)
