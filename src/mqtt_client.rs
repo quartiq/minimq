@@ -77,9 +77,9 @@ where
             self.connection_state.process_event(Events::Connect).ok();
         }
 
-        match self.connection_state.state() {
+        match *self.connection_state.state() {
             // In the RESTART state, we need to reopen the TCP socket.
-            &States::Restart => {
+            States::Restart => {
                 self.network.allocate_socket()?;
 
                 self.connection_state
@@ -88,12 +88,12 @@ where
             }
 
             // In the connect transport state, we need to connect our TCP socket to the broker.
-            &States::ConnectTransport => {
+            States::ConnectTransport => {
                 self.network.connect(self.session_state.broker)?;
             }
 
             // Next, connect to the broker via the MQTT protocol.
-            &States::ConnectBroker => {
+            States::ConnectBroker => {
                 let properties = [
                     // Tell the broker our maximum packet size.
                     Property::MaximumPacketSize(MSG_SIZE as u32),
@@ -120,8 +120,7 @@ where
                     .unwrap();
             }
 
-            &States::Establishing => {}
-
+            States::Establishing => {}
             _ => {}
         }
 
@@ -247,7 +246,7 @@ where
     /// # Returns
     /// True if any subscriptions are waiting for confirmation from the broker.
     pub fn subscriptions_pending(&self) -> bool {
-        self.session_state.pending_subscriptions.len() != 0
+        !self.session_state.pending_subscriptions.is_empty()
     }
 
     /// Determine if the client has established a connection with the broker.
@@ -303,7 +302,7 @@ where
         properties: &[Property],
     ) -> Result<(), Error<TcpStack::Error>> {
         // If we are not yet connected to the broker, we can't transmit a message.
-        if self.is_connected() == false {
+        if !self.is_connected() {
             return Ok(());
         }
 
@@ -388,7 +387,7 @@ where
                 break;
             }
 
-            let message = self.session_state.pending_publish.get(&key).unwrap();
+            let message = self.session_state.pending_publish.get(key).unwrap();
             self.network.write(message)?;
         }
 

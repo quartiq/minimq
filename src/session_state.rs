@@ -60,7 +60,11 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
     /// # Note
     /// If no keep-alive interval is specified, zero is returned.
     pub fn keepalive_interval(&self) -> u16 {
-        (self.keep_alive_interval.unwrap_or(0.milliseconds()).0 / 1000) as u16
+        (self
+            .keep_alive_interval
+            .unwrap_or_else(|| 0.milliseconds())
+            .0
+            / 1000) as u16
     }
 
     /// Update the keep-alive interval.
@@ -93,10 +97,8 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
         for i in 0..self.pending_publish_ordering.len() {
             if found {
                 self.pending_publish_ordering[i - 1] = self.pending_publish_ordering[i];
-            } else {
-                if self.pending_publish_ordering[i] == id {
-                    found = true;
-                }
+            } else if self.pending_publish_ordering[i] == id {
+                found = true;
             }
         }
         self.pending_publish_ordering.pop();

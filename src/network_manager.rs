@@ -44,7 +44,7 @@ where
         let socket = self.socket.as_ref().unwrap();
         self.network_stack
             .is_connected(socket)
-            .map_err(|err| Error::Network(err))
+            .map_err(Error::Network)
     }
 
     /// Allocate a new TCP socket.
@@ -53,17 +53,12 @@ where
     /// If a TCP socket was previously open, it will be closed and a new socket will be allocated.
     pub fn allocate_socket(&mut self) -> Result<(), Error<TcpStack::Error>> {
         if let Some(socket) = self.socket.take() {
-            self.network_stack
-                .close(socket)
-                .map_err(|err| Error::Network(err))?;
+            self.network_stack.close(socket).map_err(Error::Network)?;
         }
 
         // Allocate a new socket to use and begin connecting it.
-        self.socket.replace(
-            self.network_stack
-                .socket()
-                .map_err(|err| Error::Network(err))?,
-        );
+        self.socket
+            .replace(self.network_stack.socket().map_err(Error::Network)?);
 
         Ok(())
     }
@@ -97,19 +92,17 @@ where
 
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
         self.network_stack
-            .send(socket, &data)
+            .send(socket, data)
             .or_else(|err| match err {
                 nb::Error::WouldBlock => Ok(0),
                 nb::Error::Other(err) => Err(Error::Network(err)),
             })
-            .and_then(|written| {
+            .map(|written| {
                 if written != data.len() {
                     // Note(unwrap): The packet should always be smaller than a single message.
                     self.pending_write
                         .replace(Vec::from_slice(&data[written..]).unwrap());
                 }
-
-                Ok(())
             })
     }
 
@@ -129,10 +122,10 @@ where
     ///
     /// # Returns
     /// The number of bytes successfully read.
-    pub fn read(&mut self, mut buf: &mut [u8]) -> Result<usize, Error<TcpStack::Error>> {
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error<TcpStack::Error>> {
         // Atomically access the socket.
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
-        let result = self.network_stack.receive(socket, &mut buf);
+        let result = self.network_stack.receive(socket, buf);
 
         result.or_else(|err| match err {
             nb::Error::WouldBlock => Ok(0),

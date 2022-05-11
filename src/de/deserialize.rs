@@ -168,7 +168,7 @@ fn parse_puback<'a, 'reader: 'a, const T: usize>(
 
     Ok(PubAck {
         packet_identifier: id,
-        reason: reason,
+        reason,
         properties,
     })
 }

@@ -83,7 +83,7 @@ impl<'a> ReversedPacketWriter<'a> {
     ///
     ///  # Args
     /// * `string` - The string to encode.
-    pub fn write_utf8_string<'b>(&mut self, string: &'b str) -> Result<(), Error> {
+    pub fn write_utf8_string(&mut self, string: &str) -> Result<(), Error> {
         self.write_binary_data(string.as_bytes())
     }
 
@@ -99,7 +99,7 @@ impl<'a> ReversedPacketWriter<'a> {
 
         if value & (0b0111_1111 << 21) > 0 {
             let data: [u8; 4] = [
-                (value >> 0) as u8 | 0x80,
+                value as u8 | 0x80,
                 (value >> 7) as u8 | 0x80,
                 (value >> 14) as u8 | 0x80,
                 (value >> 21) as u8 & 0x7F,
@@ -108,18 +108,18 @@ impl<'a> ReversedPacketWriter<'a> {
             self.write(&data)
         } else if value & (0b0111_1111 << 14) > 0 {
             let data: [u8; 3] = [
-                (value >> 0) as u8 | 0x80,
+                value as u8 | 0x80,
                 (value >> 7) as u8 | 0x80,
                 (value >> 14) as u8 & 0x7F,
             ];
 
             self.write(&data)
         } else if value & (0b0111_1111 << 7) > 0 {
-            let data: [u8; 2] = [(value >> 0) as u8 | 0x80, ((value >> 7) & 0x7F) as u8];
+            let data: [u8; 2] = [value as u8 | 0x80, ((value >> 7) & 0x7F) as u8];
 
             self.write(&data)
         } else {
-            let data: [u8; 1] = [(value >> 0) as u8 & 0x7F];
+            let data: [u8; 1] = [value as u8 & 0x7F];
 
             self.write(&data)
         }
