@@ -6,7 +6,6 @@ use std_embedded_time::StandardClock;
 #[test]
 fn main() -> std::io::Result<()> {
     env_logger::init();
-    log::info!("Starting test");
 
     let stack = std_embedded_nal::Stack::default();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));

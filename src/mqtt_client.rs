@@ -105,6 +105,30 @@ impl<
         const MSG_COUNT: usize,
     > MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
 {
+    /// Specify the Will message to be sent if the client disconnects.
+    ///
+    /// # Args
+    /// * `topic` - The topic to send the message on
+    /// * `data` - The message to transmit
+    /// * `qos` - The quality of service at which to send the message.
+    /// * `retained` - Specifies whether the will message should be retained by the broker.
+    /// * `properties` - Any properties to send with the will message.
+    pub fn set_will(
+        &mut self,
+        topic: &str,
+        data: &[u8],
+        qos: QoS,
+        retained: Retain,
+        properties: &[Property],
+    ) -> Result<(), Error<TcpStack::Error>> {
+        let mut will = Will::new(topic, data, properties)?;
+        will.retained(retained);
+        will.qos(qos);
+
+        self.sm.context_mut().will.replace(will);
+        Ok(())
+    }
+
     /// Configure the MQTT keep-alive interval.
     ///
     /// # Note
@@ -145,38 +169,6 @@ impl<
         }
 
         self.sm.context_mut().session_state.broker.set_port(port);
-        Ok(())
-    }
-
-    /// Determine if the client has established a connection with the broker.
-    ///
-    /// # Returns
-    /// True if the client is connected to the broker.
-    pub fn is_connected(&mut self) -> bool {
-        self.sm.state() == &States::Active
-    }
-
-    /// Specify the Will message to be sent if the client disconnects.
-    ///
-    /// # Args
-    /// * `topic` - The topic to send the message on
-    /// * `data` - The message to transmit
-    /// * `qos` - The quality of service at which to send the message.
-    /// * `retained` - Specifies whether the will message should be retained by the broker.
-    /// * `properties` - Any properties to send with the will message.
-    pub fn set_will(
-        &mut self,
-        topic: &str,
-        data: &[u8],
-        qos: QoS,
-        retained: Retain,
-        properties: &[Property],
-    ) -> Result<(), Error<TcpStack::Error>> {
-        let mut will = Will::new(topic, data, properties)?;
-        will.retained(retained);
-        will.qos(qos);
-
-        self.sm.context_mut().will.replace(will);
         Ok(())
     }
 
@@ -225,7 +217,6 @@ impl<
         })
     }
 
-    /// Determine if any subscriptions are waiting for completion.
     ///
     /// # Returns
     /// True if any subscriptions are waiting for confirmation from the broker.
@@ -236,6 +227,14 @@ impl<
             .session_state
             .pending_subscriptions
             .is_empty()
+    }
+
+    /// Determine if the client has established a connection with the broker.
+    ///
+    /// # Returns
+    /// True if the client is connected to the broker.
+    pub fn is_connected(&mut self) -> bool {
+        self.sm.state() == &States::Active
     }
 
     /// Get the count of unacknowledged QoS 1 messages.
@@ -342,10 +341,6 @@ impl<
         self.handle_timers()?;
 
         Ok(())
-    }
-
-    fn reset(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        self.handle_disconnection()
     }
 
     fn handle_connection_acknowledge(
@@ -502,7 +497,7 @@ impl<
         // mechanism has stalled. The ping timeout will then allow us to recover the
         // underlying TCP connection.
         match self.sm.context_mut().session_state.handle_ping(now) {
-            Err(()) => self.reset()?,
+            Err(()) => self.handle_disconnection()?,
 
             Ok(true) => {
                 let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
@@ -615,7 +610,7 @@ impl<
                 }
 
                 Err(e) => {
-                    self.client.reset()?;
+                    self.client.handle_disconnection()?;
                     self.packet_reader.reset();
                     return Err(Error::Protocol(e));
                 }
