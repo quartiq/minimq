@@ -137,7 +137,7 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
         self.active
     }
 
-    pub fn get_packet_identifier(&mut self) -> u16 {
+    pub fn get_packet_identifier(&self) -> u16 {
         self.packet_id
     }
 

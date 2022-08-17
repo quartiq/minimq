@@ -7,6 +7,9 @@ This document describes the changes to Minimq between releases.
 ## Added
 * Allow configuration of non-default broker port numbers
 
+## Changed
+* [breaking] The client is no longer publicly exposed, and is instead accessible via `Minimq::client()`
+
 ## Fixed
 
 # [0.5.3] - 2022-02-14

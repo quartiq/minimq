@@ -6,6 +6,7 @@ use std_embedded_time::StandardClock;
 #[test]
 fn main() -> std::io::Result<()> {
     env_logger::init();
+    log::info!("Starting test");
 
     let stack = std_embedded_nal::Stack::default();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
@@ -13,13 +14,13 @@ fn main() -> std::io::Result<()> {
         Minimq::<_, _, 256, 16>::new(localhost, "", stack, StandardClock::default()).unwrap();
 
     // Use a keepalive interval for the client.
-    mqtt.client.set_keepalive_interval(60).unwrap();
+    mqtt.client().set_keepalive_interval(60).unwrap();
 
     let mut published = false;
     let mut subscribed = false;
     let mut responses = 0;
 
-    mqtt.client
+    mqtt.client()
         .set_will(
             "exit",
             "Test complete".as_bytes(),
@@ -56,17 +57,18 @@ fn main() -> std::io::Result<()> {
             }
         })
         .unwrap();
+        let client = mqtt.client();
 
         if !subscribed {
-            if mqtt.client.is_connected() {
-                mqtt.client.subscribe("response", &[]).unwrap();
-                mqtt.client.subscribe("request", &[]).unwrap();
+            if client.is_connected() {
+                client.subscribe("response", &[]).unwrap();
+                client.subscribe("request", &[]).unwrap();
                 subscribed = true;
             }
-        } else if !mqtt.client.subscriptions_pending() && !published {
+        } else if !client.subscriptions_pending() && !published {
             println!("PUBLISH request");
             let properties = [Property::ResponseTopic("response")];
-            mqtt.client
+            client
                 .publish(
                     "request",
                     "Ping".as_bytes(),
@@ -76,7 +78,7 @@ fn main() -> std::io::Result<()> {
                 )
                 .unwrap();
 
-            mqtt.client
+            client
                 .publish(
                     "request",
                     "Ping".as_bytes(),
@@ -87,7 +89,7 @@ fn main() -> std::io::Result<()> {
                 .unwrap();
 
             // The message cannot be ack'd until the next poll call
-            assert_eq!(1, mqtt.client.pending_messages(QoS::AtLeastOnce));
+            assert_eq!(1, client.pending_messages(QoS::AtLeastOnce));
 
             published = true;
         }
