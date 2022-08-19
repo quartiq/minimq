@@ -389,15 +389,6 @@ where
         self.session_state
             .register_connection(self.clock.try_now()?);
 
-        // Replay QoS messages
-        while !self.network.has_pending_write() {
-            if let Some(msg) = self.session_state.next_pending_republication() {
-                self.network.write(msg)?;
-            } else {
-                break;
-            }
-        }
-
         result
     }
 
