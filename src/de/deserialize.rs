@@ -51,11 +51,37 @@ pub struct SubAck<'a> {
 }
 
 #[derive(Debug)]
+pub struct PubRec<'a> {
+    /// Packet identifier
+    pub packet_id: u16,
+
+    /// The success status of the publication reception.
+    pub reason_code: u8,
+
+    /// Properties associated with the reception result.
+    pub properties: Vec<Property<'a>, 8>,
+}
+
+#[derive(Debug)]
+pub struct PubComp<'a> {
+    /// Packet identifier
+    pub packet_id: u16,
+
+    /// The success status of the publication completion.
+    pub reason_code: u8,
+
+    /// Properties associated with the completion.
+    pub properties: Vec<Property<'a>, 8>,
+}
+
+#[derive(Debug)]
 pub enum ReceivedPacket<'a> {
     ConnAck(ConnAck<'a>),
     Publish(Pub<'a>),
     PubAck(PubAck<'a>),
     SubAck(SubAck<'a>),
+    PubRec(PubRec<'a>),
+    PubComp(PubComp<'a>),
     PingResp,
 }
 
@@ -105,6 +131,9 @@ impl<'a> ReceivedPacket<'a> {
 
                 Ok(ReceivedPacket::PingResp)
             }
+
+            MessageType::PubRec => Ok(ReceivedPacket::PubRec(parse_pubrec(packet_reader)?)),
+            MessageType::PubComp => Ok(ReceivedPacket::PubComp(parse_pubcomp(packet_reader)?)),
 
             _ => Err(Error::UnsupportedPacket),
         }
@@ -186,6 +215,36 @@ fn parse_suback<const T: usize>(p: &PacketReader<T>) -> Result<SubAck, Error> {
 
     Ok(SubAck {
         packet_identifier: id,
+        reason_code,
+        properties,
+    })
+}
+
+fn parse_pubrec<const T: usize>(p: &PacketReader<T>) -> Result<PubRec, Error> {
+    let id = p.read_u16()?;
+
+    // Reason code and properties are both optionally present.
+    // TODO: Handle cases when these are not present gracefully.
+    let reason_code = p.read_u8()?;
+    let properties = p.read_properties()?;
+
+    Ok(PubRec {
+        packet_id: id,
+        reason_code,
+        properties,
+    })
+}
+
+fn parse_pubcomp<const T: usize>(p: &PacketReader<T>) -> Result<PubComp, Error> {
+    let id = p.read_u16()?;
+
+    // Reason code and properties are both optionally present.
+    // TODO: Handle cases when these are not present gracefully.
+    let reason_code = p.read_u8()?;
+    let properties = p.read_properties()?;
+
+    Ok(PubComp {
+        packet_id: id,
         reason_code,
         properties,
     })

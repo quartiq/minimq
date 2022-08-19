@@ -16,6 +16,7 @@ const PING_TIMEOUT: Seconds = Seconds(5);
 pub struct MessageRecord<const N: usize> {
     pub msg: Vec<u8, N>,
     transmitted: bool,
+    acknowledged: bool,
     _id: u16,
     qos: QoS,
 }
@@ -114,6 +115,7 @@ impl<
             qos,
             msg: buf,
             transmitted: true,
+            acknowledged: false,
         };
 
         self.pending_publish
@@ -126,14 +128,7 @@ impl<
         Ok(())
     }
 
-    /// Delete given pending publish as the server took ownership of it
-    pub fn handle_puback(&mut self, id: u16) -> Result<(), Error<TcpStack::Error>> {
-        if let Some(item) = self.pending_publish.get(&id) {
-            if item.qos != QoS::AtLeastOnce {
-                return Err(Error::Protocol(ProtocolError::WrongQos));
-            }
-        }
-
+    fn remove_packet(&mut self, id: u16) -> Result<(), Error<TcpStack::Error>> {
         // Remove the ID from our publication tracking. Note that we intentionally remove from both
         // the ordering and state management without checking success to ensure that state remains
         // valid.
@@ -149,6 +144,51 @@ impl<
             return Err(Error::Protocol(ProtocolError::BadIdentifier));
         }
 
+        Ok(())
+    }
+
+    /// Delete given pending publish as the server took ownership of it
+    pub fn handle_puback(&mut self, id: u16) -> Result<(), Error<TcpStack::Error>> {
+        if let Some(item) = self.pending_publish.get(&id) {
+            if item.qos != QoS::AtLeastOnce {
+                return Err(Error::Protocol(ProtocolError::WrongQos));
+            }
+        }
+
+        self.remove_packet(id)?;
+        Ok(())
+    }
+
+    pub fn handle_pubrec(&mut self, id: u16) -> Result<(), Error<TcpStack::Error>> {
+        let item = self
+            .pending_publish
+            .get_mut(&id)
+            .ok_or_else(|| Error::Protocol(ProtocolError::BadIdentifier))?;
+
+        if item.qos != QoS::ExactlyOnce {
+            return Err(Error::Protocol(ProtocolError::WrongQos));
+        }
+
+        item.acknowledged = true;
+
+        Ok(())
+    }
+
+    pub fn handle_pubcomp(&mut self, id: u16) -> Result<(), Error<TcpStack::Error>> {
+        let item = self
+            .pending_publish
+            .get(&id)
+            .ok_or_else(|| Error::Protocol(ProtocolError::BadIdentifier))?;
+
+        if item.qos != QoS::ExactlyOnce {
+            return Err(Error::Protocol(ProtocolError::WrongQos));
+        }
+
+        if !item.acknowledged {
+            return Err(Error::Protocol(ProtocolError::BadIdentifier));
+        }
+
+        self.remove_packet(id)?;
         Ok(())
     }
 
@@ -261,7 +301,7 @@ impl<
     pub fn next_pending_republication(&mut self) -> Option<&Vec<u8, MSG_SIZE>> {
         let next_key = self.pending_publish_ordering.iter().find(|&id| {
             let item = self.pending_publish.get(id).unwrap();
-            !item.transmitted
+            !item.transmitted && !item.acknowledged
         });
 
         if let Some(key) = next_key {

@@ -461,6 +461,22 @@ where
                 Ok(())
             }
 
+            ReceivedPacket::PubRec(rec) => {
+                // TODO: Utilize errors to generate reason codes.
+                self.session_state.handle_pubrec(rec.packet_id)?;
+
+                // Send the pub-rel packet.
+                let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
+                let packet = serialize::pubrel_message(&mut buffer, rec.packet_id, 0, &[])?;
+                self.network.write(packet)?;
+                Ok(())
+            }
+
+            ReceivedPacket::PubComp(comp) => {
+                self.session_state.handle_pubcomp(comp.packet_id)?;
+                Ok(())
+            }
+
             _ => Err(Error::Unsupported),
         }
     }

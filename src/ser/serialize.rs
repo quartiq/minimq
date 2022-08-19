@@ -156,6 +156,19 @@ pub fn subscribe_message<'a, 'b, 'c>(
     packet.finalize(MessageType::Subscribe, 0b0010)
 }
 
+pub fn pubrel_message<'c, 'a>(
+    dest: &'c mut [u8],
+    packet_id: u16,
+    reason: u8,
+    properties: &[Property<'a>],
+) -> Result<&'c [u8], Error> {
+    let mut packet = ReversedPacketWriter::new(dest);
+    packet.write_properties(properties)?;
+    packet.write(&[reason])?;
+    packet.write_u16(packet_id)?;
+    packet.finalize(MessageType::PubRel, 0)
+}
+
 #[test]
 pub fn serialize_publish() {
     let good_publish: [u8; 10] = [
