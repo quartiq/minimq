@@ -8,6 +8,8 @@ This document describes the changes to Minimq between releases.
 * Allow configuration of non-default broker port numbers
 
 ## Fixed
+* All unacknowledged messages will be guaranteed to be retransmitted upon connection with the
+broker.
 
 # [0.5.3] - 2022-02-14
 
