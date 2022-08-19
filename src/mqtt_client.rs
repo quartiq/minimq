@@ -22,90 +22,117 @@ mod sm {
 
     statemachine! {
         transitions: {
-            *Init + Update [ reconnect ] = Restart,
-            Restart + Update [ connect_to_broker ] = Establishing,
+            *Restart + GotSocket = ConnectTransport,
+            ConnectTransport + Connect = ConnectBroker,
+            ConnectBroker + SentConnect = Establishing,
+            ConnectBroker + Disconnect = Restart,
             Establishing + ReceivedConnAck = Active,
-            _ + Disconnect [ reconnect ] = Restart,
-        },
-        custom_guard_error: true,
+            Establishing + Disconnect = Restart,
+            Active + Disconnect = Restart,
+        }
     }
+
+    pub struct Context;
+
+    impl StateMachineContext for Context {}
 }
 
-use sm::{Events, StateMachine, States};
+use sm::{Context, Events, StateMachine, States};
 
-struct ClientContext<
-    TcpStack: TcpClientStack,
-    Clock: embedded_time::Clock,
-    const MSG_SIZE: usize,
-    const MSG_COUNT: usize,
-> {
-    pub(crate) network: InterfaceHolder<TcpStack, MSG_SIZE>,
-    session_state: SessionState<Clock, MSG_SIZE, MSG_COUNT>,
-    will: Option<Will<MSG_SIZE>>,
-}
-
-impl<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize> sm::StateMachineContext
-    for ClientContext<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
+/// The general structure for managing MQTT via Minimq.
+pub struct Minimq<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
 where
     TcpStack: TcpClientStack,
     Clock: embedded_time::Clock,
 {
-    type GuardError = crate::Error<TcpStack::Error>;
-
-    fn reconnect(&mut self) -> Result<(), Self::GuardError> {
-        self.network.allocate_socket()?;
-        self.network.connect(self.session_state.broker)?;
-        Ok(())
-    }
-
-    fn connect_to_broker(&mut self) -> Result<(), Self::GuardError> {
-        if !self.network.tcp_connected()? {
-            return Err(Error::NotReady);
-        }
-
-        let properties = [
-            // Tell the broker our maximum packet size.
-            Property::MaximumPacketSize(MSG_SIZE as u32),
-            // The session does not expire.
-            Property::SessionExpiryInterval(u32::MAX),
-            Property::ReceiveMaximum(MSG_COUNT as u16),
-        ];
-
-        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = serialize::connect_message(
-            &mut buffer,
-            self.session_state.client_id.as_str().as_bytes(),
-            self.session_state.keepalive_interval(),
-            &properties,
-            // Only perform a clean start if we do not have any session state.
-            !self.session_state.is_present(),
-            self.will.as_ref(),
-        )?;
-
-        info!("Sending CONNECT");
-        self.network.write(packet)?;
-
-        Ok(())
-    }
+    pub client: MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+    packet_reader: PacketReader<MSG_SIZE>,
 }
 
+/// A client for interacting with an MQTT Broker.
 pub struct MqttClient<
     TcpStack: TcpClientStack,
     Clock: embedded_time::Clock,
     const MSG_SIZE: usize,
     const MSG_COUNT: usize,
 > {
+    pub(crate) network: InterfaceHolder<TcpStack, MSG_SIZE>,
     clock: Clock,
-    sm: sm::StateMachine<ClientContext<TcpStack, Clock, MSG_SIZE, MSG_COUNT>>,
+    session_state: SessionState<Clock, MSG_SIZE, MSG_COUNT>,
+    connection_state: StateMachine<Context>,
+    will: Option<Will<MSG_SIZE>>,
 }
 
-impl<
-        TcpStack: TcpClientStack,
-        Clock: embedded_time::Clock,
-        const MSG_SIZE: usize,
-        const MSG_COUNT: usize,
-    > MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
+impl<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
+    MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
+where
+    TcpStack: TcpClientStack,
+    Clock: embedded_time::Clock,
 {
+    fn process(&mut self) -> Result<(), Error<TcpStack::Error>> {
+        // Potentially update the state machine depending on the current socket connection status.
+        if !self.network.tcp_connected()? {
+            self.connection_state.process_event(Events::Disconnect).ok();
+        } else {
+            self.connection_state.process_event(Events::Connect).ok();
+        }
+
+        match *self.connection_state.state() {
+            // In the RESTART state, we need to reopen the TCP socket.
+            States::Restart => {
+                self.network.allocate_socket()?;
+
+                self.connection_state
+                    .process_event(Events::GotSocket)
+                    .unwrap();
+            }
+
+            // In the connect transport state, we need to connect our TCP socket to the broker.
+            States::ConnectTransport => {
+                self.network.connect(self.session_state.broker)?;
+            }
+
+            // Next, connect to the broker via the MQTT protocol.
+            States::ConnectBroker => {
+                let properties = [
+                    // Tell the broker our maximum packet size.
+                    Property::MaximumPacketSize(MSG_SIZE as u32),
+                    // The session does not expire.
+                    Property::SessionExpiryInterval(u32::MAX),
+                    Property::ReceiveMaximum(MSG_COUNT as u16),
+                ];
+
+                let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
+                let packet = serialize::connect_message(
+                    &mut buffer,
+                    self.session_state.client_id.as_str().as_bytes(),
+                    self.session_state.keepalive_interval(),
+                    &properties,
+                    // Only perform a clean start if we do not have any session state.
+                    !self.session_state.is_present(),
+                    self.will.as_ref(),
+                )?;
+
+                info!("Sending CONNECT");
+                self.network.write(packet)?;
+
+                self.connection_state
+                    .process_event(Events::SentConnect)
+                    .unwrap();
+            }
+
+            States::Establishing => {}
+            _ => {}
+        }
+
+        // Attempt to finish any pending packets.
+        self.network.finish_write()?;
+
+        self.handle_timers()?;
+
+        Ok(())
+    }
+
     /// Specify the Will message to be sent if the client disconnects.
     ///
     /// # Args
@@ -126,8 +153,12 @@ impl<
         will.retained(retained);
         will.qos(qos);
 
-        self.sm.context_mut().will.replace(will);
+        self.will.replace(will);
         Ok(())
+    }
+
+    fn reset(&mut self) {
+        self.connection_state.process_event(Events::Disconnect).ok();
     }
 
     /// Configure the MQTT keep-alive interval.
@@ -146,14 +177,13 @@ impl<
         &mut self,
         interval_seconds: u16,
     ) -> Result<(), Error<TcpStack::Error>> {
-        if (self.sm.state() == &States::Active) || (self.sm.state() == &States::Establishing) {
+        if (self.connection_state.state() == &States::Active)
+            || (self.connection_state.state() == &States::Establishing)
+        {
             return Err(Error::NotReady);
         }
 
-        self.sm
-            .context_mut()
-            .session_state
-            .set_keepalive(interval_seconds);
+        self.session_state.set_keepalive(interval_seconds);
         Ok(())
     }
 
@@ -165,11 +195,11 @@ impl<
     /// # Args
     /// * `port` - The Port number to connect to.
     pub fn set_broker_port(&mut self, port: u16) -> Result<(), Error<TcpStack::Error>> {
-        if self.sm.state() != &States::Restart {
+        if *self.connection_state.state() != States::Restart {
             return Err(Error::NotReady);
         }
 
-        self.sm.context_mut().session_state.broker.set_port(port);
+        self.session_state.broker.set_port(port);
         Ok(())
     }
 
@@ -187,47 +217,37 @@ impl<
         topic: &'a str,
         properties: &[Property<'b>],
     ) -> Result<(), Error<TcpStack::Error>> {
-        if self.sm.state() != &States::Active {
+        if self.connection_state.state() != &States::Active {
             return Err(Error::NotReady);
         }
-
-        let ClientContext {
-            network,
-            session_state,
-            ..
-        } = self.sm.context_mut();
 
         // We can't subscribe if there's a pending write in the network.
-        if network.has_pending_write() {
+        if self.network.has_pending_write() {
             return Err(Error::NotReady);
         }
 
-        let packet_id = session_state.get_packet_identifier();
+        let packet_id = self.session_state.get_packet_identifier();
 
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
         let packet = serialize::subscribe_message(&mut buffer, topic, packet_id, properties)?;
 
-        network.write(packet).and_then(|_| {
+        self.network.write(packet).and_then(|_| {
             info!("Subscribing to `{}`: {}", topic, packet_id);
-            session_state
+            self.session_state
                 .pending_subscriptions
                 .push(packet_id)
                 .map_err(|_| Error::Unsupported)?;
-            session_state.increment_packet_identifier();
+            self.session_state.increment_packet_identifier();
             Ok(())
         })
     }
 
+    /// Determine if any subscriptions are waiting for completion.
     ///
     /// # Returns
     /// True if any subscriptions are waiting for confirmation from the broker.
     pub fn subscriptions_pending(&self) -> bool {
-        !self
-            .sm
-            .context()
-            .session_state
-            .pending_subscriptions
-            .is_empty()
+        !self.session_state.pending_subscriptions.is_empty()
     }
 
     /// Determine if the client has established a connection with the broker.
@@ -235,7 +255,7 @@ impl<
     /// # Returns
     /// True if the client is connected to the broker.
     pub fn is_connected(&mut self) -> bool {
-        self.sm.state() == &States::Active
+        self.connection_state.state() == &States::Active
     }
 
     /// Get the count of unacknowledged QoS 1 messages.
@@ -243,7 +263,7 @@ impl<
     /// # Returns
     /// Number of pending messages with QoS 1.
     pub fn pending_messages(&self, qos: QoS) -> usize {
-        self.sm.context().session_state.pending_messages(qos)
+        self.session_state.pending_messages(qos)
     }
 
     /// Determine if the client is able to process QoS 1 publish requess.
@@ -253,11 +273,11 @@ impl<
     pub fn can_publish(&self, qos: QoS) -> bool {
         // We cannot publish if there's a pending write in the network stack. That message must be
         // completed first.
-        if self.sm.context().network.has_pending_write() {
+        if self.network.has_pending_write() {
             return false;
         }
 
-        self.sm.context().session_state.can_publish(qos)
+        self.session_state.can_publish(qos)
     }
 
     /// Publish a message over MQTT.
@@ -296,50 +316,19 @@ impl<
             topic, data, properties
         );
 
-        let ClientContext {
-            session_state,
-            network,
-            ..
-        } = self.sm.context_mut();
-
         // If QoS 0 the ID will be ignored
-        let id = session_state.get_packet_identifier();
+        let id = self.session_state.get_packet_identifier();
 
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
         let packet =
             serialize::publish_message(&mut buffer, topic, data, qos, retain, id, properties)?;
 
-        network.write(packet)?;
-        session_state.increment_packet_identifier();
+        self.network.write(packet)?;
+        self.session_state.increment_packet_identifier();
 
         if qos == QoS::AtLeastOnce {
-            session_state.handle_publish(qos, id, packet);
+            self.session_state.handle_publish(qos, id, packet);
         }
-
-        Ok(())
-    }
-
-    fn handle_disconnection(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        match self.sm.process_event(Events::Disconnect) {
-            Err(sm::Error::GuardFailed(error)) => return Err(error),
-            other => other.unwrap(),
-        };
-
-        Ok(())
-    }
-
-    fn update(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        self.sm.process_event(Events::Update).ok();
-
-        // Potentially update the state machine depending on the current socket connection status.
-        if !self.sm.context_mut().network.tcp_connected()? && self.sm.state() != &States::Restart {
-            self.handle_disconnection()?;
-        }
-
-        // Attempt to finish any pending packets.
-        self.sm.context_mut().network.finish_write()?;
-
-        self.handle_timers()?;
 
         Ok(())
     }
@@ -348,65 +337,62 @@ impl<
         &mut self,
         acknowledge: ConnAck,
     ) -> Result<(), Error<TcpStack::Error>> {
-        if self.sm.state() != &States::Establishing {
+        if self.connection_state.state() != &States::Establishing {
             return Err(Error::Protocol(ProtocolError::Invalid));
         }
+
+        let mut result = Ok(());
 
         if acknowledge.reason_code != 0 {
             return Err(Error::Failed(acknowledge.reason_code));
         }
 
-        self.sm.process_event(Events::ReceivedConnAck).unwrap();
-
-        let ClientContext {
-            session_state,
-            network,
-            ..
-        } = &mut self.sm.context_mut();
-
-        let session_reset = !acknowledge.session_present && session_state.is_present();
-
-        // Reset the session state upon connection with a broker that doesn't have a session state
-        // saved for us.
         if !acknowledge.session_present {
-            session_state.reset();
+            if self.session_state.is_present() {
+                result = Err(Error::SessionReset);
+            }
+
+            // Reset the session state upon connection with a broker that doesn't have a
+            // session state saved for us.
+            self.session_state.reset();
         }
+
+        self.connection_state
+            .process_event(Events::ReceivedConnAck)
+            .unwrap();
 
         for property in acknowledge.properties {
             match property {
                 Property::MaximumPacketSize(size) => {
-                    session_state.maximum_packet_size.replace(size);
+                    self.session_state.maximum_packet_size.replace(size);
                 }
                 Property::AssignedClientIdentifier(id) => {
-                    session_state.client_id =
+                    self.session_state.client_id =
                         String::from_str(id).or(Err(Error::ProvidedClientIdTooLong))?;
                 }
                 Property::ServerKeepAlive(keep_alive) => {
-                    session_state.set_keepalive(keep_alive);
+                    self.session_state.set_keepalive(keep_alive);
                 }
                 _prop => info!("Ignoring property: {:?}", _prop),
             };
         }
 
         // Now that we are connected, we have session state that will be persisted.
-        session_state.register_connection(self.clock.try_now()?);
+        self.session_state
+            .register_connection(self.clock.try_now()?);
 
         // Replay QoS 1 messages
-        for key in session_state.pending_publish_ordering.iter() {
+        for key in self.session_state.pending_publish_ordering.iter() {
             // If the network stack cannot send another message, do not attempt to send one.
-            if network.has_pending_write() {
+            if self.network.has_pending_write() {
                 break;
             }
 
-            let message = session_state.pending_publish.get(key).unwrap();
-            network.write(message)?;
+            let message = self.session_state.pending_publish.get(key).unwrap();
+            self.network.write(message)?;
         }
 
-        if session_reset {
-            Err(Error::SessionReset)
-        } else {
-            Ok(())
-        }
+        result
     }
 
     fn handle_packet<'a, F>(
@@ -428,7 +414,7 @@ impl<
         }
 
         // All other packets must be received in the active state.
-        if self.sm.state() != &States::Active {
+        if !self.is_connected() {
             error!(
                 "Received invalid packet outside of connected state: {:?}",
                 packet
@@ -440,19 +426,20 @@ impl<
             ReceivedPacket::Publish(info) => {
                 // Call a handler function to deal with the received data.
                 f(self, info.topic, info.payload, &info.properties);
+
+                Ok(())
             }
 
             ReceivedPacket::PubAck(ack) => {
                 // No matter the status code the message is considered acknowledged at this point
-                self.sm
-                    .context_mut()
-                    .session_state
-                    .handle_puback(ack.packet_identifier);
+                self.session_state.handle_puback(ack.packet_identifier);
+
+                Ok(())
             }
 
             ReceivedPacket::SubAck(subscribe_acknowledge) => {
-                let session_state = &mut self.sm.context_mut().session_state;
-                match session_state
+                match self
+                    .session_state
                     .pending_subscriptions
                     .iter()
                     .position(|v| *v == subscribe_acknowledge.packet_identifier)
@@ -461,33 +448,34 @@ impl<
                         error!("Got bad suback: {:?}", subscribe_acknowledge);
                         return Err(Error::Protocol(ProtocolError::Invalid));
                     }
-                    Some(index) => session_state.pending_subscriptions.swap_remove(index),
+                    Some(index) => self.session_state.pending_subscriptions.swap_remove(index),
                 };
 
                 if subscribe_acknowledge.reason_code != 0 {
                     return Err(Error::Failed(subscribe_acknowledge.reason_code));
                 }
+
+                Ok(())
             }
 
             ReceivedPacket::PingResp => {
                 // Cancel the ping response timeout.
-                self.sm.context_mut().session_state.register_ping_response();
+                self.session_state.register_ping_response();
+                Ok(())
             }
 
-            _ => return Err(Error::Unsupported),
-        };
-
-        Ok(())
+            _ => Err(Error::Unsupported),
+        }
     }
 
     fn handle_timers(&mut self) -> Result<(), Error<TcpStack::Error>> {
         // If we are not connected, there's no session state to manage.
-        if self.sm.state() != &States::Active {
+        if self.connection_state.state() != &States::Active {
             return Ok(());
         }
 
         // If there's a pending write, we can't send a ping no matter if it is due.
-        if self.sm.context().network.has_pending_write() {
+        if self.network.has_pending_write() {
             return Ok(());
         }
 
@@ -497,8 +485,10 @@ impl<
         // to write the ping message. This is intentional incase the underlying transport
         // mechanism has stalled. The ping timeout will then allow us to recover the
         // underlying TCP connection.
-        match self.sm.context_mut().session_state.handle_ping(now) {
-            Err(()) => self.handle_disconnection()?,
+        match self.session_state.handle_ping(now) {
+            Err(()) => {
+                self.connection_state.process_event(Events::Disconnect).ok();
+            }
 
             Ok(true) => {
                 let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
@@ -506,7 +496,7 @@ impl<
                 // Note: If we fail to serialize or write the packet, the ping timeout timer is
                 // still running, so we will recover the TCP connection in the future.
                 let packet = serialize::ping_req_message(&mut buffer)?;
-                self.sm.context_mut().network.write(packet)?;
+                self.network.write(packet)?;
             }
 
             Ok(false) => {}
@@ -514,16 +504,6 @@ impl<
 
         Ok(())
     }
-}
-
-/// The general structure for managing MQTT via Minimq.
-pub struct Minimq<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
-where
-    TcpStack: TcpClientStack,
-    Clock: embedded_time::Clock,
-{
-    client: MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
-    packet_reader: PacketReader<MSG_SIZE>,
 }
 
 impl<
@@ -558,12 +538,11 @@ impl<
 
         let minimq = Minimq {
             client: MqttClient {
+                network: InterfaceHolder::new(network_stack),
                 clock,
-                sm: StateMachine::new(ClientContext {
-                    network: InterfaceHolder::new(network_stack),
-                    session_state,
-                    will: None,
-                }),
+                session_state,
+                connection_state: StateMachine::new(Context),
+                will: None,
             },
             packet_reader: PacketReader::new(),
         };
@@ -585,19 +564,19 @@ impl<
             &[Property<'a>],
         ),
     {
-        self.client.update()?;
+        self.client.process()?;
 
         // If the connection is no longer active, reset the packet reader state and return. There's
         // nothing more we can do.
-        if self.client.sm.state() != &States::Active
-            && self.client.sm.state() != &States::Establishing
+        if self.client.connection_state.state() != &States::Active
+            && self.client.connection_state.state() != &States::Establishing
         {
             self.packet_reader.reset();
             return Ok(());
         }
 
         let mut buf: [u8; 1024] = [0; 1024];
-        let received = self.client.sm.context_mut().network.read(&mut buf)?;
+        let received = self.client.network.read(&mut buf)?;
         if received > 0 {
             debug!("Received {} bytes", received);
         }
@@ -611,7 +590,7 @@ impl<
                 }
 
                 Err(e) => {
-                    self.client.handle_disconnection()?;
+                    self.client.reset();
                     self.packet_reader.reset();
                     return Err(Error::Protocol(e));
                 }
@@ -634,10 +613,5 @@ impl<
         }
 
         Ok(())
-    }
-
-    /// Directly access the MQTT client.
-    pub fn client(&mut self) -> &mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
-        &mut self.client
     }
 }

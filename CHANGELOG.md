@@ -7,9 +7,6 @@ This document describes the changes to Minimq between releases.
 ## Added
 * Allow configuration of non-default broker port numbers
 
-## Changed
-* [breaking] The client is no longer publicly exposed, and is instead accessible via `Minimq::client()`
-
 ## Fixed
 * The `ReceiveMaximum` property is now sent in the connection request to the broker
 
