@@ -15,6 +15,7 @@ broker.
 
 ## Added
 * Property comparison now implements PartialEq
+* Support added for QoS::ExactlyOnce transmission
 
 # [0.5.2] - 2021-12-14
 

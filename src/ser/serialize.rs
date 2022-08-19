@@ -334,3 +334,17 @@ fn serialize_ping_req() {
     let mut buffer: [u8; 1024] = [0; 1024];
     assert_eq!(ping_req_message(&mut buffer).unwrap(), good_ping_req);
 }
+
+#[test]
+fn serialize_pubrel() {
+    let good_pubrel: [u8; 6] = [
+        6 << 4, // PubRec
+        0x04, // Remaining length
+        0x00, 0x05, // Identifier
+        0x10, // Response Code
+        0x00, // Properties length
+    ];
+
+    let mut buffer: [u8; 1024] = [0; 1024];
+    assert_eq!(pubrel_message(&mut buffer, 5, 0x10, &[]).unwrap(), good_pubrel);
+}

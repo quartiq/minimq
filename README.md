@@ -18,9 +18,7 @@ publication. Below is a detailed list of features, indicating what aspects are s
 aren't:
 * Will messages are fully supported.
 * Message subscription is fully supported.
-* Message publication is currently only supported for the following quality-of-service (QoS) levels:
-    1. At Most Once (Level 0)
-    2. At Least Once (Level 1)
+* Message publication is supported for all quality-of-service (QoS) levels
 * Message reception is only supported for the following QoS levels:
     1. At Most once (Level 0)
 
