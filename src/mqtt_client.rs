@@ -25,16 +25,13 @@ mod sm {
         transitions: {
             *Disconnected + Reallocated = Restart,
             Restart + SentConnect = Establishing,
-            Establishing + Connected(ConnAck<'a>) [ handle_connack ] / start_republish = Republish,
-
-            Republish + RepublishComplete = Active,
+            Establishing + Connected(ConnAck<'a>) [ handle_connack ] = Active,
 
             Active + SendTimeout = Disconnected,
             _ + ProtocolError = Disconnected,
 
             Active + ControlPacket(ReceivedPacket<'a>) [handle_packet] = Active,
 
-            Republish + TcpDisconnect = Disconnected,
             Establishing + TcpDisconnect = Disconnected,
             Active + TcpDisconnect = Disconnected,
         },
@@ -93,10 +90,6 @@ where
 {
     type GuardError = crate::Error<TcpStack::Error>;
 
-    fn start_republish(&mut self, _: &ConnAck<'_>) {
-        // TODO: Initialize the republish state
-    }
-
     fn handle_packet<'a>(
         &mut self,
         packet: &ReceivedPacket<'a>,
@@ -144,6 +137,8 @@ where
             };
         }
 
+        self.session_state.register_connection()?;
+
         Ok(())
     }
 }
@@ -166,7 +161,6 @@ pub struct MqttClient<
     sm: sm::StateMachine<ClientContext<TcpStack, Clock, MSG_SIZE, MSG_COUNT>>,
     network: InterfaceHolder<TcpStack, MSG_SIZE>,
     will: Option<Will<MSG_SIZE>>,
-    clock: Clock,
     broker: SocketAddr,
 }
 
@@ -217,7 +211,7 @@ impl<
         &mut self,
         interval_seconds: u16,
     ) -> Result<(), Error<TcpStack::Error>> {
-        if self.sm.state() == &States::Disconnected {
+        if self.sm.state() != &States::Disconnected {
             return Err(Error::NotReady);
         }
 
@@ -309,21 +303,27 @@ impl<
     /// # Returns
     /// True if the client is connected to the broker.
     pub fn is_connected(&mut self) -> bool {
-        [&States::Active, &States::Republish].contains(&self.sm.state())
+        [&States::Active].contains(&self.sm.state())
     }
 
-    /// Get the count of unacknowledged QoS 1 messages.
+    /// Get the count of unacknowledged messages at the requested QoS.
+    ///
+    /// # Args
+    /// * `qos` - The QoS to check messages of.
     ///
     /// # Returns
-    /// Number of pending messages with QoS 1.
+    /// Number of pending messages with the specified QoS.
     pub fn pending_messages(&self, qos: QoS) -> usize {
         self.sm.context().session_state.pending_messages(qos)
     }
 
-    /// Determine if the client is able to process QoS 1 publish requess.
+    /// Determine if the client is able to process publish requests.
+    ///
+    /// # Args
+    /// * `qos` - The QoS level to check publish capabilities of.
     ///
     /// # Returns
-    /// True if the client is able to service QoS 1 requests.
+    /// True if the client is able to publish at the requested QoS.
     pub fn can_publish(&self, qos: QoS) -> bool {
         // We cannot publish if there's a pending write in the network stack. That message must be
         // completed first.
@@ -430,6 +430,30 @@ impl<
         Ok(())
     }
 
+    fn handle_active(&mut self) -> Result<(), Error<TcpStack::Error>> {
+        if self.sm.context_mut().session_state.ping_is_overdue()? {
+            self.sm.process_event(Events::SendTimeout).unwrap();
+        }
+
+        // If there's a pending write, we can't send a ping no matter if it is due. This is
+        // intentionally done before checking if a ping is due, since we wouldn't be able to send
+        // the ping otherwise.
+        if self.network.has_pending_write() {
+            return Ok(());
+        }
+
+        if self.sm.context_mut().session_state.ping_is_due()? {
+            let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
+
+            // Note: If we fail to serialize or write the packet, the ping timeout timer is
+            // still running, so we will recover the TCP connection in the future.
+            let packet = serialize::ping_req_message(&mut buffer)?;
+            self.network.write(packet)?;
+        }
+
+        Ok(())
+    }
+
     fn update(&mut self) -> Result<(), Error<TcpStack::Error>> {
         // Potentially update the state machine depending on the current socket connection status.
         let tcp_connected = self.network.tcp_connected()?;
@@ -448,53 +472,11 @@ impl<
                 self.sm.process_event(Events::Reallocated)?;
             }
             States::Restart => self.handle_restart()?,
-            States::Active => {
-                if self.check_timeout()? {
-                    self.sm.process_event(Events::SendTimeout).unwrap();
-                }
-            }
-
+            States::Active => self.handle_active()?,
             States::Establishing => {}
-            States::Republish => {
-                // TODO: Republish the next message in the session state.
-            }
         };
 
         Ok(())
-    }
-
-    /// Process timer and keep-alive management.
-    ///
-    /// # Returns
-    /// True if the connection has disconnected. False otherwise.
-    pub fn check_timeout(&mut self) -> Result<bool, Error<TcpStack::Error>> {
-        // If there's a pending write, we can't send a ping no matter if it is due.
-        if self.network.has_pending_write() {
-            return Ok(false);
-        }
-
-        let now = self.clock.try_now()?;
-
-        // Note: The ping timeout is set at this point so that it's running even if we fail
-        // to write the ping message. This is intentional incase the underlying transport
-        // mechanism has stalled. The ping timeout will then allow us to recover the
-        // underlying TCP connection.
-        match self.sm.context_mut().session_state.handle_ping(now) {
-            Err(()) => return Ok(true),
-
-            Ok(true) => {
-                let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-
-                // Note: If we fail to serialize or write the packet, the ping timeout timer is
-                // still running, so we will recover the TCP connection in the future.
-                let packet = serialize::ping_req_message(&mut buffer)?;
-                self.network.write(packet)?;
-            }
-
-            Ok(false) => {}
-        }
-
-        Ok(false)
     }
 
     fn handle_packet<'a, F>(
@@ -572,8 +554,10 @@ impl<
         network_stack: TcpStack,
         clock: Clock,
     ) -> Result<Self, Error<TcpStack::Error>> {
-        let session_state =
-            SessionState::new(String::from_str(client_id).or(Err(Error::ProvidedClientIdTooLong))?);
+        let session_state = SessionState::new(
+            clock,
+            String::from_str(client_id).or(Err(Error::ProvidedClientIdTooLong))?,
+        );
 
         let minimq = Minimq {
             client: MqttClient {
@@ -583,7 +567,6 @@ impl<
                 }),
                 broker: SocketAddr::new(broker, MQTT_INSECURE_DEFAULT_PORT),
                 will: None,
-                clock,
                 network: InterfaceHolder::new(network_stack),
             },
             packet_reader: PacketReader::new(),

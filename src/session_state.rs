@@ -3,6 +3,7 @@ use crate::{warn, QoS};
 use heapless::{LinearMap, String, Vec};
 
 use embedded_time::{
+    clock::Error,
     duration::{Extensions, Milliseconds, Seconds},
     Instant,
 };
@@ -20,6 +21,7 @@ pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, cons
     pub pending_subscriptions: Vec<u16, 32>,
     pub pending_publish: LinearMap<u16, Vec<u8, MSG_SIZE>, MSG_COUNT>,
     pub pending_publish_ordering: Vec<u16, MSG_COUNT>,
+    clock: Clock,
     packet_id: u16,
     active: bool,
     was_reset: bool,
@@ -28,8 +30,9 @@ pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, cons
 impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
     SessionState<Clock, MSG_SIZE, MSG_COUNT>
 {
-    pub fn new(id: String<64>) -> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
+    pub fn new(clock: Clock, id: String<64>) -> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
         SessionState {
+            clock,
             active: false,
             ping_timeout: None,
             next_ping: None,
@@ -129,14 +132,16 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
     }
 
     /// Called whenever an active connection has been made with a broker.
-    pub fn register_connection(&mut self, now: Instant<Clock>) {
+    pub fn register_connection(&mut self) -> Result<(), Error> {
         self.active = true;
         self.ping_timeout = None;
 
         // The next ping should be sent out in half the keep-alive interval from now.
         if let Some(interval) = self.keep_alive_interval {
-            self.next_ping.replace(now + interval / 2);
+            self.next_ping.replace(self.clock.try_now()? + interval / 2);
         }
+
+        Ok(())
     }
 
     /// Indicates if there is present session state available.
@@ -170,37 +175,37 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
         }
     }
 
-    /// Handle ping time management.
-    ///
-    /// # Args
-    /// * `now` - The current instant in time.
-    ///
-    /// # Returns
-    /// An error if a pending ping is past the deadline. Otherwise, returns a bool indicating
-    /// whether or not a ping should be sent.
-    pub fn handle_ping(&mut self, now: Instant<Clock>) -> Result<bool, ()> {
-        // First, check if a ping is currently awaiting response.
-        if let Some(timeout) = self.ping_timeout {
-            if now > timeout {
-                return Err(());
-            }
+    /// Check if a pending ping is currently overdue.
+    pub fn ping_is_overdue(&mut self) -> Result<bool, Error> {
+        let now = self.clock.try_now()?;
+        Ok(self
+            .ping_timeout
+            .map(|timeout| now > timeout)
+            .unwrap_or(false))
+    }
 
+    /// Check if a ping is currently due for transmission.
+    pub fn ping_is_due(&mut self) -> Result<bool, Error> {
+        // If there's already a ping being transmitted, another can't be due.
+        if self.ping_timeout.is_some() {
             return Ok(false);
         }
 
-        if let Some((keep_alive_interval, ping_deadline)) =
-            self.keep_alive_interval.zip(self.next_ping)
-        {
-            // Update the next ping deadline if the ping is due.
-            if now > ping_deadline {
-                // The next ping should be sent out in half the keep-alive interval from now.
-                self.next_ping.replace(now + keep_alive_interval / 2);
+        let now = self.clock.try_now()?;
 
-                self.ping_timeout.replace(now + PING_TIMEOUT);
-                return Ok(true);
-            }
-        }
+        Ok(self
+            .keep_alive_interval
+            .zip(self.next_ping)
+            .map(|(keep_alive_interval, ping_deadline)| {
+                // Update the next ping deadline if the ping is due.
+                if now > ping_deadline {
+                    // The next ping should be sent out in half the keep-alive interval from now.
+                    self.next_ping.replace(now + keep_alive_interval / 2);
+                    self.ping_timeout.replace(now + PING_TIMEOUT);
+                }
 
-        Ok(false)
+                now > ping_deadline
+            })
+            .unwrap_or(false))
     }
 }
