@@ -1,6 +1,8 @@
 /// This module represents the session state of an MQTT communication session.
-use crate::{warn, QoS};
+use crate::{warn, Error, QoS};
+use core::marker::PhantomData;
 use embedded_nal::SocketAddr;
+use embedded_nal::TcpClientStack;
 use heapless::{LinearMap, String, Vec};
 
 use embedded_time::{
@@ -11,8 +13,19 @@ use embedded_time::{
 /// The default duration to wait for a ping response from the broker.
 const PING_TIMEOUT: Seconds = Seconds(5);
 
-pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
-{
+pub struct MessageRecord<const N: usize> {
+    pub msg: Vec<u8, N>,
+    transmitted: bool,
+    _id: u16,
+    _qos: QoS,
+}
+
+pub struct SessionState<
+    TcpStack: TcpClientStack,
+    Clock: embedded_time::Clock,
+    const MSG_SIZE: usize,
+    const MSG_COUNT: usize,
+> {
     keep_alive_interval: Option<Milliseconds<u32>>,
     ping_timeout: Option<Instant<Clock>>,
     next_ping: Option<Instant<Clock>>,
@@ -20,16 +33,24 @@ pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, cons
     pub maximum_packet_size: Option<u32>,
     pub client_id: String<64>,
     pub pending_subscriptions: Vec<u16, 32>,
-    pub pending_publish: LinearMap<u16, Vec<u8, MSG_SIZE>, MSG_COUNT>,
-    pub pending_publish_ordering: Vec<u16, MSG_COUNT>,
+    pending_publish: LinearMap<u16, MessageRecord<MSG_SIZE>, MSG_COUNT>,
+    pending_publish_ordering: Vec<u16, MSG_COUNT>,
     packet_id: u16,
     active: bool,
+    _stack: PhantomData<TcpStack>,
 }
 
-impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
-    SessionState<Clock, MSG_SIZE, MSG_COUNT>
+impl<
+        TcpStack: TcpClientStack,
+        Clock: embedded_time::Clock,
+        const MSG_SIZE: usize,
+        const MSG_COUNT: usize,
+    > SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
 {
-    pub fn new(broker: SocketAddr, id: String<64>) -> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
+    pub fn new(
+        broker: SocketAddr,
+        id: String<64>,
+    ) -> SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
         SessionState {
             active: false,
             ping_timeout: None,
@@ -42,6 +63,7 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
             pending_publish: LinearMap::new(),
             pending_publish_ordering: Vec::new(),
             maximum_packet_size: None,
+            _stack: PhantomData::default(),
         }
     }
 
@@ -76,32 +98,41 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
             .replace(Milliseconds(seconds as u32 * 1000));
     }
 
-    /// Called when publish with QoS 1 is called so that we can keep track of PUBACK
-    pub fn handle_publish(&mut self, qos: QoS, id: u16, packet: &[u8]) {
-        // This is not called for QoS 0 and QoS 2 is not implemented yet
-        assert_eq!(qos, QoS::AtLeastOnce);
-
+    /// Called when publish with QoS > 0 is called so that we can keep track of acknowledgement.
+    pub fn handle_publish(
+        &mut self,
+        qos: QoS,
+        id: u16,
+        packet: &[u8],
+    ) -> Result<(), Error<TcpStack::Error>> {
         let mut buf: Vec<u8, MSG_SIZE> = Vec::from_slice(packet).unwrap();
         // Set DUP = 1 (bit 3). If this packet is ever read it's just because we want to resend it
         buf[0] |= 1 << 3;
-        // If this fails and the PUBACK will be received and Client (minimq) should disconnect from server with 0x82 Protocol Error
-        // This behaviour pretty much reverts this message to QoS 0 with a restart if the message is actually delivered
-        let _ = self.pending_publish.insert(id, buf);
-        let _ = self.pending_publish_ordering.push(id);
+
+        let record = MessageRecord {
+            _id: id,
+            _qos: qos,
+            msg: buf,
+            transmitted: true,
+        };
+
+        self.pending_publish
+            .insert(id, record)
+            .map_err(|_| Error::Unsupported)?;
+        self.pending_publish_ordering
+            .push(id)
+            .map_err(|_| Error::Unsupported)?;
+
+        Ok(())
     }
 
     /// Delete given pending publish as the server took ownership of it
     pub fn handle_puback(&mut self, id: u16) {
         self.pending_publish.remove(&id);
-        let mut found = false;
-        for i in 0..self.pending_publish_ordering.len() {
-            if found {
-                self.pending_publish_ordering[i - 1] = self.pending_publish_ordering[i];
-            } else if self.pending_publish_ordering[i] == id {
-                found = true;
-            }
-        }
-        self.pending_publish_ordering.pop();
+        self.pending_publish_ordering
+            .iter()
+            .position(|&i| i == id)
+            .map(|index| Some(self.pending_publish_ordering.remove(index)));
     }
 
     /// Indicates if publish with QoS 1 is possible.
@@ -195,5 +226,27 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
         }
 
         Ok(false)
+    }
+
+    /// Get the next message that needs to be republished.
+    ///
+    /// # Note
+    /// Messages provided by this function must be properly transmitted to maintain proper state.
+    ///
+    /// # Returns
+    /// The next message in the sequence that must be republished.
+    pub fn next_pending_republication(&mut self) -> Option<&Vec<u8, MSG_SIZE>> {
+        let next_key = self.pending_publish_ordering.iter().find(|&id| {
+            let item = self.pending_publish.get(id).unwrap();
+            !item.transmitted
+        });
+
+        if let Some(key) = next_key {
+            let mut item = self.pending_publish.get_mut(key).unwrap();
+            item.transmitted = true;
+            Some(&item.msg)
+        } else {
+            None
+        }
     }
 }

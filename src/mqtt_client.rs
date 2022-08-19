@@ -58,7 +58,7 @@ pub struct MqttClient<
 > {
     pub(crate) network: InterfaceHolder<TcpStack, MSG_SIZE>,
     clock: Clock,
-    session_state: SessionState<Clock, MSG_SIZE, MSG_COUNT>,
+    session_state: SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
     connection_state: StateMachine<Context>,
     will: Option<Will<MSG_SIZE>>,
 }
@@ -121,7 +121,16 @@ where
             }
 
             States::Establishing => {}
-            _ => {}
+            States::Active => {
+                // Replay QoS messages
+                while !self.network.has_pending_write() {
+                    if let Some(msg) = self.session_state.next_pending_republication() {
+                        self.network.write(msg)?;
+                    } else {
+                        break;
+                    }
+                }
+            }
         }
 
         // Attempt to finish any pending packets.
@@ -326,7 +335,7 @@ where
         self.session_state.increment_packet_identifier();
 
         if qos == QoS::AtLeastOnce {
-            self.session_state.handle_publish(qos, id, packet);
+            self.session_state.handle_publish(qos, id, packet)?;
         }
 
         Ok(())
@@ -380,15 +389,13 @@ where
         self.session_state
             .register_connection(self.clock.try_now()?);
 
-        // Replay QoS 1 messages
-        for key in self.session_state.pending_publish_ordering.iter() {
-            // If the network stack cannot send another message, do not attempt to send one.
-            if self.network.has_pending_write() {
+        // Replay QoS messages
+        while !self.network.has_pending_write() {
+            if let Some(msg) = self.session_state.next_pending_republication() {
+                self.network.write(msg)?;
+            } else {
                 break;
             }
-
-            let message = self.session_state.pending_publish.get(key).unwrap();
-            self.network.write(message)?;
         }
 
         result
