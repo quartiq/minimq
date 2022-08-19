@@ -79,7 +79,7 @@ pub use embedded_time;
 pub use mqtt_client::Minimq;
 
 #[cfg(feature = "logging")]
-pub(crate) use log::{debug, error, info, warn};
+pub(crate) use log::{debug, error, info, trace, warn};
 
 /// Default port number for unencrypted MQTT traffic
 ///
@@ -163,6 +163,14 @@ impl<E> From<ProtocolError> for Error<E> {
 #[doc(hidden)]
 #[cfg(not(feature = "logging"))]
 mod mqtt_log {
+    #[doc(hidden)]
+    #[macro_export]
+    macro_rules! trace {
+        ($($arg:tt)+) => {
+            ()
+        };
+    }
+
     #[doc(hidden)]
     #[macro_export]
     macro_rules! debug {

@@ -163,7 +163,7 @@ impl<
         let item = self
             .pending_publish
             .get_mut(&id)
-            .ok_or_else(|| Error::Protocol(ProtocolError::BadIdentifier))?;
+            .ok_or(Error::Protocol(ProtocolError::BadIdentifier))?;
 
         if item.qos != QoS::ExactlyOnce {
             return Err(Error::Protocol(ProtocolError::WrongQos));
@@ -178,7 +178,7 @@ impl<
         let item = self
             .pending_publish
             .get(&id)
-            .ok_or_else(|| Error::Protocol(ProtocolError::BadIdentifier))?;
+            .ok_or(Error::Protocol(ProtocolError::BadIdentifier))?;
 
         if item.qos != QoS::ExactlyOnce {
             return Err(Error::Protocol(ProtocolError::WrongQos));
@@ -196,16 +196,18 @@ impl<
     pub fn can_publish(&self, qos: QoS) -> bool {
         match qos {
             QoS::AtMostOnce => true,
-            QoS::AtLeastOnce => self.pending_publish.len() < MSG_COUNT,
-            QoS::ExactlyOnce => false,
+            QoS::AtLeastOnce | QoS::ExactlyOnce => self.pending_publish.len() < MSG_COUNT,
         }
     }
 
     pub fn pending_messages(&self, qos: QoS) -> usize {
         match qos {
             QoS::AtMostOnce => 0,
-            QoS::AtLeastOnce => self.pending_publish.len(),
-            QoS::ExactlyOnce => 0,
+            _ => self
+                .pending_publish
+                .values()
+                .filter(|&item| item.qos == qos)
+                .count(),
         }
     }
 

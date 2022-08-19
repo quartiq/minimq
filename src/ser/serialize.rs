@@ -163,10 +163,16 @@ pub fn pubrel_message<'c, 'a>(
     properties: &[Property<'a>],
 ) -> Result<&'c [u8], Error> {
     let mut packet = ReversedPacketWriter::new(dest);
-    packet.write_properties(properties)?;
-    packet.write(&[reason])?;
+
+    // Properties and reason can be omitted if there reason code is zero and there are no
+    // properties.
+    if !(properties.is_empty() && reason == 0) {
+        packet.write_properties(properties)?;
+        packet.write(&[reason])?;
+    }
+
     packet.write_u16(packet_id)?;
-    packet.finalize(MessageType::PubRel, 0)
+    packet.finalize(MessageType::PubRel, 0b0010)
 }
 
 #[test]
@@ -338,13 +344,33 @@ fn serialize_ping_req() {
 #[test]
 fn serialize_pubrel() {
     let good_pubrel: [u8; 6] = [
-        6 << 4, // PubRec
-        0x04, // Remaining length
-        0x00, 0x05, // Identifier
+        6 << 4 | 0b10, // PubRec
+        0x04,          // Remaining length
+        0x00,
+        0x05, // Identifier
         0x10, // Response Code
         0x00, // Properties length
     ];
 
     let mut buffer: [u8; 1024] = [0; 1024];
-    assert_eq!(pubrel_message(&mut buffer, 5, 0x10, &[]).unwrap(), good_pubrel);
+    assert_eq!(
+        pubrel_message(&mut buffer, 5, 0x10, &[]).unwrap(),
+        good_pubrel
+    );
+}
+
+#[test]
+fn serialize_short_pubrel() {
+    let good_pubrel: [u8; 4] = [
+        6 << 4 | 0b10, // PubRec
+        0x02,          // Remaining length
+        0x00,
+        0x05, // Identifier
+    ];
+
+    let mut buffer: [u8; 1024] = [0; 1024];
+    assert_eq!(
+        pubrel_message(&mut buffer, 5, 0x0, &[]).unwrap(),
+        good_pubrel
+    );
 }

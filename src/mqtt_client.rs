@@ -334,7 +334,7 @@ where
         self.network.write(packet)?;
         self.session_state.increment_packet_identifier();
 
-        if qos == QoS::AtLeastOnce {
+        if qos != QoS::AtMostOnce {
             self.session_state.handle_publish(qos, id, packet)?;
         }
 
@@ -467,6 +467,7 @@ where
 
                 // Send the pub-rel packet.
                 let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
+                info!("Sending PubRel({})", rec.packet_id);
                 let packet = serialize::pubrel_message(&mut buffer, rec.packet_id, 0, &[])?;
                 self.network.write(packet)?;
                 Ok(())
