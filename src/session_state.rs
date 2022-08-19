@@ -1,5 +1,5 @@
 /// This module represents the session state of an MQTT communication session.
-use crate::{warn, Error, QoS};
+use crate::{warn, Error, ProtocolError, QoS};
 use core::marker::PhantomData;
 use embedded_nal::SocketAddr;
 use embedded_nal::TcpClientStack;
@@ -17,7 +17,7 @@ pub struct MessageRecord<const N: usize> {
     pub msg: Vec<u8, N>,
     transmitted: bool,
     _id: u16,
-    _qos: QoS,
+    qos: QoS,
 }
 
 pub struct SessionState<
@@ -111,7 +111,7 @@ impl<
 
         let record = MessageRecord {
             _id: id,
-            _qos: qos,
+            qos,
             msg: buf,
             transmitted: true,
         };
@@ -127,12 +127,29 @@ impl<
     }
 
     /// Delete given pending publish as the server took ownership of it
-    pub fn handle_puback(&mut self, id: u16) {
-        self.pending_publish.remove(&id);
-        self.pending_publish_ordering
+    pub fn handle_puback(&mut self, id: u16) -> Result<(), Error<TcpStack::Error>> {
+        if let Some(item) = self.pending_publish.get(&id) {
+            if item.qos != QoS::AtLeastOnce {
+                return Err(Error::Protocol(ProtocolError::WrongQos));
+            }
+        }
+
+        // Remove the ID from our publication tracking. Note that we intentionally remove from both
+        // the ordering and state management without checking success to ensure that state remains
+        // valid.
+        let item = self.pending_publish.remove(&id);
+        let ordering = self
+            .pending_publish_ordering
             .iter()
             .position(|&i| i == id)
             .map(|index| Some(self.pending_publish_ordering.remove(index)));
+
+        // If the ID didn't exist in our state tracking, indicate the error to the user.
+        if item.is_none() || ordering.is_none() {
+            return Err(Error::Protocol(ProtocolError::BadIdentifier));
+        }
+
+        Ok(())
     }
 
     /// Indicates if publish with QoS 1 is possible.

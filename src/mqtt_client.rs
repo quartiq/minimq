@@ -429,7 +429,7 @@ where
 
             ReceivedPacket::PubAck(ack) => {
                 // No matter the status code the message is considered acknowledged at this point
-                self.session_state.handle_puback(ack.packet_identifier);
+                self.session_state.handle_puback(ack.packet_identifier)?;
 
                 Ok(())
             }
