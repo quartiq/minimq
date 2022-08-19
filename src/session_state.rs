@@ -178,6 +178,12 @@ impl<
         if let Some(interval) = self.keep_alive_interval {
             self.next_ping.replace(now + interval / 2);
         }
+
+        // We just reconnected to the broker. Any of our pending publications will need to be
+        // republished.
+        for (_key, value) in self.pending_publish.iter_mut() {
+            value.transmitted = false;
+        }
     }
 
     /// Indicates if there is present session state available.
