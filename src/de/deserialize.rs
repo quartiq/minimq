@@ -372,4 +372,46 @@ mod test {
             _ => panic!("Invalid message"),
         }
     }
+
+    #[test]
+    fn deserialize_good_pubcomp() {
+        let mut serialized_pubcomp: [u8; 6] = [
+            7 << 4, // PubComp
+            0x04, // Remaining length
+            0x00, 0x05, // Identifier
+            0x16, // Response Code
+            0x00, // Properties length
+        ];
+        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_pubcomp);
+        let pub_comp = ReceivedPacket::parse_message(&mut reader).unwrap();
+        match pub_comp {
+            ReceivedPacket::PubComp(comp) => {
+                assert_eq!(comp.packet_id, 5);
+                assert_eq!(comp.reason_code, 0x16);
+                assert_eq!(comp.properties.len(), 0);
+            }
+            _ => panic!("Invalid message"),
+        }
+    }
+
+    #[test]
+    fn deserialize_good_pubrec() {
+        let mut serialized_pubrec: [u8; 6] = [
+            5 << 4, // PubRec
+            0x04, // Remaining length
+            0x00, 0x05, // Identifier
+            0x10, // Response Code
+            0x00, // Properties length
+        ];
+        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_pubrec);
+        let pub_rec = ReceivedPacket::parse_message(&mut reader).unwrap();
+        match pub_rec {
+            ReceivedPacket::PubRec(rec) => {
+                assert_eq!(rec.packet_id, 5);
+                assert_eq!(rec.reason_code, 0x10);
+                assert_eq!(rec.properties.len(), 0);
+            }
+            _ => panic!("Invalid message"),
+        }
+    }
 }
