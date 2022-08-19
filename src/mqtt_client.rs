@@ -493,6 +493,29 @@ impl<
         match packet {
             ReceivedPacket::ConnAck(ack) => {
                 self.sm.process_event(Events::Connected(ack))?;
+
+                // Republish QoS > 0 messages from the session.
+                for key in self
+                    .sm
+                    .context()
+                    .session_state
+                    .pending_publish_ordering
+                    .iter()
+                {
+                    if self.network.has_pending_write() {
+                        break;
+                    }
+
+                    let message = self
+                        .sm
+                        .context()
+                        .session_state
+                        .pending_publish
+                        .get(key)
+                        .unwrap();
+                    self.network.write(message)?;
+                }
+
                 return if self.sm.context_mut().session_state.was_reset() {
                     Err(Error::SessionReset)
                 } else {
