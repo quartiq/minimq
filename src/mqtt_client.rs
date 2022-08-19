@@ -269,7 +269,6 @@ impl<
         self.network.write(packet).and_then(|_| {
             info!("Subscribing to `{}`: {}", topic, packet_id);
 
-            // TODO: Generate event?
             self.sm
                 .context_mut()
                 .session_state
@@ -384,7 +383,6 @@ impl<
             .increment_packet_identifier();
 
         if qos == QoS::AtLeastOnce {
-            // TODO: Generate an event to update session state.
             self.sm
                 .context_mut()
                 .session_state
