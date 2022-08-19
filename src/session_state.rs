@@ -1,6 +1,5 @@
 /// This module represents the session state of an MQTT communication session.
 use crate::{warn, QoS};
-use embedded_nal::SocketAddr;
 use heapless::{LinearMap, String, Vec};
 
 use embedded_time::{
@@ -16,7 +15,6 @@ pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, cons
     keep_alive_interval: Option<Milliseconds<u32>>,
     ping_timeout: Option<Instant<Clock>>,
     next_ping: Option<Instant<Clock>>,
-    pub broker: SocketAddr,
     pub maximum_packet_size: Option<u32>,
     pub client_id: String<64>,
     pub pending_subscriptions: Vec<u16, 32>,
@@ -24,17 +22,17 @@ pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, cons
     pub pending_publish_ordering: Vec<u16, MSG_COUNT>,
     packet_id: u16,
     active: bool,
+    was_reset: bool,
 }
 
 impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
     SessionState<Clock, MSG_SIZE, MSG_COUNT>
 {
-    pub fn new(broker: SocketAddr, id: String<64>) -> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
+    pub fn new(id: String<64>) -> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
         SessionState {
             active: false,
             ping_timeout: None,
             next_ping: None,
-            broker,
             client_id: id,
             packet_id: 1,
             keep_alive_interval: Some(59_000.milliseconds()),
@@ -42,17 +40,26 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
             pending_publish: LinearMap::new(),
             pending_publish_ordering: Vec::new(),
             maximum_packet_size: None,
+            was_reset: false,
         }
     }
 
     pub fn reset(&mut self) {
+        // Only register a reset if we previously had an active session state.
+        self.was_reset = self.active;
         self.active = false;
         self.packet_id = 1;
-        self.keep_alive_interval = Some(59_000.milliseconds());
         self.maximum_packet_size = None;
         self.pending_subscriptions.clear();
         self.pending_publish.clear();
         self.pending_publish_ordering.clear();
+    }
+
+    /// Check if the session state has been reset.
+    pub fn was_reset(&mut self) -> bool {
+        let reset = self.was_reset;
+        self.was_reset = false;
+        reset
     }
 
     /// Get the keep-alive interval as an integer number of seconds.
