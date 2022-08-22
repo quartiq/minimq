@@ -434,7 +434,12 @@ impl<
         }
 
         while !self.network.has_pending_write() {
-            if let Some(msg) = self.sm.context_mut().session_state.next_pending_republication() {
+            if let Some(msg) = self
+                .sm
+                .context_mut()
+                .session_state
+                .next_pending_republication()
+            {
                 self.network.write(msg)?;
             } else {
                 break;
@@ -568,9 +573,7 @@ impl<
 
         let minimq = Minimq {
             client: MqttClient {
-                sm: StateMachine::new(ClientContext {
-                    session_state,
-                }),
+                sm: StateMachine::new(ClientContext { session_state }),
                 broker: SocketAddr::new(broker, MQTT_INSECURE_DEFAULT_PORT),
                 will: None,
                 network: InterfaceHolder::new(network_stack),
