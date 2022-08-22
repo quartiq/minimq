@@ -7,6 +7,9 @@ This document describes the changes to Minimq between releases.
 ## Added
 * Allow configuration of non-default broker port numbers
 
+## Changed
+* [breaking] The client is no longer publicly exposed, and is instead accessible via `Minimq::client()`
+
 ## Fixed
 * All unacknowledged messages will be guaranteed to be retransmitted upon connection with the
 broker.

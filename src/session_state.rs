@@ -1,7 +1,6 @@
 /// This module represents the session state of an MQTT communication session.
 use crate::{warn, Error, ProtocolError, QoS};
 use core::marker::PhantomData;
-use embedded_nal::SocketAddr;
 use embedded_nal::TcpClientStack;
 use heapless::{LinearMap, String, Vec};
 
@@ -28,14 +27,15 @@ pub struct SessionState<
     keep_alive_interval: Option<Milliseconds<u32>>,
     ping_timeout: Option<Instant<Clock>>,
     next_ping: Option<Instant<Clock>>,
-    pub broker: SocketAddr,
     pub maximum_packet_size: Option<u32>,
     pub client_id: String<64>,
     pub pending_subscriptions: Vec<u16, 32>,
     pending_publish: LinearMap<u16, MessageRecord<MSG_SIZE>, MSG_COUNT>,
     pending_publish_ordering: Vec<u16, MSG_COUNT>,
+    clock: Clock,
     packet_id: u16,
     active: bool,
+    was_reset: bool,
     _stack: PhantomData<TcpStack>,
 }
 
@@ -46,15 +46,12 @@ impl<
         const MSG_COUNT: usize,
     > SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
 {
-    pub fn new(
-        broker: SocketAddr,
-        id: String<64>,
-    ) -> SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
+    pub fn new(clock: Clock, id: String<64>) -> SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
         SessionState {
+            clock,
             active: false,
             ping_timeout: None,
             next_ping: None,
-            broker,
             client_id: id,
             packet_id: 1,
             keep_alive_interval: Some(59_000.milliseconds()),
@@ -62,18 +59,27 @@ impl<
             pending_publish: LinearMap::new(),
             pending_publish_ordering: Vec::new(),
             maximum_packet_size: None,
+            was_reset: false,
             _stack: PhantomData::default(),
         }
     }
 
     pub fn reset(&mut self) {
+        // Only register a reset if we previously had an active session state.
+        self.was_reset = self.active;
         self.active = false;
         self.packet_id = 1;
-        self.keep_alive_interval = Some(59_000.milliseconds());
         self.maximum_packet_size = None;
         self.pending_subscriptions.clear();
         self.pending_publish.clear();
         self.pending_publish_ordering.clear();
+    }
+
+    /// Check if the session state has been reset.
+    pub fn was_reset(&mut self) -> bool {
+        let reset = self.was_reset;
+        self.was_reset = false;
+        reset
     }
 
     /// Get the keep-alive interval as an integer number of seconds.
@@ -168,13 +174,13 @@ impl<
     }
 
     /// Called whenever an active connection has been made with a broker.
-    pub fn register_connection(&mut self, now: Instant<Clock>) {
+    pub fn register_connection(&mut self) -> Result<(), Error<TcpStack::Error>> {
         self.active = true;
         self.ping_timeout = None;
 
         // The next ping should be sent out in half the keep-alive interval from now.
         if let Some(interval) = self.keep_alive_interval {
-            self.next_ping.replace(now + interval / 2);
+            self.next_ping.replace(self.clock.try_now()? + interval / 2);
         }
 
         // We just reconnected to the broker. Any of our pending publications will need to be
@@ -182,6 +188,8 @@ impl<
         for (_key, value) in self.pending_publish.iter_mut() {
             value.transmitted = false;
         }
+
+        Ok(())
     }
 
     /// Indicates if there is present session state available.
@@ -189,7 +197,7 @@ impl<
         self.active
     }
 
-    pub fn get_packet_identifier(&mut self) -> u16 {
+    pub fn get_packet_identifier(&self) -> u16 {
         self.packet_id
     }
 
@@ -215,38 +223,38 @@ impl<
         }
     }
 
-    /// Handle ping time management.
-    ///
-    /// # Args
-    /// * `now` - The current instant in time.
-    ///
-    /// # Returns
-    /// An error if a pending ping is past the deadline. Otherwise, returns a bool indicating
-    /// whether or not a ping should be sent.
-    pub fn handle_ping(&mut self, now: Instant<Clock>) -> Result<bool, ()> {
-        // First, check if a ping is currently awaiting response.
-        if let Some(timeout) = self.ping_timeout {
-            if now > timeout {
-                return Err(());
-            }
+    /// Check if a pending ping is currently overdue.
+    pub fn ping_is_overdue(&mut self) -> Result<bool, Error<TcpStack::Error>> {
+        let now = self.clock.try_now()?;
+        Ok(self
+            .ping_timeout
+            .map(|timeout| now > timeout)
+            .unwrap_or(false))
+    }
 
+    /// Check if a ping is currently due for transmission.
+    pub fn ping_is_due(&mut self) -> Result<bool, Error<TcpStack::Error>> {
+        // If there's already a ping being transmitted, another can't be due.
+        if self.ping_timeout.is_some() {
             return Ok(false);
         }
 
-        if let Some((keep_alive_interval, ping_deadline)) =
-            self.keep_alive_interval.zip(self.next_ping)
-        {
-            // Update the next ping deadline if the ping is due.
-            if now > ping_deadline {
-                // The next ping should be sent out in half the keep-alive interval from now.
-                self.next_ping.replace(now + keep_alive_interval / 2);
+        let now = self.clock.try_now()?;
 
-                self.ping_timeout.replace(now + PING_TIMEOUT);
-                return Ok(true);
-            }
-        }
+        Ok(self
+            .keep_alive_interval
+            .zip(self.next_ping)
+            .map(|(keep_alive_interval, ping_deadline)| {
+                // Update the next ping deadline if the ping is due.
+                if now > ping_deadline {
+                    // The next ping should be sent out in half the keep-alive interval from now.
+                    self.next_ping.replace(now + keep_alive_interval / 2);
+                    self.ping_timeout.replace(now + PING_TIMEOUT);
+                }
 
-        Ok(false)
+                now > ping_deadline
+            })
+            .unwrap_or(false))
     }
 
     /// Get the next message that needs to be republished.
