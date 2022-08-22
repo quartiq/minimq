@@ -302,7 +302,7 @@ impl<
     /// # Returns
     /// True if the client is connected to the broker.
     pub fn is_connected(&mut self) -> bool {
-        [&States::Active].contains(&self.sm.state())
+        matches!(self.sm.state(), &States::Active)
     }
 
     /// Get the count of unacknowledged messages at the requested QoS.
