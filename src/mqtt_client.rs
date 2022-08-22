@@ -99,6 +99,7 @@ where
                     Property::MaximumPacketSize(MSG_SIZE as u32),
                     // The session does not expire.
                     Property::SessionExpiryInterval(u32::MAX),
+                    Property::ReceiveMaximum(MSG_COUNT as u16),
                 ];
 
                 let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
