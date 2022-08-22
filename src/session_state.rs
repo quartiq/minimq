@@ -16,7 +16,6 @@ const PING_TIMEOUT: Seconds = Seconds(5);
 pub struct MessageRecord<const N: usize> {
     pub msg: Vec<u8, N>,
     transmitted: bool,
-    _id: u16,
     qos: QoS,
 }
 
@@ -105,14 +104,13 @@ impl<
         id: u16,
         packet: &[u8],
     ) -> Result<(), Error<TcpStack::Error>> {
-        let mut buf: Vec<u8, MSG_SIZE> = Vec::from_slice(packet).unwrap();
+        let mut msg: Vec<u8, MSG_SIZE> = Vec::from_slice(packet).unwrap();
         // Set DUP = 1 (bit 3). If this packet is ever read it's just because we want to resend it
-        buf[0] |= 1 << 3;
+        msg[0] |= 1 << 3;
 
         let record = MessageRecord {
-            _id: id,
             qos,
-            msg: buf,
+            msg,
             transmitted: true,
         };
 
