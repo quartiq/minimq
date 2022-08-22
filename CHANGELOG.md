@@ -9,7 +9,7 @@ This document describes the changes to Minimq between releases.
 
 ## Fixed
 * All unacknowledged messages will be guaranteed to be retransmitted upon connection with the
-broker.
+* The `ReceiveMaximum` property is now sent in the connection request to the broker
 
 # [0.5.3] - 2022-02-14
 
