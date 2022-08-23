@@ -485,18 +485,18 @@ impl<
         Ok(())
     }
 
-    fn handle_packet<'a, F>(
+    fn handle_packet<'a, F, T>(
         &mut self,
         packet: ReceivedPacket<'a>,
         f: &mut F,
-    ) -> Result<(), Error<TcpStack::Error>>
+    ) -> Result<Option<T>, Error<TcpStack::Error>>
     where
         F: FnMut(
             &mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
             &'a str,
             &[u8],
             &[Property<'a>],
-        ),
+        ) -> T,
     {
         match packet {
             ReceivedPacket::ConnAck(ack) => {
@@ -505,7 +505,7 @@ impl<
                 return if self.sm.context_mut().session_state.was_reset() {
                     Err(Error::SessionReset)
                 } else {
-                    Ok(())
+                    Ok(None)
                 };
             }
 
@@ -535,7 +535,7 @@ impl<
                     return Err(Error::Protocol(ProtocolError::Invalid));
                 }
 
-                f(self, info.topic, info.payload, &info.properties);
+                return Ok(Some(f(self, info.topic, info.payload, &info.properties)));
             }
 
             _ => {
@@ -543,7 +543,7 @@ impl<
             }
         }
 
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -612,14 +612,14 @@ impl<
     /// # Args
     /// * `f` - A closure to process any received messages. The closure should accept the client,
     /// topic, message, and list of proprties (in that order).
-    pub fn poll<F>(&mut self, mut f: F) -> Result<(), Error<TcpStack::Error>>
+    pub fn poll<F, T>(&mut self, mut f: F) -> Result<Option<T>, Error<TcpStack::Error>>
     where
         for<'a> F: FnMut(
             &mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
             &'a str,
             &[u8],
             &[Property<'a>],
-        ),
+        ) -> T,
     {
         self.client.update()?;
 
@@ -629,7 +629,7 @@ impl<
             && self.client.sm.state() != &States::Establishing
         {
             self.packet_reader.reset();
-            return Ok(());
+            return Ok(None);
         }
 
         // Attempt to read an MQTT packet from the network.
@@ -649,7 +649,7 @@ impl<
             if received > 0 {
                 debug!("Received {} bytes", received);
             } else {
-                return Ok(());
+                return Ok(None);
             }
         }
 
