@@ -31,6 +31,7 @@ mod sm {
             _ + ProtocolError = Disconnected,
 
             Active + ControlPacket(ReceivedPacket<'a>) [handle_packet] = Active,
+            Active + SentSubscribe(u16) [handle_subscription] = Active,
 
             Establishing + TcpDisconnect = Disconnected,
             Active + TcpDisconnect = Disconnected,
@@ -89,6 +90,14 @@ where
 {
     type GuardError = crate::Error<TcpStack::Error>;
 
+    fn handle_subscription(&mut self, id: &u16) -> Result<(), Error<TcpStack::Error>> {
+        self.session_state
+            .pending_subscriptions
+            .push(*id)
+            .map_err(|_| Error::Unsupported)?;
+        Ok(())
+    }
+
     fn handle_packet<'a>(
         &mut self,
         packet: &ReceivedPacket<'a>,
@@ -96,6 +105,7 @@ where
         match &packet {
             ReceivedPacket::SubAck(ack) => self.handle_suback(ack)?,
             ReceivedPacket::PingResp => self.session_state.register_ping_response(),
+            ReceivedPacket::PubComp(comp) => self.session_state.handle_pubcomp(comp.packet_id)?,
             ReceivedPacket::PubAck(ack) => {
                 // No matter the status code the message is considered acknowledged at this point
                 self.session_state.handle_puback(ack.packet_identifier)?;
@@ -265,21 +275,9 @@ impl<
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
         let packet = serialize::subscribe_message(&mut buffer, topic, packet_id, properties)?;
 
-        self.network.write(packet).and_then(|_| {
-            info!("Subscribing to `{}`: {}", topic, packet_id);
-
-            self.sm
-                .context_mut()
-                .session_state
-                .pending_subscriptions
-                .push(packet_id)
-                .map_err(|_| Error::Unsupported)?;
-            self.sm
-                .context_mut()
-                .session_state
-                .increment_packet_identifier();
-            Ok(())
-        })?;
+        info!("Subscribing to `{}`: {}", topic, packet_id);
+        self.network.write(packet)?;
+        self.sm.process_event(Events::SentSubscribe(packet_id))?;
 
         Ok(())
     }
@@ -376,17 +374,12 @@ impl<
             serialize::publish_message(&mut buffer, topic, data, qos, retain, id, properties)?;
 
         self.network.write(packet)?;
+
+        // TODO: Generate event.
         self.sm
             .context_mut()
             .session_state
-            .increment_packet_identifier();
-
-        if qos == QoS::AtLeastOnce {
-            self.sm
-                .context_mut()
-                .session_state
-                .handle_publish(qos, id, packet)?;
-        }
+            .handle_publish(qos, id, packet)?;
 
         Ok(())
     }
@@ -512,6 +505,27 @@ impl<
                 } else {
                     Ok(())
                 };
+            }
+
+            ReceivedPacket::PubRec(rec) => {
+                if rec.reason_code >= 0x80 {
+                    self.sm
+                        .context_mut()
+                        .session_state
+                        .remove_packet(rec.packet_id)?;
+                    return Err(Error::Protocol(ProtocolError::Rejected(rec.reason_code)));
+                }
+
+                let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
+                let packet = serialize::pubrel_message(&mut buffer, rec.packet_id, 0, &[])?;
+                info!("Sending PubRel({})", rec.packet_id);
+                self.network.write(packet)?;
+
+                // TODO: Utilize errors to generate reason codes.
+                self.sm
+                    .context_mut()
+                    .session_state
+                    .handle_pubrec(rec.packet_id, packet)?;
             }
 
             ReceivedPacket::Publish(info) => {

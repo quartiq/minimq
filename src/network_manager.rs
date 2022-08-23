@@ -98,6 +98,7 @@ where
                 nb::Error::Other(err) => Err(Error::Network(err)),
             })
             .map(|written| {
+                crate::trace!("Wrote: {:0x?}", &data[..written]);
                 if written != data.len() {
                     // Note(unwrap): The packet should always be smaller than a single message.
                     self.pending_write
@@ -126,6 +127,12 @@ where
         // Atomically access the socket.
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
         let result = self.network_stack.receive(socket, buf);
+
+        #[cfg(features = "logging")]
+        if let Ok(len) = result {
+            let data = &buf[..len];
+            crate::trace!("Read: {:0x?}", data);
+        }
 
         result.or_else(|err| match err {
             nb::Error::WouldBlock => Ok(0),

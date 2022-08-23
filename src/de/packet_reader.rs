@@ -73,6 +73,10 @@ impl<const T: usize> PacketReader<T> {
         Ok(borrowed_data)
     }
 
+    pub fn remaining_len(&self) -> Result<usize, Error> {
+        Ok(self.packet_length()? - *self.index.borrow())
+    }
+
     pub fn len(&self) -> Result<usize, Error> {
         Ok(self.packet_length()? - *self.index.borrow())
     }

@@ -6,6 +6,7 @@ This document describes the changes to Minimq between releases.
 
 ## Added
 * Allow configuration of non-default broker port numbers
+* Support added for QoS::ExactlyOnce transmission
 
 ## Changed
 * [breaking] The client is no longer publicly exposed, and is instead accessible via `Minimq::client()`

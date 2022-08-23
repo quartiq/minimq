@@ -15,6 +15,7 @@ const PING_TIMEOUT: Seconds = Seconds(5);
 pub struct MessageRecord<const N: usize> {
     pub msg: Vec<u8, N>,
     transmitted: bool,
+    acknowledged: bool,
     qos: QoS,
 }
 
@@ -110,6 +111,13 @@ impl<
         id: u16,
         packet: &[u8],
     ) -> Result<(), Error<TcpStack::Error>> {
+        // Increment the current packet ID.
+
+        // QoS::AtMostOnce requires no additional state tracking.
+        if qos == QoS::AtMostOnce {
+            return Ok(());
+        }
+
         let mut msg: Vec<u8, MSG_SIZE> = Vec::from_slice(packet).unwrap();
         // Set DUP = 1 (bit 3). If this packet is ever read it's just because we want to resend it
         msg[0] |= 1 << 3;
@@ -118,6 +126,7 @@ impl<
             qos,
             msg,
             transmitted: true,
+            acknowledged: false,
         };
 
         self.pending_publish
@@ -130,14 +139,7 @@ impl<
         Ok(())
     }
 
-    /// Delete given pending publish as the server took ownership of it
-    pub fn handle_puback(&mut self, id: u16) -> Result<(), Error<TcpStack::Error>> {
-        if let Some(item) = self.pending_publish.get(&id) {
-            if item.qos != QoS::AtLeastOnce {
-                return Err(Error::Protocol(ProtocolError::WrongQos));
-            }
-        }
-
+    pub fn remove_packet(&mut self, id: u16) -> Result<(), ProtocolError> {
         // Remove the ID from our publication tracking. Note that we intentionally remove from both
         // the ordering and state management without checking success to ensure that state remains
         // valid.
@@ -150,9 +152,59 @@ impl<
 
         // If the ID didn't exist in our state tracking, indicate the error to the user.
         if item.is_none() || ordering.is_none() {
-            return Err(Error::Protocol(ProtocolError::BadIdentifier));
+            return Err(ProtocolError::BadIdentifier);
         }
 
+        Ok(())
+    }
+
+    /// Delete given pending publish as the server took ownership of it
+    pub fn handle_puback(&mut self, id: u16) -> Result<(), Error<TcpStack::Error>> {
+        if let Some(item) = self.pending_publish.get(&id) {
+            if item.qos != QoS::AtLeastOnce {
+                return Err(Error::Protocol(ProtocolError::WrongQos));
+            }
+        }
+
+        self.remove_packet(id)?;
+        Ok(())
+    }
+
+    pub fn handle_pubrec(&mut self, packet_id: u16, pubrel: &[u8]) -> Result<(), ProtocolError> {
+        let item = self
+            .pending_publish
+            .get_mut(&packet_id)
+            .ok_or(ProtocolError::BadIdentifier)?;
+
+        if item.qos != QoS::ExactlyOnce {
+            return Err(ProtocolError::WrongQos);
+        }
+
+        // Replace the message with the new acknowledgement.
+        item.msg.clear();
+        item.msg.extend_from_slice(pubrel).unwrap();
+
+        item.transmitted = true;
+        item.acknowledged = true;
+
+        Ok(())
+    }
+
+    pub fn handle_pubcomp(&mut self, id: u16) -> Result<(), ProtocolError> {
+        let item = self
+            .pending_publish
+            .get(&id)
+            .ok_or(ProtocolError::BadIdentifier)?;
+
+        if item.qos != QoS::ExactlyOnce {
+            return Err(ProtocolError::WrongQos);
+        }
+
+        if !item.acknowledged {
+            return Err(ProtocolError::Unacknowledged);
+        }
+
+        self.remove_packet(id)?;
         Ok(())
     }
 
@@ -160,16 +212,18 @@ impl<
     pub fn can_publish(&self, qos: QoS) -> bool {
         match qos {
             QoS::AtMostOnce => true,
-            QoS::AtLeastOnce => self.pending_publish.len() < MSG_COUNT,
-            QoS::ExactlyOnce => false,
+            QoS::AtLeastOnce | QoS::ExactlyOnce => self.pending_publish.len() < MSG_COUNT,
         }
     }
 
     pub fn pending_messages(&self, qos: QoS) -> usize {
         match qos {
             QoS::AtMostOnce => 0,
-            QoS::AtLeastOnce => self.pending_publish.len(),
-            QoS::ExactlyOnce => 0,
+            _ => self
+                .pending_publish
+                .values()
+                .filter(|&item| item.qos == qos)
+                .count(),
         }
     }
 
@@ -197,11 +251,9 @@ impl<
         self.active
     }
 
-    pub fn get_packet_identifier(&self) -> u16 {
-        self.packet_id
-    }
+    pub fn get_packet_identifier(&mut self) -> u16 {
+        let packet_id = self.packet_id;
 
-    pub fn increment_packet_identifier(&mut self) {
         let (result, overflow) = self.packet_id.overflowing_add(1);
 
         // Packet identifiers must always be non-zero.
@@ -210,6 +262,8 @@ impl<
         } else {
             self.packet_id = result;
         }
+
+        packet_id
     }
 
     /// Callback function to register a PingResp packet reception.
