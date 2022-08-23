@@ -98,14 +98,14 @@ pub enum ReceivedPacket<'a> {
 }
 
 impl<'a> ReceivedPacket<'a> {
-    /// Parse a message out of a `PacketParser` into a validated MQTT control message.
+    /// Parse a validated MQTT control packet out of a `PacketParser`.
     ///
     /// # Args
     /// * `packet_reader` - The reader to parse the message out of.
     ///
     /// # Returns
     /// A packet describing the received content.
-    pub(crate) fn parse_message<'reader: 'a>(
+    pub(crate) fn parse_packet<'reader: 'a>(
         packet_reader: &'reader PacketParser<'_>,
     ) -> Result<ReceivedPacket<'a>, Error> {
         let (message_type, flags, remaining_length) = packet_reader.read_fixed_header()?;
@@ -298,7 +298,7 @@ mod test {
         ];
 
         let reader = PacketParser::new(&serialized_connack);
-        let connack = ReceivedPacket::parse_message(&reader).unwrap();
+        let connack = ReceivedPacket::parse_packet(&reader).unwrap();
         match connack {
             ReceivedPacket::ConnAck(conn_ack) => {
                 assert_eq!(conn_ack.reason_code, 0);
@@ -319,7 +319,7 @@ mod test {
         ];
 
         let reader = PacketParser::new(&serialized_publish);
-        let publish = ReceivedPacket::parse_message(&reader).unwrap();
+        let publish = ReceivedPacket::parse_packet(&reader).unwrap();
         match publish {
             ReceivedPacket::Publish(pub_info) => {
                 assert_eq!(pub_info.topic, "A");
@@ -339,7 +339,7 @@ mod test {
         ];
 
         let reader = PacketParser::new(&serialized_suback);
-        let puback = ReceivedPacket::parse_message(&reader).unwrap();
+        let puback = ReceivedPacket::parse_packet(&reader).unwrap();
         match puback {
             ReceivedPacket::PubAck(pub_ack) => {
                 assert_eq!(pub_ack.reason, 0x10);
@@ -359,7 +359,7 @@ mod test {
         ];
 
         let reader = PacketParser::new(&serialized_suback);
-        let puback = ReceivedPacket::parse_message(&reader).unwrap();
+        let puback = ReceivedPacket::parse_packet(&reader).unwrap();
         match puback {
             ReceivedPacket::PubAck(pub_ack) => {
                 assert_eq!(pub_ack.reason, 0x00);
@@ -381,7 +381,7 @@ mod test {
         ];
 
         let reader = PacketParser::new(&serialized_suback);
-        let suback = ReceivedPacket::parse_message(&reader).unwrap();
+        let suback = ReceivedPacket::parse_packet(&reader).unwrap();
         match suback {
             ReceivedPacket::SubAck(sub_ack) => {
                 assert_eq!(sub_ack.reason_code, 2);
@@ -399,7 +399,7 @@ mod test {
         ];
 
         let reader = PacketParser::new(&serialized_ping_req);
-        let ping_req = ReceivedPacket::parse_message(&reader).unwrap();
+        let ping_req = ReceivedPacket::parse_packet(&reader).unwrap();
         match ping_req {
             ReceivedPacket::PingResp => {}
             _ => panic!("Invalid message"),
@@ -417,7 +417,7 @@ mod test {
             0x00, // Properties length
         ];
         let reader = PacketParser::new(&serialized_pubcomp);
-        let pub_comp = ReceivedPacket::parse_message(&reader).unwrap();
+        let pub_comp = ReceivedPacket::parse_packet(&reader).unwrap();
         match pub_comp {
             ReceivedPacket::PubComp(comp) => {
                 assert_eq!(comp.packet_id, 5);
@@ -437,7 +437,7 @@ mod test {
             0x05, // Identifier
         ];
         let reader = PacketParser::new(&serialized_pubcomp);
-        let pub_comp = ReceivedPacket::parse_message(&reader).unwrap();
+        let pub_comp = ReceivedPacket::parse_packet(&reader).unwrap();
         match pub_comp {
             ReceivedPacket::PubComp(comp) => {
                 assert_eq!(comp.packet_id, 5);
@@ -459,7 +459,7 @@ mod test {
             0x00, // Properties length
         ];
         let reader = PacketParser::new(&serialized_pubrec);
-        let pub_rec = ReceivedPacket::parse_message(&reader).unwrap();
+        let pub_rec = ReceivedPacket::parse_packet(&reader).unwrap();
         match pub_rec {
             ReceivedPacket::PubRec(rec) => {
                 assert_eq!(rec.packet_id, 5);
@@ -479,7 +479,7 @@ mod test {
             0x05, // Identifier
         ];
         let reader = PacketParser::new(&serialized_pubrec);
-        let pub_rec = ReceivedPacket::parse_message(&reader).unwrap();
+        let pub_rec = ReceivedPacket::parse_packet(&reader).unwrap();
         match pub_rec {
             ReceivedPacket::PubRec(rec) => {
                 assert_eq!(rec.packet_id, 5);

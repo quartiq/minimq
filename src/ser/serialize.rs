@@ -19,7 +19,7 @@ pub fn integer_size(value: usize) -> usize {
     }
 }
 
-pub fn connect_message<'a, const S: usize>(
+pub fn connect_packet<'a, const S: usize>(
     dest: &'a mut [u8],
     client_id: &[u8],
     keep_alive: u16,
@@ -74,11 +74,11 @@ pub fn connect_message<'a, const S: usize>(
     packet.finalize(MessageType::Connect, 0)
 }
 
-pub fn ping_req_message(dest: &mut [u8]) -> Result<&[u8], Error> {
+pub fn ping_req_packet(dest: &mut [u8]) -> Result<&[u8], Error> {
     ReversedPacketWriter::new(dest).finalize(MessageType::PingReq, 0x00)
 }
 
-pub fn publish_message<'a, 'b, 'c>(
+pub fn publish_packet<'a, 'b, 'c>(
     dest: &'b mut [u8],
     topic: &'a str,
     payload: &[u8],
@@ -126,7 +126,7 @@ pub fn publish_message<'a, 'b, 'c>(
     packet.finalize(MessageType::Publish, flags)
 }
 
-pub fn subscribe_message<'a, 'b, 'c>(
+pub fn subscribe_packet<'a, 'b, 'c>(
     dest: &'c mut [u8],
     topic: &'b str,
     packet_id: u16,
@@ -156,7 +156,7 @@ pub fn subscribe_message<'a, 'b, 'c>(
     packet.finalize(MessageType::Subscribe, 0b0010)
 }
 
-pub fn pubrel_message<'c, 'a>(
+pub fn pubrel_packet<'c, 'a>(
     dest: &'c mut [u8],
     packet_id: u16,
     reason: u8,
@@ -187,7 +187,7 @@ pub fn serialize_publish() {
 
     let mut buffer: [u8; 900] = [0; 900];
     let payload: [u8; 2] = [0xAB, 0xCD];
-    let message = publish_message(
+    let message = publish_packet(
         &mut buffer,
         "ABC",
         &payload,
@@ -214,7 +214,7 @@ pub fn serialize_publish_qos1() {
 
     let mut buffer: [u8; 900] = [0; 900];
     let payload: [u8; 2] = [0xAB, 0xCD];
-    let message = publish_message(
+    let message = publish_packet(
         &mut buffer,
         "ABC",
         &payload,
@@ -240,7 +240,7 @@ fn serialize_subscribe() {
     ];
 
     let mut buffer: [u8; 900] = [0; 900];
-    let message = subscribe_message(&mut buffer, "ABC", 16, &[]).unwrap();
+    let message = subscribe_packet(&mut buffer, "ABC", 16, &[]).unwrap();
 
     assert_eq!(message, good_subscribe);
 }
@@ -258,7 +258,7 @@ pub fn serialize_publish_with_properties() {
 
     let mut buffer: [u8; 900] = [0; 900];
     let payload: [u8; 2] = [0xAB, 0xCD];
-    let message = publish_message(
+    let message = publish_packet(
         &mut buffer,
         "ABC",
         &payload,
@@ -286,7 +286,7 @@ fn serialize_connect() {
 
     let mut buffer: [u8; 900] = [0; 900];
     let client_id = "ABC".as_bytes();
-    let message = connect_message::<100>(&mut buffer, client_id, 10, &[], true, None).unwrap();
+    let message = connect_packet::<100>(&mut buffer, client_id, 10, &[], true, None).unwrap();
 
     assert_eq!(message, good_serialized_connect)
 }
@@ -325,7 +325,7 @@ fn serialize_connect_with_will() {
     will.qos(QoS::AtMostOnce);
     will.retained(Retain::NotRetained);
 
-    let message = connect_message(&mut buffer, client_id, 10, &[], true, Some(&will)).unwrap();
+    let message = connect_packet(&mut buffer, client_id, 10, &[], true, Some(&will)).unwrap();
 
     assert_eq!(message, good_serialized_connect)
 }
@@ -338,7 +338,7 @@ fn serialize_ping_req() {
     ];
 
     let mut buffer: [u8; 1024] = [0; 1024];
-    assert_eq!(ping_req_message(&mut buffer).unwrap(), good_ping_req);
+    assert_eq!(ping_req_packet(&mut buffer).unwrap(), good_ping_req);
 }
 
 #[test]
@@ -354,7 +354,7 @@ fn serialize_pubrel() {
 
     let mut buffer: [u8; 1024] = [0; 1024];
     assert_eq!(
-        pubrel_message(&mut buffer, 5, 0x10, &[]).unwrap(),
+        pubrel_packet(&mut buffer, 5, 0x10, &[]).unwrap(),
         good_pubrel
     );
 }
@@ -370,7 +370,7 @@ fn serialize_short_pubrel() {
 
     let mut buffer: [u8; 1024] = [0; 1024];
     assert_eq!(
-        pubrel_message(&mut buffer, 5, 0x0, &[]).unwrap(),
+        pubrel_packet(&mut buffer, 5, 0x0, &[]).unwrap(),
         good_pubrel
     );
 }

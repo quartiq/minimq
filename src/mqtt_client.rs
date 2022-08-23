@@ -273,7 +273,7 @@ impl<
         let packet_id = self.sm.context_mut().session_state.get_packet_identifier();
 
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = serialize::subscribe_message(&mut buffer, topic, packet_id, properties)?;
+        let packet = serialize::subscribe_packet(&mut buffer, topic, packet_id, properties)?;
 
         info!("Subscribing to `{}`: {}", topic, packet_id);
         self.network.write(packet)?;
@@ -371,7 +371,7 @@ impl<
 
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
         let packet =
-            serialize::publish_message(&mut buffer, topic, data, qos, retain, id, properties)?;
+            serialize::publish_packet(&mut buffer, topic, data, qos, retain, id, properties)?;
 
         self.network.write(packet)?;
 
@@ -398,7 +398,7 @@ impl<
         ];
 
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = serialize::connect_message(
+        let packet = serialize::connect_packet(
             &mut buffer,
             self.sm
                 .context()
@@ -451,7 +451,7 @@ impl<
 
             // Note: If we fail to serialize or write the packet, the ping timeout timer is
             // still running, so we will recover the TCP connection in the future.
-            let packet = serialize::ping_req_message(&mut buffer)?;
+            let packet = serialize::ping_req_packet(&mut buffer)?;
             self.network.write(packet)?;
         }
 
@@ -517,7 +517,7 @@ impl<
                 }
 
                 let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-                let packet = serialize::pubrel_message(&mut buffer, rec.packet_id, 0, &[])?;
+                let packet = serialize::pubrel_packet(&mut buffer, rec.packet_id, 0, &[])?;
                 info!("Sending PubRel({})", rec.packet_id);
                 self.network.write(packet)?;
 
@@ -648,7 +648,7 @@ impl<
         // of the loop on availability above.
         let packet = self.packet_reader.received_packet().unwrap();
 
-        let packet = ReceivedPacket::parse_message(&packet)?;
+        let packet = ReceivedPacket::parse_packet(&packet)?;
         info!("Received {:?}", packet);
 
         let result = self.client.handle_packet(packet, &mut f);
