@@ -273,7 +273,7 @@ impl<
         let packet_id = self.sm.context_mut().session_state.get_packet_identifier();
 
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = serialize::subscribe_message(&mut buffer, topic, packet_id, properties)?;
+        let packet = serialize::subscribe_packet(&mut buffer, topic, packet_id, properties)?;
 
         info!("Subscribing to `{}`: {}", topic, packet_id);
         self.network.write(packet)?;
@@ -371,7 +371,7 @@ impl<
 
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
         let packet =
-            serialize::publish_message(&mut buffer, topic, data, qos, retain, id, properties)?;
+            serialize::publish_packet(&mut buffer, topic, data, qos, retain, id, properties)?;
 
         self.network.write(packet)?;
 
@@ -398,7 +398,7 @@ impl<
         ];
 
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = serialize::connect_message(
+        let packet = serialize::connect_packet(
             &mut buffer,
             self.sm
                 .context()
@@ -451,7 +451,7 @@ impl<
 
             // Note: If we fail to serialize or write the packet, the ping timeout timer is
             // still running, so we will recover the TCP connection in the future.
-            let packet = serialize::ping_req_message(&mut buffer)?;
+            let packet = serialize::ping_req_packet(&mut buffer)?;
             self.network.write(packet)?;
         }
 
@@ -517,7 +517,7 @@ impl<
                 }
 
                 let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-                let packet = serialize::pubrel_message(&mut buffer, rec.packet_id, 0, &[])?;
+                let packet = serialize::pubrel_packet(&mut buffer, rec.packet_id, 0, &[])?;
                 info!("Sending PubRel({})", rec.packet_id);
                 self.network.write(packet)?;
 
@@ -623,44 +623,40 @@ impl<
             return Ok(());
         }
 
-        let mut buf: [u8; 1024] = [0; 1024];
-        let received = self.client.network.read(&mut buf)?;
-        if received > 0 {
-            debug!("Received {} bytes", received);
-        }
-
-        let mut processed = 0;
-        while processed < received {
-            match self.packet_reader.slurp(&buf[processed..received]) {
-                Ok(count) => {
-                    debug!("Processed {} bytes", count);
-                    processed += count
-                }
-
+        // Attempt to read an MQTT packet from the network.
+        while !self.packet_reader.packet_available() {
+            let buffer = match self.packet_reader.receive_buffer() {
+                Ok(buffer) => buffer,
                 Err(e) => {
                     self.client.sm.process_event(Events::ProtocolError).unwrap();
                     self.packet_reader.reset();
                     return Err(Error::Protocol(e));
                 }
-            }
+            };
 
-            // Handle any received packets.
-            while self.packet_reader.packet_available() {
-                let packet = ReceivedPacket::parse_message(&self.packet_reader)?;
+            let received = self.client.network.read(buffer)?;
+            self.packet_reader.commit(received);
 
-                info!("Received {:?}", packet);
-
-                let result = self.client.handle_packet(packet, &mut f);
-
-                self.packet_reader.pop_packet()?;
-
-                // If there was an error, return it now. Note that we ensure the packet is removed
-                // from buffering after processing even in error conditions..
-                result?;
+            if received > 0 {
+                debug!("Received {} bytes", received);
+            } else {
+                return Ok(());
             }
         }
 
-        Ok(())
+        // Note(unwrap): We should be guaranteed to have a packet available at this point because
+        // of the loop on availability above.
+        let packet = self.packet_reader.received_packet().unwrap();
+
+        let packet = ReceivedPacket::parse_packet(&packet)?;
+        info!("Received {:?}", packet);
+
+        let result = self.client.handle_packet(packet, &mut f);
+
+        // We have now processed the packet. Remove it from the reader.
+        self.packet_reader.reset();
+
+        result
     }
 
     /// Directly access the MQTT client.

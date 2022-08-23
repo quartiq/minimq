@@ -10,6 +10,7 @@ This document describes the changes to Minimq between releases.
 
 ## Changed
 * [breaking] The client is no longer publicly exposed, and is instead accessible via `Minimq::client()`
+* Single MQTT packets are now processed per `Minimq::poll()` execution, reducing stack usage.
 
 ## Fixed
 * All unacknowledged messages will be guaranteed to be retransmitted upon connection with the

@@ -1,5 +1,5 @@
 use crate::{
-    de::PacketReader,
+    de::PacketParser,
     ser::{serialize::integer_size, ReversedPacketWriter},
     ProtocolError as Error,
 };
@@ -131,8 +131,8 @@ impl<'a> Property<'a> {
         }
     }
 
-    pub(crate) fn parse<'reader: 'a, const T: usize>(
-        packet: &'reader PacketReader<T>,
+    pub(crate) fn parse<'reader: 'a>(
+        packet: &'reader PacketParser<'_>,
     ) -> Result<Property<'a>, Error> {
         let identifier: PropertyIdentifier = packet.read_variable_length_integer()?.into();
 
