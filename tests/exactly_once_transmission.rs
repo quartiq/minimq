@@ -13,7 +13,7 @@ fn main() -> std::io::Result<()> {
         Minimq::<_, _, 256, 16>::new(localhost, "", stack, StandardClock::default()).unwrap();
 
     // Use a keepalive interval for the client.
-    mqtt.client.set_keepalive_interval(60).unwrap();
+    mqtt.client().set_keepalive_interval(60).unwrap();
 
     let mut published = false;
 
@@ -21,8 +21,8 @@ fn main() -> std::io::Result<()> {
         mqtt.poll(|_client, _topic, _payload, _properties| {})
             .unwrap();
 
-        if mqtt.client.is_connected() && !published && mqtt.client.can_publish(QoS::ExactlyOnce) {
-            mqtt.client
+        if mqtt.client().is_connected() && !published && mqtt.client().can_publish(QoS::ExactlyOnce) {
+            mqtt.client()
                 .publish(
                     "data",
                     "Ping".as_bytes(),
@@ -35,7 +35,7 @@ fn main() -> std::io::Result<()> {
             published = true;
         }
 
-        if published && mqtt.client.pending_messages(QoS::ExactlyOnce) == 0 {
+        if published && mqtt.client().pending_messages(QoS::ExactlyOnce) == 0 {
             log::info!("Transmission complete");
             std::process::exit(0);
         }
