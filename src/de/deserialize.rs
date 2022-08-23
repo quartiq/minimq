@@ -1,6 +1,8 @@
-use crate::{de::PacketReader, message_types::MessageType, Property, ProtocolError as Error};
+use crate::{message_types::MessageType, Property, ProtocolError as Error};
 use bit_field::BitField;
 use heapless::Vec;
+
+use super::packet_parser::PacketParser;
 
 #[derive(Debug)]
 pub struct ConnAck<'a> {
@@ -96,15 +98,15 @@ pub enum ReceivedPacket<'a> {
 }
 
 impl<'a> ReceivedPacket<'a> {
-    /// Parse a message out of a `PacketReader` into a validated MQTT control message.
+    /// Parse a message out of a `PacketParser` into a validated MQTT control message.
     ///
     /// # Args
     /// * `packet_reader` - The reader to parse the message out of.
     ///
     /// # Returns
     /// A packet describing the received content.
-    pub(crate) fn parse_message<'reader: 'a, const T: usize>(
-        packet_reader: &'reader PacketReader<T>,
+    pub(crate) fn parse_message<'reader: 'a>(
+        packet_reader: &'reader PacketParser<'_>,
     ) -> Result<ReceivedPacket<'a>, Error> {
         let (message_type, flags, remaining_length) = packet_reader.read_fixed_header()?;
 
@@ -153,7 +155,7 @@ impl<'a> ReceivedPacket<'a> {
     }
 }
 
-fn parse_connack<const T: usize>(p: &PacketReader<T>) -> Result<ConnAck, Error> {
+fn parse_connack<'a>(p: &'a PacketParser<'_>) -> Result<ConnAck<'a>, Error> {
     // Read the connect acknowledgement flags.
     let flags = p.read_u8()?;
     if flags != 0 && flags != 1 {
@@ -174,9 +176,7 @@ fn parse_connack<const T: usize>(p: &PacketReader<T>) -> Result<ConnAck, Error> 
     })
 }
 
-fn parse_publish<'a, 'reader: 'a, const T: usize>(
-    p: &'reader PacketReader<T>,
-) -> Result<Pub<'a>, Error> {
+fn parse_publish<'a>(p: &'a PacketParser<'_>) -> Result<Pub<'a>, Error> {
     let topic = p.read_utf8_string()?;
 
     let properties = p.read_properties()?;
@@ -191,13 +191,10 @@ fn parse_publish<'a, 'reader: 'a, const T: usize>(
     })
 }
 
-fn parse_puback<'a, 'reader: 'a, const T: usize>(
-    p: &'reader PacketReader<T>,
-) -> Result<PubAck<'a>, Error> {
+fn parse_puback<'a>(p: &'a PacketParser<'_>) -> Result<PubAck<'a>, Error> {
     let id = p.read_u16()?;
-    // If length = 4 -> 1 byte fixed header, 1 byte remaining length, 2 bytes variable header
-    // variable header has packet identifier only with no properties and default success 0x00 reason code
-    if p.packet_length() == Ok(4) {
+    // If there's no available data, the reason code is zero and the properties are empty.
+    if p.len()? == 0 {
         return Ok(PubAck {
             packet_identifier: id,
             reason: 0x00,
@@ -215,7 +212,7 @@ fn parse_puback<'a, 'reader: 'a, const T: usize>(
     })
 }
 
-fn parse_suback<const T: usize>(p: &PacketReader<T>) -> Result<SubAck, Error> {
+fn parse_suback<'a>(p: &'a PacketParser<'_>) -> Result<SubAck<'a>, Error> {
     // Read the variable length header.
     let id = p.read_u16()?;
 
@@ -233,11 +230,11 @@ fn parse_suback<const T: usize>(p: &PacketReader<T>) -> Result<SubAck, Error> {
     })
 }
 
-fn parse_pubrec<const T: usize>(p: &PacketReader<T>) -> Result<PubRec, Error> {
+fn parse_pubrec<'a>(p: &'a PacketParser<'_>) -> Result<PubRec<'a>, Error> {
     let id = p.read_u16()?;
 
     // Reason code and properties are both optionally present.
-    if p.remaining_len()? == 0 {
+    if p.len()? == 0 {
         return Ok(PubRec {
             packet_id: id,
             reason_code: 0,
@@ -255,11 +252,11 @@ fn parse_pubrec<const T: usize>(p: &PacketReader<T>) -> Result<PubRec, Error> {
     })
 }
 
-fn parse_pubcomp<const T: usize>(p: &PacketReader<T>) -> Result<PubComp, Error> {
+fn parse_pubcomp<'a>(p: &'a PacketParser<'_>) -> Result<PubComp<'a>, Error> {
     let id = p.read_u16()?;
 
     // Reason code and properties are both optionally present.
-    if p.remaining_len()? == 0 {
+    if p.len()? == 0 {
         return Ok(PubComp {
             packet_id: id,
             reason_code: 0,
@@ -277,7 +274,7 @@ fn parse_pubcomp<const T: usize>(p: &PacketReader<T>) -> Result<PubComp, Error> 
     })
 }
 
-fn parse_disconnect<const T: usize>(p: &PacketReader<T>) -> Result<Disconnect, Error> {
+fn parse_disconnect<'a>(p: &'a PacketParser<'_>) -> Result<Disconnect<'a>, Error> {
     let reason_code = p.read_u8()?;
     let properties = p.read_properties()?;
     Ok(Disconnect {
@@ -288,11 +285,11 @@ fn parse_disconnect<const T: usize>(p: &PacketReader<T>) -> Result<Disconnect, E
 
 #[cfg(test)]
 mod test {
-    use super::{PacketReader, ReceivedPacket};
+    use super::{PacketParser, ReceivedPacket};
 
     #[test]
     fn deserialize_good_connack() {
-        let mut serialized_connack: [u8; 5] = [
+        let serialized_connack: [u8; 5] = [
             0x20, 0x03, // Remaining length = 3 bytes
             0x00, // Connect acknowledge flags - bit 0 clear.
             0x00, // Connect reason code - 0 (Success)
@@ -300,8 +297,8 @@ mod test {
                   // No payload.
         ];
 
-        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_connack);
-        let connack = ReceivedPacket::parse_message(&mut reader).unwrap();
+        let reader = PacketParser::new(&serialized_connack);
+        let connack = ReceivedPacket::parse_message(&reader).unwrap();
         match connack {
             ReceivedPacket::ConnAck(conn_ack) => {
                 assert_eq!(conn_ack.reason_code, 0);
@@ -312,17 +309,17 @@ mod test {
 
     #[test]
     fn deserialize_good_publish() {
-        let mut serialized_publish: [u8; 7] = [
+        let serialized_publish: [u8; 7] = [
             0x30, // Publish, no QoS
-            0x04, // Remaining length
+            0x05, // Remaining length
             0x00, 0x01, // Topic length (1)
             0x41, // Topic name: 'A'
             0x00, // Properties length
             0x05, // Payload
         ];
 
-        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_publish);
-        let publish = ReceivedPacket::parse_message(&mut reader).unwrap();
+        let reader = PacketParser::new(&serialized_publish);
+        let publish = ReceivedPacket::parse_message(&reader).unwrap();
         match publish {
             ReceivedPacket::Publish(pub_info) => {
                 assert_eq!(pub_info.topic, "A");
@@ -333,7 +330,7 @@ mod test {
 
     #[test]
     fn deserialize_good_puback() {
-        let mut serialized_suback: [u8; 6] = [
+        let serialized_suback: [u8; 6] = [
             0x40, // PubAck
             0x04, // Remaining length
             0x00, 0x05, // Identifier
@@ -341,8 +338,8 @@ mod test {
             0x00, // Properties length
         ];
 
-        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_suback);
-        let puback = ReceivedPacket::parse_message(&mut reader).unwrap();
+        let reader = PacketParser::new(&serialized_suback);
+        let puback = ReceivedPacket::parse_message(&reader).unwrap();
         match puback {
             ReceivedPacket::PubAck(pub_ack) => {
                 assert_eq!(pub_ack.reason, 0x10);
@@ -355,14 +352,14 @@ mod test {
 
     #[test]
     fn deserialize_good_puback_without_reason() {
-        let mut serialized_suback: [u8; 4] = [
+        let serialized_suback: [u8; 4] = [
             0x40, // PubAck
             0x02, // Remaining length
             0x00, 0x06, // Identifier
         ];
 
-        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_suback);
-        let puback = ReceivedPacket::parse_message(&mut reader).unwrap();
+        let reader = PacketParser::new(&serialized_suback);
+        let puback = ReceivedPacket::parse_message(&reader).unwrap();
         match puback {
             ReceivedPacket::PubAck(pub_ack) => {
                 assert_eq!(pub_ack.reason, 0x00);
@@ -375,7 +372,7 @@ mod test {
 
     #[test]
     fn deserialize_good_suback() {
-        let mut serialized_suback: [u8; 6] = [
+        let serialized_suback: [u8; 6] = [
             0x90, // SubAck
             0x04, // Remaining length
             0x00, 0x05, // Identifier
@@ -383,8 +380,8 @@ mod test {
             0x02, // Response Code
         ];
 
-        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_suback);
-        let suback = ReceivedPacket::parse_message(&mut reader).unwrap();
+        let reader = PacketParser::new(&serialized_suback);
+        let suback = ReceivedPacket::parse_message(&reader).unwrap();
         match suback {
             ReceivedPacket::SubAck(sub_ack) => {
                 assert_eq!(sub_ack.reason_code, 2);
@@ -396,13 +393,13 @@ mod test {
 
     #[test]
     fn deserialize_good_ping_resp() {
-        let mut serialized_ping_req: [u8; 2] = [
+        let serialized_ping_req: [u8; 2] = [
             0xd0, // Ping resp
             0x00, // Remaining length (0)
         ];
 
-        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_ping_req);
-        let ping_req = ReceivedPacket::parse_message(&mut reader).unwrap();
+        let reader = PacketParser::new(&serialized_ping_req);
+        let ping_req = ReceivedPacket::parse_message(&reader).unwrap();
         match ping_req {
             ReceivedPacket::PingResp => {}
             _ => panic!("Invalid message"),
@@ -411,7 +408,7 @@ mod test {
 
     #[test]
     fn deserialize_good_pubcomp() {
-        let mut serialized_pubcomp: [u8; 6] = [
+        let serialized_pubcomp: [u8; 6] = [
             7 << 4, // PubComp
             0x04,   // Remaining length
             0x00,
@@ -419,8 +416,8 @@ mod test {
             0x16, // Response Code
             0x00, // Properties length
         ];
-        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_pubcomp);
-        let pub_comp = ReceivedPacket::parse_message(&mut reader).unwrap();
+        let reader = PacketParser::new(&serialized_pubcomp);
+        let pub_comp = ReceivedPacket::parse_message(&reader).unwrap();
         match pub_comp {
             ReceivedPacket::PubComp(comp) => {
                 assert_eq!(comp.packet_id, 5);
@@ -433,14 +430,14 @@ mod test {
 
     #[test]
     fn deserialize_short_pubcomp() {
-        let mut serialized_pubcomp: [u8; 4] = [
+        let serialized_pubcomp: [u8; 4] = [
             7 << 4, // PubComp
             0x02,   // Remaining length
             0x00,
             0x05, // Identifier
         ];
-        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_pubcomp);
-        let pub_comp = ReceivedPacket::parse_message(&mut reader).unwrap();
+        let reader = PacketParser::new(&serialized_pubcomp);
+        let pub_comp = ReceivedPacket::parse_message(&reader).unwrap();
         match pub_comp {
             ReceivedPacket::PubComp(comp) => {
                 assert_eq!(comp.packet_id, 5);
@@ -453,7 +450,7 @@ mod test {
 
     #[test]
     fn deserialize_good_pubrec() {
-        let mut serialized_pubrec: [u8; 6] = [
+        let serialized_pubrec: [u8; 6] = [
             5 << 4, // PubRec
             0x04,   // Remaining length
             0x00,
@@ -461,8 +458,8 @@ mod test {
             0x10, // Response Code
             0x00, // Properties length
         ];
-        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_pubrec);
-        let pub_rec = ReceivedPacket::parse_message(&mut reader).unwrap();
+        let reader = PacketParser::new(&serialized_pubrec);
+        let pub_rec = ReceivedPacket::parse_message(&reader).unwrap();
         match pub_rec {
             ReceivedPacket::PubRec(rec) => {
                 assert_eq!(rec.packet_id, 5);
@@ -475,14 +472,14 @@ mod test {
 
     #[test]
     fn deserialize_short_pubrec() {
-        let mut serialized_pubrec: [u8; 4] = [
+        let serialized_pubrec: [u8; 4] = [
             5 << 4, // PubRec
             0x02,   // Remaining length
             0x00,
             0x05, // Identifier
         ];
-        let mut reader = PacketReader::<32>::from_serialized(&mut serialized_pubrec);
-        let pub_rec = ReceivedPacket::parse_message(&mut reader).unwrap();
+        let reader = PacketParser::new(&serialized_pubrec);
+        let pub_rec = ReceivedPacket::parse_message(&reader).unwrap();
         match pub_rec {
             ReceivedPacket::PubRec(rec) => {
                 assert_eq!(rec.packet_id, 5);
