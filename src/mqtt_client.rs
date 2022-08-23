@@ -47,8 +47,7 @@ struct ClientContext<
     const MSG_SIZE: usize,
     const MSG_COUNT: usize,
 > {
-    session_state: SessionState<Clock, MSG_SIZE, MSG_COUNT>,
-    _stack: core::marker::PhantomData<TcpStack>,
+    session_state: SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
 }
 
 impl<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
@@ -99,7 +98,7 @@ where
             ReceivedPacket::PingResp => self.session_state.register_ping_response(),
             ReceivedPacket::PubAck(ack) => {
                 // No matter the status code the message is considered acknowledged at this point
-                self.session_state.handle_puback(ack.packet_identifier);
+                self.session_state.handle_puback(ack.packet_identifier)?;
             }
             _ => return Err(Error::Protocol(ProtocolError::Invalid)),
         }
@@ -386,7 +385,7 @@ impl<
             self.sm
                 .context_mut()
                 .session_state
-                .handle_publish(qos, id, packet);
+                .handle_publish(qos, id, packet)?;
         }
 
         Ok(())
@@ -432,6 +431,19 @@ impl<
     fn handle_active(&mut self) -> Result<(), Error<TcpStack::Error>> {
         if self.sm.context_mut().session_state.ping_is_overdue()? {
             self.sm.process_event(Events::SendTimeout).unwrap();
+        }
+
+        while !self.network.has_pending_write() {
+            if let Some(msg) = self
+                .sm
+                .context_mut()
+                .session_state
+                .next_pending_republication()
+            {
+                self.network.write(msg)?;
+            } else {
+                break;
+            }
         }
 
         // If there's a pending write, we can't send a ping no matter if it is due. This is
@@ -494,28 +506,6 @@ impl<
         match packet {
             ReceivedPacket::ConnAck(ack) => {
                 self.sm.process_event(Events::Connected(ack))?;
-
-                // Republish QoS > 0 messages from the session.
-                for key in self
-                    .sm
-                    .context()
-                    .session_state
-                    .pending_publish_ordering
-                    .iter()
-                {
-                    if self.network.has_pending_write() {
-                        break;
-                    }
-
-                    let message = self
-                        .sm
-                        .context()
-                        .session_state
-                        .pending_publish
-                        .get(key)
-                        .unwrap();
-                    self.network.write(message)?;
-                }
 
                 return if self.sm.context_mut().session_state.was_reset() {
                     Err(Error::SessionReset)
@@ -583,10 +573,7 @@ impl<
 
         let minimq = Minimq {
             client: MqttClient {
-                sm: StateMachine::new(ClientContext {
-                    session_state,
-                    _stack: core::marker::PhantomData::default(),
-                }),
+                sm: StateMachine::new(ClientContext { session_state }),
                 broker: SocketAddr::new(broker, MQTT_INSECURE_DEFAULT_PORT),
                 will: None,
                 network: InterfaceHolder::new(network_stack),

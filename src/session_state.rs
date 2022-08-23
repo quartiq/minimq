@@ -1,9 +1,10 @@
 /// This module represents the session state of an MQTT communication session.
-use crate::{warn, QoS};
+use crate::{warn, Error, ProtocolError, QoS};
+use core::marker::PhantomData;
+use embedded_nal::TcpClientStack;
 use heapless::{LinearMap, String, Vec};
 
 use embedded_time::{
-    clock::Error,
     duration::{Extensions, Milliseconds, Seconds},
     Instant,
 };
@@ -11,26 +12,41 @@ use embedded_time::{
 /// The default duration to wait for a ping response from the broker.
 const PING_TIMEOUT: Seconds = Seconds(5);
 
-pub struct SessionState<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
-{
+pub struct MessageRecord<const N: usize> {
+    pub msg: Vec<u8, N>,
+    transmitted: bool,
+    qos: QoS,
+}
+
+pub struct SessionState<
+    TcpStack: TcpClientStack,
+    Clock: embedded_time::Clock,
+    const MSG_SIZE: usize,
+    const MSG_COUNT: usize,
+> {
     keep_alive_interval: Option<Milliseconds<u32>>,
     ping_timeout: Option<Instant<Clock>>,
     next_ping: Option<Instant<Clock>>,
     pub maximum_packet_size: Option<u32>,
     pub client_id: String<64>,
     pub pending_subscriptions: Vec<u16, 32>,
-    pub pending_publish: LinearMap<u16, Vec<u8, MSG_SIZE>, MSG_COUNT>,
-    pub pending_publish_ordering: Vec<u16, MSG_COUNT>,
+    pending_publish: LinearMap<u16, MessageRecord<MSG_SIZE>, MSG_COUNT>,
+    pending_publish_ordering: Vec<u16, MSG_COUNT>,
     clock: Clock,
     packet_id: u16,
     active: bool,
     was_reset: bool,
+    _stack: PhantomData<TcpStack>,
 }
 
-impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
-    SessionState<Clock, MSG_SIZE, MSG_COUNT>
+impl<
+        TcpStack: TcpClientStack,
+        Clock: embedded_time::Clock,
+        const MSG_SIZE: usize,
+        const MSG_COUNT: usize,
+    > SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
 {
-    pub fn new(clock: Clock, id: String<64>) -> SessionState<Clock, MSG_SIZE, MSG_COUNT> {
+    pub fn new(clock: Clock, id: String<64>) -> SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
         SessionState {
             clock,
             active: false,
@@ -44,6 +60,7 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
             pending_publish_ordering: Vec::new(),
             maximum_packet_size: None,
             was_reset: false,
+            _stack: PhantomData::default(),
         }
     }
 
@@ -86,32 +103,57 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
             .replace(Milliseconds(seconds as u32 * 1000));
     }
 
-    /// Called when publish with QoS 1 is called so that we can keep track of PUBACK
-    pub fn handle_publish(&mut self, qos: QoS, id: u16, packet: &[u8]) {
-        // This is not called for QoS 0 and QoS 2 is not implemented yet
-        assert_eq!(qos, QoS::AtLeastOnce);
-
-        let mut buf: Vec<u8, MSG_SIZE> = Vec::from_slice(packet).unwrap();
+    /// Called when publish with QoS > 0 is called so that we can keep track of acknowledgement.
+    pub fn handle_publish(
+        &mut self,
+        qos: QoS,
+        id: u16,
+        packet: &[u8],
+    ) -> Result<(), Error<TcpStack::Error>> {
+        let mut msg: Vec<u8, MSG_SIZE> = Vec::from_slice(packet).unwrap();
         // Set DUP = 1 (bit 3). If this packet is ever read it's just because we want to resend it
-        buf[0] |= 1 << 3;
-        // If this fails and the PUBACK will be received and Client (minimq) should disconnect from server with 0x82 Protocol Error
-        // This behaviour pretty much reverts this message to QoS 0 with a restart if the message is actually delivered
-        let _ = self.pending_publish.insert(id, buf);
-        let _ = self.pending_publish_ordering.push(id);
+        msg[0] |= 1 << 3;
+
+        let record = MessageRecord {
+            qos,
+            msg,
+            transmitted: true,
+        };
+
+        self.pending_publish
+            .insert(id, record)
+            .map_err(|_| Error::Unsupported)?;
+        self.pending_publish_ordering
+            .push(id)
+            .map_err(|_| Error::Unsupported)?;
+
+        Ok(())
     }
 
     /// Delete given pending publish as the server took ownership of it
-    pub fn handle_puback(&mut self, id: u16) {
-        self.pending_publish.remove(&id);
-        let mut found = false;
-        for i in 0..self.pending_publish_ordering.len() {
-            if found {
-                self.pending_publish_ordering[i - 1] = self.pending_publish_ordering[i];
-            } else if self.pending_publish_ordering[i] == id {
-                found = true;
+    pub fn handle_puback(&mut self, id: u16) -> Result<(), Error<TcpStack::Error>> {
+        if let Some(item) = self.pending_publish.get(&id) {
+            if item.qos != QoS::AtLeastOnce {
+                return Err(Error::Protocol(ProtocolError::WrongQos));
             }
         }
-        self.pending_publish_ordering.pop();
+
+        // Remove the ID from our publication tracking. Note that we intentionally remove from both
+        // the ordering and state management without checking success to ensure that state remains
+        // valid.
+        let item = self.pending_publish.remove(&id);
+        let ordering = self
+            .pending_publish_ordering
+            .iter()
+            .position(|&i| i == id)
+            .map(|index| Some(self.pending_publish_ordering.remove(index)));
+
+        // If the ID didn't exist in our state tracking, indicate the error to the user.
+        if item.is_none() || ordering.is_none() {
+            return Err(Error::Protocol(ProtocolError::BadIdentifier));
+        }
+
+        Ok(())
     }
 
     /// Indicates if publish with QoS 1 is possible.
@@ -132,13 +174,19 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
     }
 
     /// Called whenever an active connection has been made with a broker.
-    pub fn register_connection(&mut self) -> Result<(), Error> {
+    pub fn register_connection(&mut self) -> Result<(), Error<TcpStack::Error>> {
         self.active = true;
         self.ping_timeout = None;
 
         // The next ping should be sent out in half the keep-alive interval from now.
         if let Some(interval) = self.keep_alive_interval {
             self.next_ping.replace(self.clock.try_now()? + interval / 2);
+        }
+
+        // We just reconnected to the broker. Any of our pending publications will need to be
+        // republished.
+        for (_key, value) in self.pending_publish.iter_mut() {
+            value.transmitted = false;
         }
 
         Ok(())
@@ -176,7 +224,7 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
     }
 
     /// Check if a pending ping is currently overdue.
-    pub fn ping_is_overdue(&mut self) -> Result<bool, Error> {
+    pub fn ping_is_overdue(&mut self) -> Result<bool, Error<TcpStack::Error>> {
         let now = self.clock.try_now()?;
         Ok(self
             .ping_timeout
@@ -185,7 +233,7 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
     }
 
     /// Check if a ping is currently due for transmission.
-    pub fn ping_is_due(&mut self) -> Result<bool, Error> {
+    pub fn ping_is_due(&mut self) -> Result<bool, Error<TcpStack::Error>> {
         // If there's already a ping being transmitted, another can't be due.
         if self.ping_timeout.is_some() {
             return Ok(false);
@@ -207,5 +255,27 @@ impl<Clock: embedded_time::Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
                 now > ping_deadline
             })
             .unwrap_or(false))
+    }
+
+    /// Get the next message that needs to be republished.
+    ///
+    /// # Note
+    /// Messages provided by this function must be properly transmitted to maintain proper state.
+    ///
+    /// # Returns
+    /// The next message in the sequence that must be republished.
+    pub fn next_pending_republication(&mut self) -> Option<&Vec<u8, MSG_SIZE>> {
+        let next_key = self.pending_publish_ordering.iter().find(|&id| {
+            let item = self.pending_publish.get(id).unwrap();
+            !item.transmitted
+        });
+
+        if let Some(key) = next_key {
+            let mut item = self.pending_publish.get_mut(key).unwrap();
+            item.transmitted = true;
+            Some(&item.msg)
+        } else {
+            None
+        }
     }
 }

@@ -130,6 +130,8 @@ pub enum ProtocolError {
     UnsupportedPacket,
     BufferSize,
     InvalidProperty,
+    BadIdentifier,
+    WrongQos,
 }
 
 /// Possible errors encountered during an MQTT connection.
