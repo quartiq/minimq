@@ -21,7 +21,8 @@ fn main() -> std::io::Result<()> {
         mqtt.poll(|_client, _topic, _payload, _properties| {})
             .unwrap();
 
-        if mqtt.client().is_connected() && !published && mqtt.client().can_publish(QoS::ExactlyOnce) {
+        if mqtt.client().is_connected() && !published && mqtt.client().can_publish(QoS::ExactlyOnce)
+        {
             mqtt.client()
                 .publish(
                     "data",
