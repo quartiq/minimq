@@ -6,16 +6,20 @@ This document describes the changes to Minimq between releases.
 
 ## Added
 * Allow configuration of non-default broker port numbers
+* Support added for QoS::ExactlyOnce transmission
+
+## Changed
+* [breaking] The client is no longer publicly exposed, and is instead accessible via `Minimq::client()`
 
 ## Fixed
 * All unacknowledged messages will be guaranteed to be retransmitted upon connection with the
+broker.
 * The `ReceiveMaximum` property is now sent in the connection request to the broker
 
 # [0.5.3] - 2022-02-14
 
 ## Added
 * Property comparison now implements PartialEq
-* Support added for QoS::ExactlyOnce transmission
 
 # [0.5.2] - 2021-12-14
 
