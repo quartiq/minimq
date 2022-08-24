@@ -1,6 +1,7 @@
-use crate::{warn, MessageType, Property, ProtocolError as Error};
+use crate::{MessageType, Property, ProtocolError as Error};
 use bit_field::BitField;
 use heapless::Vec;
+use varint_rs::VarintReader;
 
 pub(crate) struct PacketParser<'a> {
     pub buffer: &'a [u8],
@@ -49,20 +50,10 @@ impl<'a> PacketParser<'a> {
         Ok(self.buffer.len() - *self.index.borrow())
     }
 
-    pub fn read_variable_length_integer(&self) -> Result<usize, Error> {
-        let mut accumulator: usize = 0;
-        for i in 0..4 {
-            let mut byte = [0u8; 1];
-            self.read(&mut byte)?;
-            accumulator += ((byte[0] & 0x7F) as usize) << (i * 7);
+    pub fn read_variable_length_integer(&self) -> Result<u32, Error> {
+        let mut reader = IntReader { parser: self };
 
-            if (byte[0] & 0x80) == 0 {
-                return Ok(accumulator);
-            }
-        }
-
-        warn!("Encountered invalid variable integer");
-        Err(Error::MalformedInteger)
+        reader.read_u32_varint()
     }
 
     pub fn read_fixed_header(&self) -> Result<(MessageType, u8, usize), Error> {
@@ -72,7 +63,7 @@ impl<'a> PacketParser<'a> {
         Ok((
             MessageType::from(header.get_bits(4..=7)),
             header.get_bits(0..=3),
-            packet_length,
+            packet_length as usize,
         ))
     }
 
@@ -113,21 +104,31 @@ impl<'a> PacketParser<'a> {
     pub fn read_properties<'b, 'me: 'b>(&'me self) -> Result<Vec<Property<'b>, 8>, Error> {
         let mut properties: Vec<Property, 8> = Vec::new();
 
-        let properties_size = self.read_variable_length_integer()?;
-        let mut property_bytes_processed = 0;
+        let properties_size = self.read_variable_length_integer()? as usize;
 
-        while properties_size - property_bytes_processed > 0 {
-            let property = Property::parse(self)?;
-            property_bytes_processed += property.size();
+        let remainder = self.len()? - properties_size;
+
+        while self.len()? > remainder {
             properties
-                .push(property)
+                .push(Property::parse(self)?)
                 .map_err(|_| Error::MalformedPacket)?;
         }
 
-        if properties_size != property_bytes_processed {
+        if self.len()? != remainder {
             return Err(Error::MalformedPacket);
         }
 
         Ok(properties)
+    }
+}
+
+pub struct IntReader<'a> {
+    parser: &'a PacketParser<'a>,
+}
+
+impl<'a> varint_rs::VarintReader for IntReader<'a> {
+    type Error = Error;
+    fn read(&mut self) -> Result<u8, Error> {
+        self.parser.read_u8()
     }
 }

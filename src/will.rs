@@ -22,7 +22,7 @@ impl<const MSG_SIZE: usize> Will<MSG_SIZE> {
     pub fn new(topic: &str, data: &[u8], properties: &[Property]) -> Result<Self, ProtocolError> {
         // Check that the input properties are valid for a will.
         for property in properties {
-            match property.id() {
+            match property.into() {
                 PropertyIdentifier::WillDelayInterval
                 | PropertyIdentifier::PayloadFormatIndicator
                 | PropertyIdentifier::MessageExpiryInterval
