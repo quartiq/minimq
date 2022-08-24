@@ -70,6 +70,7 @@ mod network_manager;
 mod properties;
 mod session_state;
 mod will;
+mod serde_minimq;
 
 use message_types::MessageType;
 pub use properties::Property;

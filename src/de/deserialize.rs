@@ -1,10 +1,10 @@
 use crate::{message_types::MessageType, Property, ProtocolError as Error};
-use bit_field::BitField;
+use serde::Deserialize;
 use heapless::Vec;
 
 use super::packet_parser::PacketParser;
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct ConnAck<'a> {
     /// Indicates true if session state is being maintained by the broker.
     pub session_present: bool,
@@ -13,6 +13,7 @@ pub struct ConnAck<'a> {
     pub reason_code: u8,
 
     /// A list of properties associated with the connection.
+    #[serde(borrow)]
     pub properties: Vec<Property<'a>, 8>,
 }
 
@@ -156,24 +157,10 @@ impl<'a> ReceivedPacket<'a> {
 }
 
 fn parse_connack<'a>(p: &'a PacketParser<'_>) -> Result<ConnAck<'a>, Error> {
-    // Read the connect acknowledgement flags.
-    let flags = p.read_u8()?;
-    if flags != 0 && flags != 1 {
-        return Err(Error::MalformedPacket);
-    }
-
-    let reason_code = p.read_u8()?;
-
-    // Parse properties.
-    let properties = p.read_properties()?;
+    let connack = crate::serde_minimq::deserialize(p.payload()?).unwrap();
 
     // TODO: Validate properties associated with this message.
-
-    Ok(ConnAck {
-        reason_code,
-        session_present: flags.get_bit(0),
-        properties,
-    })
+    Ok(connack)
 }
 
 fn parse_publish<'a>(p: &'a PacketParser<'_>) -> Result<Pub<'a>, Error> {

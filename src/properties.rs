@@ -1,6 +1,23 @@
-use crate::{de::PacketParser, ser::ReversedPacketWriter, ProtocolError as Error};
+use crate::{
+    de::PacketParser,
+    ser::ReversedPacketWriter,
+    ProtocolError as Error
+};
 
+use serde::Deserialize;
 use enum_iterator::IntoEnumIterator;
+
+impl From<u32> for PropertyIdentifier {
+    fn from(val: u32) -> Self {
+        for entry in Self::into_enum_iter() {
+            if entry as u32 == val {
+                return entry;
+            }
+        }
+
+        PropertyIdentifier::Invalid
+    }
+}
 
 #[derive(Copy, Clone, PartialEq, IntoEnumIterator)]
 pub(crate) enum PropertyIdentifier {
@@ -43,7 +60,7 @@ pub(crate) enum PropertyIdentifier {
 }
 
 /// All of the possible properties that MQTT version 5 supports.
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Deserialize)]
 pub enum Property<'a> {
     PayloadFormatIndicator(u8),
     MessageExpiryInterval(u32),
@@ -72,18 +89,6 @@ pub enum Property<'a> {
     WildcardSubscriptionAvailable(u8),
     SubscriptionIdentifierAvailable(u8),
     SharedSubscriptionAvailable(u8),
-}
-
-impl From<u32> for PropertyIdentifier {
-    fn from(val: u32) -> Self {
-        for entry in Self::into_enum_iter() {
-            if entry as u32 == val {
-                return entry;
-            }
-        }
-
-        PropertyIdentifier::Invalid
-    }
 }
 
 impl<'a> From<&Property<'a>> for PropertyIdentifier {

@@ -128,7 +128,7 @@ where
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
         let result = self.network_stack.receive(socket, buf);
 
-        #[cfg(features = "logging")]
+        #[cfg(feature = "logging")]
         if let Ok(len) = result {
             let data = &buf[..len];
             crate::trace!("Read: {:0x?}", data);
