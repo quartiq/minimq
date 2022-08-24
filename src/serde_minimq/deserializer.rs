@@ -1,4 +1,4 @@
-use serde::de::{IntoDeserializer, DeserializeSeed, Visitor};
+use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 use varint_rs::VarintReader;
 
 #[derive(Debug)]
@@ -40,10 +40,7 @@ pub struct MqttDeserializer<'a> {
 
 impl<'a> MqttDeserializer<'a> {
     pub fn new(buf: &'a [u8]) -> Self {
-        Self {
-            buf,
-            index: 0,
-        }
+        Self { buf, index: 0 }
     }
 
     pub fn try_take_n(&mut self, n: usize) -> Result<&'a [u8], Error> {
@@ -108,7 +105,12 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 
     fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_i32(i32::from_be_bytes([self.pop()?, self.pop()?, self.pop()?, self.pop()?]))
+        visitor.visit_i32(i32::from_be_bytes([
+            self.pop()?,
+            self.pop()?,
+            self.pop()?,
+            self.pop()?,
+        ]))
     }
 
     fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
@@ -120,7 +122,12 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 
     fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_u32(u32::from_be_bytes([self.pop()?, self.pop()?, self.pop()?, self.pop()?]))
+        visitor.visit_u32(u32::from_be_bytes([
+            self.pop()?,
+            self.pop()?,
+            self.pop()?,
+            self.pop()?,
+        ]))
     }
 
     fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
@@ -155,7 +162,10 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
 
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         let len = self.read_varint()?;
-        visitor.visit_seq(SeqAccess { deserializer: self, len: len as usize })
+        visitor.visit_seq(SeqAccess {
+            deserializer: self,
+            len: len as usize,
+        })
     }
 
     fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
@@ -163,28 +173,58 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
         visitor.visit_unit()
     }
 
-    fn deserialize_tuple<V: Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error> {
+    fn deserialize_tuple<V: Visitor<'de>>(
+        self,
+        len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
         crate::trace!("Deserialize tuple");
-        visitor.visit_seq(SeqAccess { deserializer: self, len })
+        visitor.visit_seq(SeqAccess {
+            deserializer: self,
+            len,
+        })
     }
 
-    fn deserialize_tuple_struct<V: Visitor<'de>>(self, _name: &'static str, len: usize, visitor: V) -> Result<V::Value, Self::Error> {
+    fn deserialize_tuple_struct<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
         self.deserialize_tuple(len, visitor)
     }
 
-    fn deserialize_struct<V: Visitor<'de>>(self, _name: &'static str, fields: &'static [&'static str], visitor: V) -> Result<V::Value, Self::Error> {
+    fn deserialize_struct<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
         self.deserialize_tuple(fields.len(), visitor)
     }
 
-    fn deserialize_enum<V: Visitor<'de>>(self, _name: &'static str, _variants: &'static [&'static str], visitor: V) -> Result<V::Value, Self::Error> {
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
         visitor.visit_enum(self)
     }
 
-    fn deserialize_unit_struct<V: Visitor<'de>>(self, _name: &'static str, visitor: V) -> Result<V::Value, Self::Error> {
+    fn deserialize_unit_struct<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
         self.deserialize_unit(visitor)
     }
 
-    fn deserialize_newtype_struct<V: Visitor<'de>>(self, _name: &'static str, visitor: V) -> Result<V::Value, Self::Error> {
+    fn deserialize_newtype_struct<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
         visitor.visit_newtype_struct(self)
     }
 
@@ -196,7 +236,10 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
         Err(Error::WontImplement)
     }
 
-    fn deserialize_ignored_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
+    fn deserialize_ignored_any<V: Visitor<'de>>(
+        self,
+        _visitor: V,
+    ) -> Result<V::Value, Self::Error> {
         Err(Error::WontImplement)
     }
 
@@ -229,13 +272,19 @@ struct SeqAccess<'a, 'de: 'a> {
     len: usize,
 }
 
-impl <'a, 'de: 'a> serde::de::SeqAccess<'de> for SeqAccess<'a, 'de> {
+impl<'a, 'de: 'a> serde::de::SeqAccess<'de> for SeqAccess<'a, 'de> {
     type Error = Error;
 
-    fn next_element_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<Option<V::Value>, Error> {
+    fn next_element_seed<V: DeserializeSeed<'de>>(
+        &mut self,
+        seed: V,
+    ) -> Result<Option<V::Value>, Error> {
         if self.len > 0 {
             self.len -= 1;
-            Ok(Some(DeserializeSeed::deserialize(seed, &mut *self.deserializer)?))
+            Ok(Some(DeserializeSeed::deserialize(
+                seed,
+                &mut *self.deserializer,
+            )?))
         } else {
             Ok(None)
         }
@@ -257,11 +306,19 @@ impl<'a, 'de> serde::de::VariantAccess<'de> for &'a mut MqttDeserializer<'de> {
         DeserializeSeed::deserialize(seed, self)
     }
 
-    fn struct_variant<V: Visitor<'de>>(self, fields: &'static [&'static str], visitor: V) -> Result<V::Value, Error> {
+    fn struct_variant<V: Visitor<'de>>(
+        self,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Error> {
         serde::de::Deserializer::deserialize_tuple(self, fields.len(), visitor)
     }
 
-    fn tuple_variant<V: Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error> {
+    fn tuple_variant<V: Visitor<'de>>(
+        self,
+        len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
         serde::de::Deserializer::deserialize_tuple(self, len, visitor)
     }
 }
@@ -272,6 +329,7 @@ impl<'a, 'de> serde::de::EnumAccess<'de> for &'a mut MqttDeserializer<'de> {
 
     fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self), Error> {
         let varint = self.read_varint()?;
+        crate::trace!("Read {}", varint);
         let v = DeserializeSeed::deserialize(seed, varint.into_deserializer())?;
         Ok((v, self))
     }

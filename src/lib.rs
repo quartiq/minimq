@@ -68,9 +68,9 @@ mod message_types;
 pub mod mqtt_client;
 mod network_manager;
 mod properties;
+mod serde_minimq;
 mod session_state;
 mod will;
-mod serde_minimq;
 
 use message_types::MessageType;
 pub use properties::Property;

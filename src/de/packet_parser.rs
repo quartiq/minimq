@@ -1,5 +1,6 @@
 use crate::{MessageType, Property, ProtocolError as Error};
 use bit_field::BitField;
+use core::convert::TryFrom;
 use heapless::Vec;
 use varint_rs::VarintReader;
 
@@ -61,7 +62,7 @@ impl<'a> PacketParser<'a> {
         let packet_length = self.read_variable_length_integer()?;
 
         Ok((
-            MessageType::from(header.get_bits(4..=7)),
+            MessageType::try_from(header.get_bits(4..=7)).unwrap_or(MessageType::Invalid),
             header.get_bits(0..=3),
             packet_length as usize,
         ))

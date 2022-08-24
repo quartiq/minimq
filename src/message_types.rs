@@ -1,8 +1,9 @@
-use enum_iterator::IntoEnumIterator;
+use num_enum::TryFromPrimitive;
 
-#[derive(IntoEnumIterator, Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, TryFromPrimitive)]
+#[repr(u8)]
 pub(crate) enum MessageType {
-    Invalid = -1,
+    Invalid = u8::MAX,
 
     Reserved = 0,
     Connect = 1,
@@ -20,16 +21,4 @@ pub(crate) enum MessageType {
     PingResp = 13,
     Disconnect = 14,
     Auth = 15,
-}
-
-impl From<u8> for MessageType {
-    fn from(val: u8) -> Self {
-        for entry in Self::into_enum_iter() {
-            if entry as u8 == val {
-                return entry;
-            }
-        }
-
-        MessageType::Invalid
-    }
 }

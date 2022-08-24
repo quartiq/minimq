@@ -1,6 +1,6 @@
 use crate::{message_types::MessageType, Property, ProtocolError as Error};
-use serde::Deserialize;
 use heapless::Vec;
+use serde::Deserialize;
 
 use super::packet_parser::PacketParser;
 
