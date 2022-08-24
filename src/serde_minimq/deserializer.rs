@@ -176,16 +176,16 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
         self.deserialize_tuple(fields.len(), visitor)
     }
 
+    fn deserialize_enum<V: Visitor<'de>>(self, _name: &'static str, _variants: &'static [&'static str], visitor: V) -> Result<V::Value, Self::Error> {
+        visitor.visit_enum(self)
+    }
+
     fn deserialize_unit_struct<V: Visitor<'de>>(self, _name: &'static str, visitor: V) -> Result<V::Value, Self::Error> {
         self.deserialize_unit(visitor)
     }
 
     fn deserialize_newtype_struct<V: Visitor<'de>>(self, _name: &'static str, visitor: V) -> Result<V::Value, Self::Error> {
         visitor.visit_newtype_struct(self)
-    }
-
-    fn deserialize_enum<V: Visitor<'de>>(self, _name: &'static str, _variants: &'static [&'static str], visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::WontImplement)
     }
 
     fn deserialize_map<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
@@ -243,5 +243,36 @@ impl <'a, 'de: 'a> serde::de::SeqAccess<'de> for SeqAccess<'a, 'de> {
 
     fn size_hint(&self) -> Option<usize> {
         Some(self.len)
+    }
+}
+
+impl<'a, 'de> serde::de::VariantAccess<'de> for &'a mut MqttDeserializer<'de> {
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn newtype_variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<V::Value, Error> {
+        DeserializeSeed::deserialize(seed, self)
+    }
+
+    fn struct_variant<V: Visitor<'de>>(self, fields: &'static [&'static str], visitor: V) -> Result<V::Value, Error> {
+        serde::de::Deserializer::deserialize_tuple(self, fields.len(), visitor)
+    }
+
+    fn tuple_variant<V: Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error> {
+        serde::de::Deserializer::deserialize_tuple(self, len, visitor)
+    }
+}
+
+impl<'a, 'de> serde::de::EnumAccess<'de> for &'a mut MqttDeserializer<'de> {
+    type Error = Error;
+    type Variant = Self;
+
+    fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self), Error> {
+        let varint = self.read_varint()?;
+        let v = DeserializeSeed::deserialize(seed, varint.into_deserializer())?;
+        Ok((v, self))
     }
 }
