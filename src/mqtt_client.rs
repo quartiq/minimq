@@ -550,8 +550,8 @@ impl<
 /// The general structure for managing MQTT via Minimq.
 ///
 /// # Note
-/// To connect and maintain an MQTT connection, the `Minimq::poll()` method must be repeatedly
-/// called.
+/// To connect and maintain an MQTT connection, the `Minimq::poll()` method must be called
+/// regularly.
 pub struct Minimq<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
 where
     TcpStack: TcpClientStack,
@@ -612,6 +612,16 @@ impl<
     /// # Args
     /// * `f` - A closure to process any received messages. The closure should accept the client,
     /// topic, message, and list of proprties (in that order).
+    ///
+    /// # Returns
+    /// Ok(Option<result>) - During normal operation, a <result> will optionally be returned to the
+    /// user software if a value was returned from the `f` closure. If the closure was not
+    /// executed, `None` is returned. Note that `None` may be returned even if MQTT packets were
+    /// processed.
+    ///
+    /// Err(Error) if an MQTT-related error is encountered. Generally, Error::SessionReset is the
+    /// only error expected during normal operation. In this case, the client has lost any previous
+    /// subscriptions or session state.
     pub fn poll<F, T>(&mut self, mut f: F) -> Result<Option<T>, Error<TcpStack::Error>>
     where
         for<'a> F: FnMut(
