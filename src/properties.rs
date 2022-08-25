@@ -137,68 +137,64 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
         let (field, variant) = data.variant::<PropertyIdentifier>()?;
         crate::trace!("Deserializing {:?}", field);
 
-        match field {
+        let property = match field {
             PropertyIdentifier::ResponseTopic => {
-                Ok(Property::ResponseTopic(variant.newtype_variant()?))
+                Property::ResponseTopic(variant.newtype_variant()?)
             }
             PropertyIdentifier::PayloadFormatIndicator => {
-                Ok(Property::PayloadFormatIndicator(variant.newtype_variant()?))
+                Property::PayloadFormatIndicator(variant.newtype_variant()?)
             }
             PropertyIdentifier::MessageExpiryInterval => {
-                Ok(Property::MessageExpiryInterval(variant.newtype_variant()?))
+                Property::MessageExpiryInterval(variant.newtype_variant()?)
             }
-            PropertyIdentifier::ContentType => {
-                Ok(Property::ContentType(variant.newtype_variant()?))
-            }
+            PropertyIdentifier::ContentType => Property::ContentType(variant.newtype_variant()?),
             PropertyIdentifier::CorrelationData => {
-                Ok(Property::CorrelationData(variant.newtype_variant()?))
+                Property::CorrelationData(variant.newtype_variant()?)
             }
             PropertyIdentifier::SubscriptionIdentifier => {
-                Ok(Property::SubscriptionIdentifier(variant.newtype_variant()?))
+                Property::SubscriptionIdentifier(variant.newtype_variant()?)
             }
             PropertyIdentifier::SessionExpiryInterval => {
-                Ok(Property::SessionExpiryInterval(variant.newtype_variant()?))
+                Property::SessionExpiryInterval(variant.newtype_variant()?)
             }
-            PropertyIdentifier::AssignedClientIdentifier => Ok(Property::AssignedClientIdentifier(
-                variant.newtype_variant()?,
-            )),
+            PropertyIdentifier::AssignedClientIdentifier => {
+                Property::AssignedClientIdentifier(variant.newtype_variant()?)
+            }
             PropertyIdentifier::ServerKeepAlive => {
-                Ok(Property::ServerKeepAlive(variant.newtype_variant()?))
+                Property::ServerKeepAlive(variant.newtype_variant()?)
             }
             PropertyIdentifier::AuthenticationMethod => {
-                Ok(Property::AuthenticationMethod(variant.newtype_variant()?))
+                Property::AuthenticationMethod(variant.newtype_variant()?)
             }
             PropertyIdentifier::AuthenticationData => {
-                Ok(Property::AuthenticationData(variant.newtype_variant()?))
+                Property::AuthenticationData(variant.newtype_variant()?)
             }
-            PropertyIdentifier::RequestProblemInformation => Ok(
-                Property::RequestProblemInformation(variant.newtype_variant()?),
-            ),
+            PropertyIdentifier::RequestProblemInformation => {
+                Property::RequestProblemInformation(variant.newtype_variant()?)
+            }
             PropertyIdentifier::WillDelayInterval => {
-                Ok(Property::WillDelayInterval(variant.newtype_variant()?))
+                Property::WillDelayInterval(variant.newtype_variant()?)
             }
-            PropertyIdentifier::RequestResponseInformation => Ok(
-                Property::RequestResponseInformation(variant.newtype_variant()?),
-            ),
+            PropertyIdentifier::RequestResponseInformation => {
+                Property::RequestResponseInformation(variant.newtype_variant()?)
+            }
             PropertyIdentifier::ResponseInformation => {
-                Ok(Property::ResponseInformation(variant.newtype_variant()?))
+                Property::ResponseInformation(variant.newtype_variant()?)
             }
             PropertyIdentifier::ServerReference => {
-                Ok(Property::ServerReference(variant.newtype_variant()?))
+                Property::ServerReference(variant.newtype_variant()?)
             }
-            PropertyIdentifier::ReasonString => {
-                Ok(Property::ReasonString(variant.newtype_variant()?))
-            }
+            PropertyIdentifier::ReasonString => Property::ReasonString(variant.newtype_variant()?),
             PropertyIdentifier::ReceiveMaximum => {
-                Ok(Property::ReceiveMaximum(variant.newtype_variant()?))
+                Property::ReceiveMaximum(variant.newtype_variant()?)
             }
             PropertyIdentifier::TopicAliasMaximum => {
-                Ok(Property::TopicAliasMaximum(variant.newtype_variant()?))
+                Property::TopicAliasMaximum(variant.newtype_variant()?)
             }
-            PropertyIdentifier::TopicAlias => Ok(Property::TopicAlias(variant.newtype_variant()?)),
-            PropertyIdentifier::MaximumQoS => Ok(Property::MaximumQoS(variant.newtype_variant()?)),
+            PropertyIdentifier::TopicAlias => Property::TopicAlias(variant.newtype_variant()?),
+            PropertyIdentifier::MaximumQoS => Property::MaximumQoS(variant.newtype_variant()?),
             PropertyIdentifier::RetainAvailable => {
-                Ok(Property::RetainAvailable(variant.newtype_variant()?))
+                Property::RetainAvailable(variant.newtype_variant()?)
             }
             PropertyIdentifier::UserProperty => {
                 let (key, value) = variant.tuple_variant(
@@ -207,23 +203,25 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
                         _data: core::marker::PhantomData::default(),
                     },
                 )?;
-                Ok(Property::UserProperty(key, value))
+                Property::UserProperty(key, value)
             }
             PropertyIdentifier::MaximumPacketSize => {
-                Ok(Property::MaximumPacketSize(variant.newtype_variant()?))
+                Property::MaximumPacketSize(variant.newtype_variant()?)
             }
-            PropertyIdentifier::WildcardSubscriptionAvailable => Ok(
-                Property::WildcardSubscriptionAvailable(variant.newtype_variant()?),
-            ),
-            PropertyIdentifier::SubscriptionIdentifierAvailable => Ok(
-                Property::SubscriptionIdentifierAvailable(variant.newtype_variant()?),
-            ),
-            PropertyIdentifier::SharedSubscriptionAvailable => Ok(
-                Property::SharedSubscriptionAvailable(variant.newtype_variant()?),
-            ),
+            PropertyIdentifier::WildcardSubscriptionAvailable => {
+                Property::WildcardSubscriptionAvailable(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::SubscriptionIdentifierAvailable => {
+                Property::SubscriptionIdentifierAvailable(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::SharedSubscriptionAvailable => {
+                Property::SharedSubscriptionAvailable(variant.newtype_variant()?)
+            }
 
-            _ => Err(A::Error::custom("Invalid property identifier")),
-        }
+            _ => return Err(A::Error::custom("Invalid property identifier")),
+        };
+
+        Ok(property)
     }
 }
 
