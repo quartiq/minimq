@@ -97,6 +97,29 @@ pub enum Property<'a> {
     SharedSubscriptionAvailable(u8),
 }
 
+struct UserPropertyVisitor<'a> {
+    _data: core::marker::PhantomData<&'a ()>,
+}
+
+impl<'a, 'de: 'a> serde::de::Visitor<'de> for UserPropertyVisitor<'a> {
+    type Value = (&'a str, &'a str);
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(formatter, "UserProperty")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        use serde::de::Error;
+        let key = seq
+            .next_element()?
+            .ok_or_else(|| A::Error::custom("No key present"))?;
+        let value = seq
+            .next_element()?
+            .ok_or_else(|| A::Error::custom("No value present"))?;
+        Ok((key, value))
+    }
+}
+
 struct PropertyVisitor<'a> {
     _data: core::marker::PhantomData<&'a ()>,
 }
@@ -178,9 +201,13 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
                 Ok(Property::RetainAvailable(variant.newtype_variant()?))
             }
             PropertyIdentifier::UserProperty => {
-                // TODO:
-                //Ok(variant.tuple_variant(UserPropertyVisitor)?)
-                Err(A::Error::custom("User property not yet implemented"))
+                let (key, value) = variant.tuple_variant(
+                    2,
+                    UserPropertyVisitor {
+                        _data: core::marker::PhantomData::default(),
+                    },
+                )?;
+                Ok(Property::UserProperty(key, value))
             }
             PropertyIdentifier::MaximumPacketSize => {
                 Ok(Property::MaximumPacketSize(variant.newtype_variant()?))

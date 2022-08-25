@@ -237,6 +237,7 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 
     fn deserialize_identifier<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
+        crate::trace!("Attempting to deserialize ID");
         Err(Error::WontImplement)
     }
 
