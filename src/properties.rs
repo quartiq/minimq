@@ -1,4 +1,4 @@
-use crate::serde_minimq::varint::Varint;
+use crate::varint::Varint;
 use crate::{ser::ReversedPacketWriter, ProtocolError as Error};
 
 use core::convert::TryFrom;
@@ -98,10 +98,12 @@ pub enum Property<'a> {
     SharedSubscriptionAvailable(u8),
 }
 
-struct PropertyVisitor;
+struct PropertyVisitor<'a> {
+    _data: core::marker::PhantomData<&'a ()>,
+}
 
-impl<'de> serde::de::Visitor<'de> for PropertyVisitor {
-    type Value = Property<'de>;
+impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
+    type Value = Property<'a>;
 
     fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(formatter, "enum Property")
@@ -199,9 +201,15 @@ impl<'de> serde::de::Visitor<'de> for PropertyVisitor {
     }
 }
 
-impl<'de> serde::de::Deserialize<'de> for Property<'de> {
+impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Property<'a> {
     fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let prop = deserializer.deserialize_enum("Property", &[], PropertyVisitor)?;
+        let prop = deserializer.deserialize_enum(
+            "Property",
+            &[],
+            PropertyVisitor {
+                _data: core::marker::PhantomData::default(),
+            },
+        )?;
         crate::debug!("Deserialized {:?}", prop);
         Ok(prop)
     }
