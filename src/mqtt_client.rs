@@ -161,6 +161,7 @@ impl<T> From<sm::Error<Error<T>>> for Error<T> {
     }
 }
 
+/// The client that can be used for interacting with the MQTT broker.
 pub struct MqttClient<
     TcpStack: TcpClientStack,
     Clock: embedded_time::Clock,
@@ -253,6 +254,9 @@ impl<
     /// A subscription is not maintained across a disconnection with the broker. In the case of MQTT
     /// disconnections, topics will need to be subscribed to again.
     ///
+    /// The subscription will not be completed immediately. Call
+    /// `MqttClient::subscriptions_pending()` to check for subscriptions being completed.
+    ///
     /// # Args
     /// * `topic` - The topic to subscribe to.
     /// * `properties` - A list of properties to attach to the subscription request. May be empty.
@@ -282,6 +286,7 @@ impl<
         Ok(())
     }
 
+    /// Check if any subscriptions have not yet been completed.
     ///
     /// # Returns
     /// True if any subscriptions are waiting for confirmation from the broker.
@@ -334,9 +339,6 @@ impl<
     ///
     /// # Note
     /// If the client is not yet connected to the broker, the message will be silently ignored.
-    ///
-    /// # Note
-    /// Currently, QoS level 2 (exactly once) delivery is not supported.
     ///
     /// # Args
     /// * `topic` - The topic to publish the message to.
@@ -552,6 +554,10 @@ impl<
 }
 
 /// The general structure for managing MQTT via Minimq.
+///
+/// # Note
+/// To connect and maintain an MQTT connection, the `Minimq::poll()` method must be called
+/// regularly.
 pub struct Minimq<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
 where
     TcpStack: TcpClientStack,
@@ -606,9 +612,22 @@ impl<
 
     /// Check the MQTT interface for available messages.
     ///
+    /// # Note
+    /// This method will processes at most a single MQTT packet per call.
+    ///
     /// # Args
     /// * `f` - A closure to process any received messages. The closure should accept the client,
     /// topic, message, and list of proprties (in that order).
+    ///
+    /// # Returns
+    /// Ok(Option<result>) - During normal operation, a <result> will optionally be returned to the
+    /// user software if a value was returned from the `f` closure. If the closure was not
+    /// executed, `None` is returned. Note that `None` may be returned even if MQTT packets were
+    /// processed.
+    ///
+    /// Err(Error) if an MQTT-related error is encountered. Generally, Error::SessionReset is the
+    /// only error expected during normal operation. In this case, the client has lost any previous
+    /// subscriptions or session state.
     pub fn poll<F, T>(&mut self, mut f: F) -> Result<Option<T>, Error<TcpStack::Error>>
     where
         for<'a> F: FnMut(

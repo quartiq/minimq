@@ -17,10 +17,10 @@ Minimq supports all of the fundamental operations of MQTT, such as message subsc
 publication. Below is a detailed list of features, indicating what aspects are supported and what
 aren't:
 * Will messages are fully supported.
-* Message subscription is fully supported.
 * Message publication is supported for all quality-of-service (QoS) levels
-* Message reception is only supported for the following QoS levels:
+* Message subscription is only supported for the following QoS levels:
     1. At Most once (Level 0)
+* Topic aliasing is not yet supported
 
 If there are features that you would like to have that are not yet supported, we are always
 accepting pull requests to extend Minimq's capabilities.

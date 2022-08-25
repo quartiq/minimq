@@ -7,11 +7,8 @@
 //!
 //! # Limitations
 //! This library does not currently support the following elements:
-//! * Quality-of-service `ExactlyOnce`
-//! * Quality-of-service above `AtMostOnce` for inbound messages.
-//! * Bulk subscriptions
+//! * Subscribing above Quality-of-service `AtMostOnce`
 //! * Server Authentication
-//! * Encryption
 //! * Topic aliases
 //!
 //! # Requirements
@@ -23,9 +20,7 @@
 //! is important to select a size such that the stack does not overflow.
 //!
 //! # Example
-//! Below is a sample snippet showing how this library is used. An example application is provided
-//! in `examples/minimq-stm32h7`, which targets the Nucleo-H743 development board with an external
-//! temperature sensor installed.
+//! Below is a sample snippet showing how this library is used.
 //!
 //! ```no_run
 //! use minimq::{Minimq, QoS, Retain};
@@ -49,6 +44,7 @@
 //!         subscribed = true;
 //!     }
 //!
+//!     // The client must be continually polled to update the MQTT state machine.
 //!     mqtt.poll(|client, topic, message, properties| {
 //!         match topic {
 //!             "topic" => {
