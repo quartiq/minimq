@@ -1,12 +1,56 @@
+/// Custom MQTT message deserializer
+///
+/// # Design
+/// This deserializer handles deserializing MQTT packets. It assumes the following:
+///
+/// ### Integers
+/// All unsigned integers are transmitted in a fixed-width, big-endian notation.
+///
+/// ### Binary data
+/// Binary data blocks (e.g. &[u8]) are always prefixed with a 16-bit integer denoting
+/// their size.
+///
+/// ### Strings
+/// Strings are always prefixed with a 16-bit integer denoting their length. Strings are assumed to
+/// be utf-8 encoded.
+///
+/// ### Options
+/// Options are assumed to be `Some` if there is any remaining data to be deserialized. If there is
+/// no remaining data, an option is assumed to be `None`
+///
+/// ### Sequences
+/// Sequences are assumed to be prefixed by the number of bytes that the entire sequence
+/// represents, stored as a variable integer. The length of the sequence is not known until the
+/// sequence has been deserialized because elements may have variable sizes.
+///
+/// ### Tuples
+/// Tuples are used as a special case of `sequence` where the number of elements, as opposed to the
+/// size of the binary data, is known at deserialization time. These are used to deserialize
+/// at-most N elements.
+///
+/// ### Other Types
+/// Structs, enums, and other variants will be mapped to either a `tuple` or a `sequence` as
+/// appropriate.
+///
+/// Other types are explicitly not implemented and there is no plan to implement them.
 use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 use varint_rs::VarintReader;
 
 #[derive(Debug)]
 pub enum Error {
+    /// The feature is not designed to ever be supported.
     WontImplement,
+
+    /// A custom deserialization error occurred.
     Custom,
+
+    /// An invalid string was encountered, where UTF-8 decoding failed.
     BadString,
+
+    /// An invalid boolean was encountered, which did not use "0" or "1" to encode its value.
     BadBool,
+
+    /// There was not sufficient data to deserialize the required datatype.
     InsufficientData,
 }
 
@@ -33,16 +77,19 @@ impl core::fmt::Display for Error {
     }
 }
 
+/// Deserializes a byte buffer into an MQTT control packet.
 pub struct MqttDeserializer<'a> {
     buf: &'a [u8],
     index: usize,
 }
 
 impl<'a> MqttDeserializer<'a> {
+    /// Construct a deserializer from a provided data buffer.
     pub fn new(buf: &'a [u8]) -> Self {
         Self { buf, index: 0 }
     }
 
+    /// Attempt to take N bytes from the buffer.
     pub fn try_take_n(&mut self, n: usize) -> Result<&'a [u8], Error> {
         if self.len() < n {
             return Err(Error::InsufficientData);
@@ -53,6 +100,7 @@ impl<'a> MqttDeserializer<'a> {
         Ok(data)
     }
 
+    /// Pop a single byte from the data buffer.
     pub fn pop(&mut self) -> Result<u8, Error> {
         if self.len() == 0 {
             return Err(Error::InsufficientData);
@@ -63,18 +111,25 @@ impl<'a> MqttDeserializer<'a> {
         Ok(byte)
     }
 
+    /// Read a 16-bit integer from the data buffer.
     pub fn read_u16(&mut self) -> Result<u16, Error> {
         Ok(u16::from_be_bytes([self.pop()?, self.pop()?]))
     }
 
+    /// Read the number of remaining bytes in the data buffer.
     pub fn len(&self) -> usize {
         self.buf.len() - self.index
     }
 
+    /// Read a variable-length integer from the data buffer.
     pub fn read_varint(&mut self) -> Result<u32, Error> {
         self.read_u32_varint()
     }
 
+    /// Extract any remaining data from the buffer.
+    ///
+    /// # Note
+    /// This is intended to be used after deserialization has completed.
     pub fn remainder(&self) -> &'a [u8] {
         &self.buf[self.index..]
     }
@@ -165,6 +220,8 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        // Sequences are always prefixed with the number of bytes contained within them encoded as
+        // a variable-length integer.
         let len = self.read_varint()?;
         visitor.visit_seq(SeqAccess {
             deserializer: self,
@@ -182,7 +239,8 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
         len: usize,
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        crate::trace!("Deserialize tuple of {} bytes", len);
+        // Tuples are used to sequentially access the deserialization tool for at most the number
+        // of provided elements.
         visitor.visit_seq(ElementAccess {
             deserializer: self,
             count: len,
@@ -272,6 +330,7 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 }
 
+/// Structure used to access a specified number of elements.
 struct ElementAccess<'a, 'de: 'a> {
     deserializer: &'a mut MqttDeserializer<'de>,
     count: usize,
@@ -298,6 +357,7 @@ impl<'a, 'de: 'a> serde::de::SeqAccess<'de> for ElementAccess<'a, 'de> {
     }
 }
 
+/// Structure used to access a specified number of bytes.
 struct SeqAccess<'a, 'de: 'a> {
     deserializer: &'a mut MqttDeserializer<'de>,
     len: usize,
@@ -311,9 +371,14 @@ impl<'a, 'de: 'a> serde::de::SeqAccess<'de> for SeqAccess<'a, 'de> {
         seed: V,
     ) -> Result<Option<V::Value>, Error> {
         if self.len > 0 {
+            // We are deserializing a specified number of bytes in this case, so we need to track
+            // how many bytes each serialization request uses.
             let original_remaining = self.deserializer.len();
             let data = DeserializeSeed::deserialize(seed, &mut *self.deserializer)?;
-            self.len -= original_remaining - self.deserializer.len();
+            self.len = self
+                .len
+                .checked_sub(original_remaining - self.deserializer.len())
+                .ok_or(Error::InsufficientData)?;
 
             Ok(Some(data))
         } else {
