@@ -1,10 +1,12 @@
-use crate::{de::PacketParser, ser::ReversedPacketWriter, ProtocolError as Error};
+use crate::{ser::ReversedPacketWriter, varint::Varint, ProtocolError as Error};
 
-use enum_iterator::IntoEnumIterator;
+use core::convert::TryFrom;
+use num_enum::TryFromPrimitive;
 
-#[derive(Copy, Clone, PartialEq, IntoEnumIterator)]
+#[derive(Debug, Copy, Clone, PartialEq, TryFromPrimitive)]
+#[repr(u32)]
 pub(crate) enum PropertyIdentifier {
-    Invalid = -1,
+    Invalid = u32::MAX,
 
     PayloadFormatIndicator = 0x01,
     MessageExpiryInterval = 0x02,
@@ -42,6 +44,27 @@ pub(crate) enum PropertyIdentifier {
     SharedSubscriptionAvailable = 0x2A,
 }
 
+struct PropertyIdVisitor;
+
+impl<'de> serde::de::Visitor<'de> for PropertyIdVisitor {
+    type Value = PropertyIdentifier;
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(formatter, "PropertyIdentifier")
+    }
+
+    fn visit_u32<E: serde::de::Error>(self, v: u32) -> Result<Self::Value, E> {
+        PropertyIdentifier::try_from(v).map_err(|_| E::custom("Invalid PropertyIdentifier"))
+    }
+}
+
+impl<'de> serde::de::Deserialize<'de> for PropertyIdentifier {
+    fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let result = deserializer.deserialize_u32(PropertyIdVisitor)?;
+        Ok(result)
+    }
+}
+
 /// All of the possible properties that MQTT version 5 supports.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Property<'a> {
@@ -50,7 +73,7 @@ pub enum Property<'a> {
     ContentType(&'a str),
     ResponseTopic(&'a str),
     CorrelationData(&'a [u8]),
-    SubscriptionIdentifier(u32),
+    SubscriptionIdentifier(Varint),
     SessionExpiryInterval(u32),
     AssignedClientIdentifier(&'a str),
     ServerKeepAlive(u16),
@@ -74,15 +97,145 @@ pub enum Property<'a> {
     SharedSubscriptionAvailable(u8),
 }
 
-impl From<u32> for PropertyIdentifier {
-    fn from(val: u32) -> Self {
-        for entry in Self::into_enum_iter() {
-            if entry as u32 == val {
-                return entry;
-            }
-        }
+struct UserPropertyVisitor<'a> {
+    _data: core::marker::PhantomData<&'a ()>,
+}
 
-        PropertyIdentifier::Invalid
+impl<'a, 'de: 'a> serde::de::Visitor<'de> for UserPropertyVisitor<'a> {
+    type Value = (&'a str, &'a str);
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(formatter, "UserProperty")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        use serde::de::Error;
+        let key = seq
+            .next_element()?
+            .ok_or_else(|| A::Error::custom("No key present"))?;
+        let value = seq
+            .next_element()?
+            .ok_or_else(|| A::Error::custom("No value present"))?;
+        Ok((key, value))
+    }
+}
+
+struct PropertyVisitor<'a> {
+    _data: core::marker::PhantomData<&'a ()>,
+}
+
+impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
+    type Value = Property<'a>;
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(formatter, "enum Property")
+    }
+
+    fn visit_enum<A: serde::de::EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
+        use serde::de::{Error, VariantAccess};
+
+        let (field, variant) = data.variant::<PropertyIdentifier>()?;
+        crate::trace!("Deserializing {:?}", field);
+
+        let property = match field {
+            PropertyIdentifier::ResponseTopic => {
+                Property::ResponseTopic(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::PayloadFormatIndicator => {
+                Property::PayloadFormatIndicator(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::MessageExpiryInterval => {
+                Property::MessageExpiryInterval(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::ContentType => Property::ContentType(variant.newtype_variant()?),
+            PropertyIdentifier::CorrelationData => {
+                Property::CorrelationData(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::SubscriptionIdentifier => {
+                Property::SubscriptionIdentifier(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::SessionExpiryInterval => {
+                Property::SessionExpiryInterval(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::AssignedClientIdentifier => {
+                Property::AssignedClientIdentifier(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::ServerKeepAlive => {
+                Property::ServerKeepAlive(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::AuthenticationMethod => {
+                Property::AuthenticationMethod(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::AuthenticationData => {
+                Property::AuthenticationData(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::RequestProblemInformation => {
+                Property::RequestProblemInformation(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::WillDelayInterval => {
+                Property::WillDelayInterval(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::RequestResponseInformation => {
+                Property::RequestResponseInformation(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::ResponseInformation => {
+                Property::ResponseInformation(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::ServerReference => {
+                Property::ServerReference(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::ReasonString => Property::ReasonString(variant.newtype_variant()?),
+            PropertyIdentifier::ReceiveMaximum => {
+                Property::ReceiveMaximum(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::TopicAliasMaximum => {
+                Property::TopicAliasMaximum(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::TopicAlias => Property::TopicAlias(variant.newtype_variant()?),
+            PropertyIdentifier::MaximumQoS => Property::MaximumQoS(variant.newtype_variant()?),
+            PropertyIdentifier::RetainAvailable => {
+                Property::RetainAvailable(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::UserProperty => {
+                let (key, value) = variant.tuple_variant(
+                    2,
+                    UserPropertyVisitor {
+                        _data: core::marker::PhantomData::default(),
+                    },
+                )?;
+                Property::UserProperty(key, value)
+            }
+            PropertyIdentifier::MaximumPacketSize => {
+                Property::MaximumPacketSize(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::WildcardSubscriptionAvailable => {
+                Property::WildcardSubscriptionAvailable(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::SubscriptionIdentifierAvailable => {
+                Property::SubscriptionIdentifierAvailable(variant.newtype_variant()?)
+            }
+            PropertyIdentifier::SharedSubscriptionAvailable => {
+                Property::SharedSubscriptionAvailable(variant.newtype_variant()?)
+            }
+
+            _ => return Err(A::Error::custom("Invalid property identifier")),
+        };
+
+        Ok(property)
+    }
+}
+
+impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Property<'a> {
+    fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let prop = deserializer.deserialize_enum(
+            "Property",
+            &[],
+            PropertyVisitor {
+                _data: core::marker::PhantomData::default(),
+            },
+        )?;
+        crate::debug!("Deserialized {:?}", prop);
+        Ok(prop)
     }
 }
 
@@ -129,91 +282,6 @@ impl<'a> From<&Property<'a>> for PropertyIdentifier {
 }
 
 impl<'a> Property<'a> {
-    pub(crate) fn parse<'reader: 'a>(
-        packet: &'reader PacketParser<'_>,
-    ) -> Result<Property<'a>, Error> {
-        let identifier: PropertyIdentifier = packet.read_variable_length_integer()?.into();
-
-        match identifier {
-            PropertyIdentifier::ResponseTopic => {
-                Ok(Property::ResponseTopic(packet.read_utf8_string()?))
-            }
-            PropertyIdentifier::PayloadFormatIndicator => {
-                Ok(Property::PayloadFormatIndicator(packet.read_u8()?))
-            }
-            PropertyIdentifier::MessageExpiryInterval => {
-                Ok(Property::MessageExpiryInterval(packet.read_u32()?))
-            }
-            PropertyIdentifier::ContentType => {
-                Ok(Property::ContentType(packet.read_utf8_string()?))
-            }
-            PropertyIdentifier::CorrelationData => {
-                Ok(Property::CorrelationData(packet.read_binary_data()?))
-            }
-            PropertyIdentifier::SubscriptionIdentifier => Ok(Property::SubscriptionIdentifier(
-                packet.read_variable_length_integer()?,
-            )),
-            PropertyIdentifier::SessionExpiryInterval => {
-                Ok(Property::SessionExpiryInterval(packet.read_u32()?))
-            }
-            PropertyIdentifier::AssignedClientIdentifier => Ok(Property::AssignedClientIdentifier(
-                packet.read_utf8_string()?,
-            )),
-            PropertyIdentifier::ServerKeepAlive => {
-                Ok(Property::ServerKeepAlive(packet.read_u16()?))
-            }
-            PropertyIdentifier::AuthenticationMethod => {
-                Ok(Property::AuthenticationMethod(packet.read_utf8_string()?))
-            }
-            PropertyIdentifier::AuthenticationData => {
-                Ok(Property::AuthenticationData(packet.read_binary_data()?))
-            }
-            PropertyIdentifier::RequestProblemInformation => {
-                Ok(Property::RequestProblemInformation(packet.read_u8()?))
-            }
-            PropertyIdentifier::WillDelayInterval => {
-                Ok(Property::WillDelayInterval(packet.read_u32()?))
-            }
-            PropertyIdentifier::RequestResponseInformation => {
-                Ok(Property::RequestResponseInformation(packet.read_u8()?))
-            }
-            PropertyIdentifier::ResponseInformation => {
-                Ok(Property::ResponseInformation(packet.read_utf8_string()?))
-            }
-            PropertyIdentifier::ServerReference => {
-                Ok(Property::ServerReference(packet.read_utf8_string()?))
-            }
-            PropertyIdentifier::ReasonString => {
-                Ok(Property::ReasonString(packet.read_utf8_string()?))
-            }
-            PropertyIdentifier::ReceiveMaximum => Ok(Property::ReceiveMaximum(packet.read_u16()?)),
-            PropertyIdentifier::TopicAliasMaximum => {
-                Ok(Property::TopicAliasMaximum(packet.read_u16()?))
-            }
-            PropertyIdentifier::TopicAlias => Ok(Property::TopicAlias(packet.read_u16()?)),
-            PropertyIdentifier::MaximumQoS => Ok(Property::MaximumQoS(packet.read_u8()?)),
-            PropertyIdentifier::RetainAvailable => Ok(Property::RetainAvailable(packet.read_u8()?)),
-            PropertyIdentifier::UserProperty => Ok(Property::UserProperty(
-                packet.read_utf8_string()?,
-                packet.read_utf8_string()?,
-            )),
-            PropertyIdentifier::MaximumPacketSize => {
-                Ok(Property::MaximumPacketSize(packet.read_u32()?))
-            }
-            PropertyIdentifier::WildcardSubscriptionAvailable => {
-                Ok(Property::WildcardSubscriptionAvailable(packet.read_u8()?))
-            }
-            PropertyIdentifier::SubscriptionIdentifierAvailable => {
-                Ok(Property::SubscriptionIdentifierAvailable(packet.read_u8()?))
-            }
-            PropertyIdentifier::SharedSubscriptionAvailable => {
-                Ok(Property::SharedSubscriptionAvailable(packet.read_u8()?))
-            }
-
-            _ => Err(Error::Invalid),
-        }
-    }
-
     pub(crate) fn encode_into<'b>(
         &self,
         packet: &mut ReversedPacketWriter<'b>,
@@ -225,7 +293,7 @@ impl<'a> Property<'a> {
             Property::ResponseTopic(topic) => packet.write_utf8_string(topic)?,
             Property::CorrelationData(data) => packet.write_binary_data(data)?,
             Property::SubscriptionIdentifier(data) => {
-                packet.write_variable_length_integer(*data)?
+                packet.write_variable_length_integer(data.0)?
             }
             Property::SessionExpiryInterval(data) => packet.write_u32(*data)?,
             Property::AssignedClientIdentifier(data) => packet.write_utf8_string(data)?,

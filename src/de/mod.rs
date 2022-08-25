@@ -1,5 +1,4 @@
-pub mod deserialize;
-mod packet_parser;
+mod deserializer;
 mod packet_reader;
-pub(crate) use packet_parser::PacketParser;
+pub mod packets;
 pub(crate) use packet_reader::PacketReader;
