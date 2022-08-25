@@ -65,6 +65,7 @@ pub mod mqtt_client;
 mod network_manager;
 mod properties;
 mod session_state;
+mod varint;
 mod will;
 
 use message_types::MessageType;

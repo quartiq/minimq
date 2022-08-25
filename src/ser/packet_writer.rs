@@ -1,7 +1,25 @@
 /// Provides a means of serializing an MQTT control packet.
 use crate::{MessageType, Property, ProtocolError as Error};
-
 use bit_field::BitField;
+use heapless::Vec;
+use varint_rs::VarintWriter;
+
+pub struct VarintBuffer {
+    data: Vec<u8, 4>,
+}
+
+impl VarintBuffer {
+    pub fn new() -> Self {
+        Self { data: Vec::new() }
+    }
+}
+
+impl VarintWriter for VarintBuffer {
+    type Error = ();
+    fn write(&mut self, byte: u8) -> Result<(), ()> {
+        self.data.push(byte).map_err(|_| ())
+    }
+}
 
 /// Structure for writing a packet.
 ///
@@ -79,6 +97,14 @@ impl<'a> ReversedPacketWriter<'a> {
         self.write(&value.to_be_bytes())
     }
 
+    /// Write a 8-bit integer to the control packet.
+    ///
+    /// # Args
+    /// * `value` - The value to write.
+    pub fn write_u8(&mut self, value: u8) -> Result<(), Error> {
+        self.write(&[value])
+    }
+
     /// Write a UTF-8 encoded string into the control packet.
     ///
     ///  # Args
@@ -91,38 +117,13 @@ impl<'a> ReversedPacketWriter<'a> {
     ///
     ///  # Args
     /// * `value` - The integer to encode.
-    pub fn write_variable_length_integer(&mut self, value: usize) -> Result<(), Error> {
-        // The variable length integer can only support 28 bits.
-        if value > 0x0FFF_FFFF {
-            return Err(Error::DataSize);
-        }
-
-        if value & (0b0111_1111 << 21) > 0 {
-            let data: [u8; 4] = [
-                value as u8 | 0x80,
-                (value >> 7) as u8 | 0x80,
-                (value >> 14) as u8 | 0x80,
-                (value >> 21) as u8 & 0x7F,
-            ];
-
-            self.write(&data)
-        } else if value & (0b0111_1111 << 14) > 0 {
-            let data: [u8; 3] = [
-                value as u8 | 0x80,
-                (value >> 7) as u8 | 0x80,
-                (value >> 14) as u8 & 0x7F,
-            ];
-
-            self.write(&data)
-        } else if value & (0b0111_1111 << 7) > 0 {
-            let data: [u8; 2] = [value as u8 | 0x80, ((value >> 7) & 0x7F) as u8];
-
-            self.write(&data)
-        } else {
-            let data: [u8; 1] = [value as u8 & 0x7F];
-
-            self.write(&data)
-        }
+    pub fn write_variable_length_integer(&mut self, value: u32) -> Result<(), Error> {
+        let mut buffer = VarintBuffer::new();
+        buffer
+            .write_u32_varint(value)
+            .map_err(|_| Error::MalformedPacket)?;
+        self.write(&buffer.data)?;
+        Ok(())
     }
 
     /// Write the fixed header onto the packet.
@@ -134,7 +135,7 @@ impl<'a> ReversedPacketWriter<'a> {
     /// * `typ` - The control packet type.
     /// * `flags` - The flags associated with the control packet.
     /// * `
-    fn write_fixed_header(&mut self, typ: MessageType, flags: u8, len: usize) -> Result<(), Error> {
+    fn write_fixed_header(&mut self, typ: MessageType, flags: u8, len: u32) -> Result<(), Error> {
         // Write the remaining packet length.
         self.write_variable_length_integer(len)?;
 
@@ -157,14 +158,14 @@ impl<'a> ReversedPacketWriter<'a> {
         }
 
         // Store the length of all the properties.
-        self.write_variable_length_integer(self.current_length() - start_length)?;
+        self.write_variable_length_integer((self.current_length() - start_length) as u32)?;
 
         Ok(())
     }
 
     pub fn finalize(mut self, typ: MessageType, flags: u8) -> Result<&'a [u8], Error> {
         // Write the fixed header.
-        self.write_fixed_header(typ, flags, self.current_length())?;
+        self.write_fixed_header(typ, flags, self.current_length() as u32)?;
 
         if self.index == self.buffer.len() {
             Err(Error::MalformedPacket)

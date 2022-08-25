@@ -5,20 +5,6 @@ use crate::{
 
 use bit_field::BitField;
 
-pub fn integer_size(value: usize) -> usize {
-    if value < 0x80 {
-        1
-    } else if value < 0x7FFF {
-        2
-    } else if value < 0x7F_FFFF {
-        3
-    } else if value < 0x7FFF_FFFF {
-        4
-    } else {
-        panic!("Invalid integer");
-    }
-}
-
 pub fn connect_packet<'a, const S: usize>(
     dest: &'a mut [u8],
     client_id: &[u8],
@@ -29,7 +15,7 @@ pub fn connect_packet<'a, const S: usize>(
 ) -> Result<&'a [u8], Error> {
     // Validate the properties for this packet.
     for property in properties {
-        match property.id() {
+        match property.into() {
             PropertyIdentifier::SessionExpiryInterval
             | PropertyIdentifier::AuthenticationMethod
             | PropertyIdentifier::AuthenticationData
@@ -89,7 +75,7 @@ pub fn publish_packet<'a, 'b, 'c>(
 ) -> Result<&'b [u8], Error> {
     // Validate the properties for this packet.
     for property in properties {
-        match property.id() {
+        match property.into() {
             PropertyIdentifier::ResponseTopic
             | PropertyIdentifier::PayloadFormatIndicator
             | PropertyIdentifier::MessageExpiryInterval
@@ -134,7 +120,7 @@ pub fn subscribe_packet<'a, 'b, 'c>(
 ) -> Result<&'c [u8], Error> {
     // Validate the properties for this packet.
     for property in properties {
-        match property.id() {
+        match property.into() {
             PropertyIdentifier::SubscriptionIdentifier => {}
             _ => {
                 return Err(Error::InvalidProperty);
