@@ -1,4 +1,5 @@
 mod deserializer;
+pub mod varint;
 
 pub fn deserialize<'a, T: serde::de::Deserialize<'a>>(
     buf: &'a [u8],

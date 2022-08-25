@@ -1,3 +1,4 @@
+use crate::serde_minimq::varint::Varint;
 use crate::{de::PacketParser, ser::ReversedPacketWriter, ProtocolError as Error};
 
 use core::convert::TryFrom;
@@ -61,7 +62,6 @@ impl<'de> serde::de::Visitor<'de> for PropertyIdVisitor {
 impl<'de> serde::de::Deserialize<'de> for PropertyIdentifier {
     fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let result = deserializer.deserialize_u32(PropertyIdVisitor)?;
-        crate::trace!("Found {:?}", result);
         Ok(result)
     }
 }
@@ -75,7 +75,7 @@ pub enum Property<'a> {
     ContentType(&'a str),
     ResponseTopic(&'a str),
     CorrelationData(&'a [u8]),
-    SubscriptionIdentifier(u32),
+    SubscriptionIdentifier(Varint),
     SessionExpiryInterval(u32),
     AssignedClientIdentifier(&'a str),
     ServerKeepAlive(u16),
@@ -114,7 +114,7 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
         use serde::de::{Error, VariantAccess};
 
         let (field, variant) = data.variant::<PropertyIdentifier>()?;
-        crate::trace!("Visiting property enum");
+        crate::trace!("Deserializing {:?}", field);
 
         match field {
             PropertyIdentifier::ResponseTopic => {
@@ -204,14 +204,15 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
 
 impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Property<'a> {
     fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        crate::trace!("Deserializing property");
-        deserializer.deserialize_enum(
+        let prop = deserializer.deserialize_enum(
             "Property",
             &[],
             PropertyVisitor {
                 _data: core::marker::PhantomData::default(),
             },
-        )
+        )?;
+        crate::debug!("Deserialized {:?}", prop);
+        Ok(prop)
     }
 }
 
@@ -281,7 +282,7 @@ impl<'a> Property<'a> {
                 Ok(Property::CorrelationData(packet.read_binary_data()?))
             }
             PropertyIdentifier::SubscriptionIdentifier => Ok(Property::SubscriptionIdentifier(
-                packet.read_variable_length_integer()?,
+                Varint::from(packet.read_variable_length_integer()?),
             )),
             PropertyIdentifier::SessionExpiryInterval => {
                 Ok(Property::SessionExpiryInterval(packet.read_u32()?))
@@ -355,7 +356,7 @@ impl<'a> Property<'a> {
             Property::ResponseTopic(topic) => packet.write_utf8_string(topic)?,
             Property::CorrelationData(data) => packet.write_binary_data(data)?,
             Property::SubscriptionIdentifier(data) => {
-                packet.write_variable_length_integer(*data)?
+                packet.write_variable_length_integer(data.0)?
             }
             Property::SessionExpiryInterval(data) => packet.write_u32(*data)?,
             Property::AssignedClientIdentifier(data) => packet.write_utf8_string(data)?,

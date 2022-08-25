@@ -178,10 +178,10 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
         len: usize,
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        crate::trace!("Deserialize tuple");
-        visitor.visit_seq(SeqAccess {
+        crate::trace!("Deserialize tuple of {} bytes", len);
+        visitor.visit_seq(ElementAccess {
             deserializer: self,
-            len,
+            count: len,
         })
     }
 
@@ -267,6 +267,32 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 }
 
+struct ElementAccess<'a, 'de: 'a> {
+    deserializer: &'a mut MqttDeserializer<'de>,
+    count: usize,
+}
+
+impl<'a, 'de: 'a> serde::de::SeqAccess<'de> for ElementAccess<'a, 'de> {
+    type Error = Error;
+
+    fn next_element_seed<V: DeserializeSeed<'de>>(
+        &mut self,
+        seed: V,
+    ) -> Result<Option<V::Value>, Error> {
+        if self.count > 0 {
+            self.count -= 1;
+            let data = DeserializeSeed::deserialize(seed, &mut *self.deserializer)?;
+            Ok(Some(data))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.count)
+    }
+}
+
 struct SeqAccess<'a, 'de: 'a> {
     deserializer: &'a mut MqttDeserializer<'de>,
     len: usize,
@@ -280,18 +306,18 @@ impl<'a, 'de: 'a> serde::de::SeqAccess<'de> for SeqAccess<'a, 'de> {
         seed: V,
     ) -> Result<Option<V::Value>, Error> {
         if self.len > 0 {
-            self.len -= 1;
-            Ok(Some(DeserializeSeed::deserialize(
-                seed,
-                &mut *self.deserializer,
-            )?))
+            let original_remaining = self.deserializer.len();
+            let data = DeserializeSeed::deserialize(seed, &mut *self.deserializer)?;
+            self.len -= original_remaining - self.deserializer.len();
+
+            Ok(Some(data))
         } else {
             Ok(None)
         }
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some(self.len)
+        None
     }
 }
 
@@ -329,7 +355,7 @@ impl<'a, 'de> serde::de::EnumAccess<'de> for &'a mut MqttDeserializer<'de> {
 
     fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self), Error> {
         let varint = self.read_varint()?;
-        crate::trace!("Read {}", varint);
+        crate::trace!("Read Varint: 0x{:2X}", varint);
         let v = DeserializeSeed::deserialize(seed, varint.into_deserializer())?;
         Ok((v, self))
     }
