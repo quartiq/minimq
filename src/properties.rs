@@ -69,7 +69,6 @@ impl<'de> serde::de::Deserialize<'de> for PropertyIdentifier {
 /// All of the possible properties that MQTT version 5 supports.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Property<'a> {
-    // TODO: For the varints here, we need to implement custom ser/de implementations.
     PayloadFormatIndicator(u8),
     MessageExpiryInterval(u32),
     ContentType(&'a str),
@@ -99,12 +98,10 @@ pub enum Property<'a> {
     SharedSubscriptionAvailable(u8),
 }
 
-struct PropertyVisitor<'a> {
-    _data: core::marker::PhantomData<&'a ()>,
-}
+struct PropertyVisitor;
 
-impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
-    type Value = Property<'a>;
+impl<'de> serde::de::Visitor<'de> for PropertyVisitor {
+    type Value = Property<'de>;
 
     fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(formatter, "enum Property")
@@ -202,15 +199,9 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
     }
 }
 
-impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Property<'a> {
+impl<'de> serde::de::Deserialize<'de> for Property<'de> {
     fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let prop = deserializer.deserialize_enum(
-            "Property",
-            &[],
-            PropertyVisitor {
-                _data: core::marker::PhantomData::default(),
-            },
-        )?;
+        let prop = deserializer.deserialize_enum("Property", &[], PropertyVisitor)?;
         crate::debug!("Deserialized {:?}", prop);
         Ok(prop)
     }
