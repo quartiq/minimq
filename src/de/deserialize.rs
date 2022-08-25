@@ -1,6 +1,7 @@
-use crate::ProtocolError;
-use crate::{message_types::MessageType, Property};
-use crate::{serde_minimq::deserializer::MqttDeserializer, varint::Varint};
+use crate::{message_types::MessageType, varint::Varint, Property, ProtocolError};
+
+use super::deserializer::MqttDeserializer;
+
 use bit_field::BitField;
 use core::convert::TryFrom;
 use heapless::Vec;

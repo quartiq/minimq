@@ -68,7 +68,6 @@ mod message_types;
 pub mod mqtt_client;
 mod network_manager;
 mod properties;
-mod serde_minimq;
 mod session_state;
 mod varint;
 mod will;

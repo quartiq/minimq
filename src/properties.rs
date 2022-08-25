@@ -1,5 +1,4 @@
-use crate::varint::Varint;
-use crate::{ser::ReversedPacketWriter, ProtocolError as Error};
+use crate::{ser::ReversedPacketWriter, varint::Varint, ProtocolError as Error};
 
 use core::convert::TryFrom;
 use num_enum::TryFromPrimitive;
