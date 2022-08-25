@@ -1,38 +1,39 @@
-/// Custom MQTT message deserializer
-///
-/// # Design
-/// This deserializer handles deserializing MQTT packets. It assumes the following:
-///
-/// ### Integers
-/// All unsigned integers are transmitted in a fixed-width, big-endian notation.
-///
-/// ### Binary data
-/// Binary data blocks (e.g. &[u8]) are always prefixed with a 16-bit integer denoting
-/// their size.
-///
-/// ### Strings
-/// Strings are always prefixed with a 16-bit integer denoting their length. Strings are assumed to
-/// be utf-8 encoded.
-///
-/// ### Options
-/// Options are assumed to be `Some` if there is any remaining data to be deserialized. If there is
-/// no remaining data, an option is assumed to be `None`
-///
-/// ### Sequences
-/// Sequences are assumed to be prefixed by the number of bytes that the entire sequence
-/// represents, stored as a variable integer. The length of the sequence is not known until the
-/// sequence has been deserialized because elements may have variable sizes.
-///
-/// ### Tuples
-/// Tuples are used as a special case of `sequence` where the number of elements, as opposed to the
-/// size of the binary data, is known at deserialization time. These are used to deserialize
-/// at-most N elements.
-///
-/// ### Other Types
-/// Structs, enums, and other variants will be mapped to either a `tuple` or a `sequence` as
-/// appropriate.
-///
-/// Other types are explicitly not implemented and there is no plan to implement them.
+//! Custom MQTT message deserializer
+//!
+//! # Design
+//! This deserializer handles deserializing MQTT packets. It assumes the following:
+//!
+//! ### Integers
+//! All unsigned integers are transmitted in a fixed-width, big-endian notation.
+//!
+//! ### Binary data
+//! Binary data blocks (e.g. &[u8]) are always prefixed with a 16-bit integer denoting
+//! their size.
+//!
+//! ### Strings
+//! Strings are always prefixed with a 16-bit integer denoting their length. Strings are assumed to
+//! be utf-8 encoded.
+//!
+//! ### Options
+//! Options are assumed to be `Some` if there is any remaining data to be deserialized. If there is
+//! no remaining data, an option is assumed to be `None`
+//!
+//! ### Sequences
+//! Sequences are assumed to be prefixed by the number of bytes that the entire sequence
+//! represents, stored as a variable integer. The length of the sequence is not known until the
+//! sequence has been deserialized because elements may have variable sizes.
+//!
+//! ### Tuples
+//! Tuples are used as a special case of `sequence` where the number of elements, as opposed to the
+//! size of the binary data, is known at deserialization time. These are used to deserialize
+//! at-most N elements.
+//!
+//! ### Other Types
+//! Structs, enums, and other variants will be mapped to either a `tuple` or a `sequence` as
+//! appropriate.
+//!
+//! Other types are explicitly not implemented and there is no plan to implement them.
+use core::convert::TryInto;
 use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 use varint_rs::VarintReader;
 
@@ -160,16 +161,11 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 
     fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_i16(i16::from_be_bytes([self.pop()?, self.pop()?]))
+        visitor.visit_i16(i16::from_be_bytes(self.try_take_n(2)?.try_into().unwrap()))
     }
 
     fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_i32(i32::from_be_bytes([
-            self.pop()?,
-            self.pop()?,
-            self.pop()?,
-            self.pop()?,
-        ]))
+        visitor.visit_i32(i32::from_be_bytes(self.try_take_n(4)?.try_into().unwrap()))
     }
 
     fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
@@ -181,12 +177,7 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 
     fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_u32(u32::from_be_bytes([
-            self.pop()?,
-            self.pop()?,
-            self.pop()?,
-            self.pop()?,
-        ]))
+        visitor.visit_u32(u32::from_be_bytes(self.try_take_n(4)?.try_into().unwrap()))
     }
 
     fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
