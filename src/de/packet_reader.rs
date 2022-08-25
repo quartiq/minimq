@@ -1,3 +1,4 @@
+use super::packets::MqttPacket;
 use crate::ProtocolError as Error;
 
 pub(crate) struct PacketReader<const T: usize> {
@@ -74,8 +75,8 @@ impl<const T: usize> PacketReader<T> {
         self.packet_length = None;
     }
 
-    pub fn received_packet(&self) -> Result<&'_ [u8], Error> {
+    pub fn received_packet(&self) -> Result<MqttPacket<'_>, Error> {
         let packet_length = self.packet_length.as_ref().ok_or(Error::PacketSize)?;
-        Ok(&self.buffer[..*packet_length])
+        MqttPacket::from_buffer(&self.buffer[..*packet_length])
     }
 }

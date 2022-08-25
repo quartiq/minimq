@@ -1,6 +1,6 @@
 use crate::{
     de::{
-        deserialize::{ConnAck, MqttPacket, ReceivedPacket, SubAck},
+        packets::{ConnAck, MqttPacket, ReceivedPacket, SubAck},
         PacketReader,
     },
     network_manager::InterfaceHolder,
@@ -18,7 +18,7 @@ use core::str::FromStr;
 
 mod sm {
 
-    use crate::de::deserialize::{ConnAck, ReceivedPacket};
+    use crate::de::packets::{ConnAck, ReceivedPacket};
     use smlang::statemachine;
 
     statemachine! {
@@ -651,9 +651,7 @@ impl<
         }
 
         let result = {
-            // Note(unwrap): We should be guaranteed to have a packet available at this point because
-            // of the loop on availability above.
-            let packet = MqttPacket::from_buffer(self.packet_reader.received_packet().unwrap())?;
+            let packet = self.packet_reader.received_packet()?;
             info!("Received {:?}", packet);
             self.client.handle_packet(packet, &mut f)
         };
