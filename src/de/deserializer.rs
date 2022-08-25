@@ -229,11 +229,6 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
         })
     }
 
-    fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        // Nothing to decode.
-        visitor.visit_unit()
-    }
-
     fn deserialize_tuple<V: Visitor<'de>>(
         self,
         len: usize,
@@ -277,17 +272,17 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     fn deserialize_unit_struct<V: Visitor<'de>>(
         self,
         _name: &'static str,
-        visitor: V,
+        _visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        self.deserialize_unit(visitor)
+        Err(Error::WontImplement)
     }
 
     fn deserialize_newtype_struct<V: Visitor<'de>>(
         self,
         _name: &'static str,
-        visitor: V,
+        _visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        visitor.visit_newtype_struct(self)
+        Err(Error::WontImplement)
     }
 
     fn deserialize_map<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
@@ -295,7 +290,10 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 
     fn deserialize_identifier<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        crate::trace!("Attempting to deserialize ID");
+        Err(Error::WontImplement)
+    }
+
+    fn deserialize_unit<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
         Err(Error::WontImplement)
     }
 
@@ -395,7 +393,7 @@ impl<'a, 'de> serde::de::VariantAccess<'de> for &'a mut MqttDeserializer<'de> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<(), Error> {
-        Ok(())
+        Err(Error::WontImplement)
     }
 
     fn newtype_variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<V::Value, Error> {
