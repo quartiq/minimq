@@ -1,8 +1,10 @@
-use crate::{message_types::MessageType, Property, ProtocolError as Error};
+use crate::serde_minimq::{deserializer::MqttDeserializer, varint::Varint};
+use crate::ProtocolError;
+use crate::{message_types::MessageType, Property};
+use bit_field::BitField;
+use core::convert::TryFrom;
 use heapless::Vec;
 use serde::Deserialize;
-
-use super::packet_parser::PacketParser;
 
 #[derive(Debug, Deserialize)]
 pub struct ConnAck<'a> {
@@ -17,73 +19,97 @@ pub struct ConnAck<'a> {
     pub properties: Vec<Property<'a>, 8>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct Pub<'a> {
     /// The topic that the message was received on.
     pub topic: &'a str,
 
     /// The properties transmitted with the publish data.
+    #[serde(borrow)]
     pub properties: Vec<Property<'a>, 8>,
-
-    /// The payload of the message.
-    pub payload: &'a [u8],
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct PubAck<'a> {
     /// Packet identifier
     pub packet_identifier: u16,
 
-    /// Reason code
-    pub reason: u8,
-
-    /// The properties transmitted with the publish data.
-    pub properties: Vec<Property<'a>, 8>,
+    /// The optional properties and reason code.
+    #[serde(borrow)]
+    pub reason: Reason<'a>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct SubAck<'a> {
     /// The identifier that the acknowledge is assocaited with.
     pub packet_identifier: u16,
 
-    /// The success status of the subscription request.
-    pub reason_code: u8,
-
-    /// A list of properties associated with the subscription.
+    /// The optional properties and reason code.
+    #[serde(borrow)]
     pub properties: Vec<Property<'a>, 8>,
+
+    code: u8,
 }
 
-#[derive(Debug)]
+impl<'a> SubAck<'a> {
+    pub fn code(&self) -> u8 {
+        self.code
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub struct PubRec<'a> {
     /// Packet identifier
     pub packet_id: u16,
 
-    /// The success status of the publication reception.
-    pub reason_code: u8,
-
-    /// Properties associated with the reception result.
-    pub properties: Vec<Property<'a>, 8>,
+    /// The optional properties and reason code.
+    #[serde(borrow)]
+    pub reason: Reason<'a>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct PubComp<'a> {
     /// Packet identifier
     pub packet_id: u16,
 
-    /// The success status of the publication completion.
-    pub reason_code: u8,
-
-    /// Properties associated with the completion.
-    pub properties: Vec<Property<'a>, 8>,
+    /// The optional properties and reason code.
+    #[serde(borrow)]
+    pub reason: Reason<'a>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct Disconnect<'a> {
     /// The success status of the disconnection.
     pub reason_code: u8,
 
     /// Properties associated with the disconnection.
+    #[serde(borrow)]
     pub properties: Vec<Property<'a>, 8>,
+}
+
+#[derive(Debug)]
+pub struct MqttPacket<'a> {
+    pub packet: ReceivedPacket<'a>,
+    pub remaining_payload: &'a [u8],
+}
+
+impl<'a> MqttPacket<'a> {
+    pub fn from_buffer(buf: &'a [u8]) -> Result<Self, ProtocolError> {
+        let mut deserializer = MqttDeserializer::new(buf);
+        let packet = ReceivedPacket::deserialize(&mut deserializer)
+            .map_err(|_| ProtocolError::MalformedPacket)?;
+        let remaining_payload = deserializer.remainder();
+
+        // We should only have remaining payload for publish messages.
+        if !matches!(packet, ReceivedPacket::Publish(_)) && !remaining_payload.is_empty() {
+            return Err(ProtocolError::MalformedPacket);
+        }
+
+        Ok(MqttPacket {
+            packet,
+            remaining_payload,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -98,181 +124,106 @@ pub enum ReceivedPacket<'a> {
     PingResp,
 }
 
-impl<'a> ReceivedPacket<'a> {
-    /// Parse a validated MQTT control packet out of a `PacketParser`.
-    ///
-    /// # Args
-    /// * `packet_reader` - The reader to parse the message out of.
-    ///
-    /// # Returns
-    /// A packet describing the received content.
-    pub(crate) fn parse_packet<'reader: 'a>(
-        packet_reader: &'reader PacketParser<'_>,
-    ) -> Result<ReceivedPacket<'a>, Error> {
-        let (message_type, flags, remaining_length) = packet_reader.read_fixed_header()?;
+#[derive(Debug, Deserialize)]
+pub struct Reason<'a> {
+    #[serde(borrow)]
+    reason: Option<ReasonData<'a>>,
+}
 
-        // Validate packet length.
-        if remaining_length != packet_reader.len()? {
-            return Err(Error::MalformedPacket);
-        }
+impl<'a> Reason<'a> {
+    pub fn code(&self) -> u8 {
+        self.reason.as_ref().map(|data| data.code).unwrap_or(0)
+    }
 
-        match message_type {
-            MessageType::ConnAck => {
-                if flags != 0 {
-                    return Err(Error::MalformedPacket);
-                }
-
-                Ok(ReceivedPacket::ConnAck(parse_connack(packet_reader)?))
-            }
-
-            MessageType::Publish => Ok(ReceivedPacket::Publish(parse_publish(packet_reader)?)),
-
-            MessageType::PubAck => Ok(ReceivedPacket::PubAck(parse_puback(packet_reader)?)),
-
-            MessageType::SubAck => {
-                if flags != 0 {
-                    return Err(Error::MalformedPacket);
-                }
-
-                Ok(ReceivedPacket::SubAck(parse_suback(packet_reader)?))
-            }
-
-            MessageType::PingResp => {
-                if flags != 0 || remaining_length != 0 {
-                    return Err(Error::MalformedPacket);
-                }
-
-                Ok(ReceivedPacket::PingResp)
-            }
-
-            MessageType::PubRec => Ok(ReceivedPacket::PubRec(parse_pubrec(packet_reader)?)),
-            MessageType::PubComp => Ok(ReceivedPacket::PubComp(parse_pubcomp(packet_reader)?)),
-            MessageType::Disconnect => {
-                Ok(ReceivedPacket::Disconnect(parse_disconnect(packet_reader)?))
-            }
-
-            _ => Err(Error::UnsupportedPacket),
+    pub fn properties(&self) -> &'_ [Property<'a>] {
+        match &self.reason {
+            Some(ReasonData { properties, .. }) => properties,
+            _ => &[],
         }
     }
 }
 
-fn parse_connack<'a>(p: &'a PacketParser<'_>) -> Result<ConnAck<'a>, Error> {
-    let connack = crate::serde_minimq::deserialize(p.payload()?).unwrap();
+#[derive(Debug, Deserialize)]
+pub struct ReasonData<'a> {
+    /// Reason code
+    pub code: u8,
 
-    // TODO: Validate properties associated with this message.
-    Ok(connack)
+    /// The properties transmitted with the publish data.
+    #[serde(borrow)]
+    pub properties: Vec<Property<'a>, 8>,
 }
 
-fn parse_publish<'a>(p: &'a PacketParser<'_>) -> Result<Pub<'a>, Error> {
-    let topic = p.read_utf8_string()?;
+struct ControlPacketVisitor;
 
-    let properties = p.read_properties()?;
-    // TODO: Validate properties associated with this message.
+impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
+    type Value = ReceivedPacket<'de>;
 
-    let payload = p.payload()?;
-
-    Ok(Pub {
-        topic,
-        properties,
-        payload,
-    })
-}
-
-fn parse_puback<'a>(p: &'a PacketParser<'_>) -> Result<PubAck<'a>, Error> {
-    let id = p.read_u16()?;
-    // If there's no available data, the reason code is zero and the properties are empty.
-    if p.len()? == 0 {
-        return Ok(PubAck {
-            packet_identifier: id,
-            reason: 0x00,
-            properties: Vec::new(),
-        });
+    fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(formatter, "MQTT Control Packet")
     }
 
-    let reason = p.read_u8()?;
-    let properties = p.read_properties()?;
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        use serde::de::Error;
 
-    Ok(PubAck {
-        packet_identifier: id,
-        reason,
-        properties,
-    })
-}
+        let fixed_header: u8 = seq
+            .next_element()?
+            .ok_or_else(|| A::Error::custom("No header"))?;
+        let _length: Varint = seq
+            .next_element()?
+            .ok_or_else(|| A::Error::custom("No length"))?;
+        let packet_type = MessageType::try_from(fixed_header.get_bits(4..=7))
+            .map_err(|_| A::Error::custom("Invalid MQTT control packet type"))?;
 
-fn parse_suback<'a>(p: &'a PacketParser<'_>) -> Result<SubAck<'a>, Error> {
-    // Read the variable length header.
-    let id = p.read_u16()?;
+        let packet = match packet_type {
+            MessageType::ConnAck => ReceivedPacket::ConnAck(
+                seq.next_element()?
+                    .ok_or_else(|| A::Error::custom("No ConnAck"))?,
+            ),
+            MessageType::Publish => ReceivedPacket::Publish(
+                seq.next_element()?
+                    .ok_or_else(|| A::Error::custom("No Publish"))?,
+            ),
+            MessageType::PubAck => ReceivedPacket::PubAck(
+                seq.next_element()?
+                    .ok_or_else(|| A::Error::custom("No PubAck"))?,
+            ),
+            MessageType::SubAck => ReceivedPacket::SubAck(
+                seq.next_element()?
+                    .ok_or_else(|| A::Error::custom("No SubAck"))?,
+            ),
+            MessageType::PingResp => ReceivedPacket::PingResp,
+            MessageType::PubRec => ReceivedPacket::PubRec(
+                seq.next_element()?
+                    .ok_or_else(|| A::Error::custom("No PubRec"))?,
+            ),
+            MessageType::PubComp => ReceivedPacket::PubComp(
+                seq.next_element()?
+                    .ok_or_else(|| A::Error::custom("No PubComp"))?,
+            ),
+            MessageType::Disconnect => ReceivedPacket::Disconnect(
+                seq.next_element()?
+                    .ok_or_else(|| A::Error::custom("No Disconnect"))?,
+            ),
+            _ => return Err(A::Error::custom("Unsupported message type")),
+        };
 
-    // Parse all properties in the SubAck.
-    let properties = p.read_properties()?;
-    // TODO: Validate properties associated with this message.
-
-    // Read the final payload, which contains the reason code.
-    let reason_code = p.read_u8()?;
-
-    Ok(SubAck {
-        packet_identifier: id,
-        reason_code,
-        properties,
-    })
-}
-
-fn parse_pubrec<'a>(p: &'a PacketParser<'_>) -> Result<PubRec<'a>, Error> {
-    let id = p.read_u16()?;
-
-    // Reason code and properties are both optionally present.
-    if p.len()? == 0 {
-        return Ok(PubRec {
-            packet_id: id,
-            reason_code: 0,
-            properties: Vec::new(),
-        });
+        Ok(packet)
     }
-
-    let reason_code = p.read_u8()?;
-    let properties = p.read_properties()?;
-
-    Ok(PubRec {
-        packet_id: id,
-        reason_code,
-        properties,
-    })
 }
 
-fn parse_pubcomp<'a>(p: &'a PacketParser<'_>) -> Result<PubComp<'a>, Error> {
-    let id = p.read_u16()?;
-
-    // Reason code and properties are both optionally present.
-    if p.len()? == 0 {
-        return Ok(PubComp {
-            packet_id: id,
-            reason_code: 0,
-            properties: Vec::new(),
-        });
+impl<'de> Deserialize<'de> for ReceivedPacket<'de> {
+    fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_struct(
+            "MqttControlPacket",
+            &["fixed_header", "length", "control_packet"],
+            ControlPacketVisitor,
+        )
     }
-
-    let reason_code = p.read_u8()?;
-    let properties = p.read_properties()?;
-
-    Ok(PubComp {
-        packet_id: id,
-        reason_code,
-        properties,
-    })
-}
-
-fn parse_disconnect<'a>(p: &'a PacketParser<'_>) -> Result<Disconnect<'a>, Error> {
-    let reason_code = p.read_u8()?;
-    let properties = p.read_properties()?;
-    Ok(Disconnect {
-        reason_code,
-        properties,
-    })
 }
 
 #[cfg(test)]
 mod test {
-    use super::{PacketParser, ReceivedPacket};
+    use super::{MqttPacket, ReceivedPacket};
 
     #[test]
     fn deserialize_good_connack() {
@@ -284,9 +235,8 @@ mod test {
                   // No payload.
         ];
 
-        let reader = PacketParser::new(&serialized_connack);
-        let connack = ReceivedPacket::parse_packet(&reader).unwrap();
-        match connack {
+        let packet = MqttPacket::from_buffer(&serialized_connack).unwrap();
+        match packet.packet {
             ReceivedPacket::ConnAck(conn_ack) => {
                 assert_eq!(conn_ack.reason_code, 0);
             }
@@ -305,9 +255,8 @@ mod test {
             0x05, // Payload
         ];
 
-        let reader = PacketParser::new(&serialized_publish);
-        let publish = ReceivedPacket::parse_packet(&reader).unwrap();
-        match publish {
+        let packet = MqttPacket::from_buffer(&serialized_publish).unwrap();
+        match packet.packet {
             ReceivedPacket::Publish(pub_info) => {
                 assert_eq!(pub_info.topic, "A");
             }
@@ -317,7 +266,7 @@ mod test {
 
     #[test]
     fn deserialize_good_puback() {
-        let serialized_suback: [u8; 6] = [
+        let serialized_puback: [u8; 6] = [
             0x40, // PubAck
             0x04, // Remaining length
             0x00, 0x05, // Identifier
@@ -325,13 +274,12 @@ mod test {
             0x00, // Properties length
         ];
 
-        let reader = PacketParser::new(&serialized_suback);
-        let puback = ReceivedPacket::parse_packet(&reader).unwrap();
-        match puback {
+        let packet = MqttPacket::from_buffer(&serialized_puback).unwrap();
+        match packet.packet {
             ReceivedPacket::PubAck(pub_ack) => {
-                assert_eq!(pub_ack.reason, 0x10);
+                assert_eq!(pub_ack.reason.code(), 0x10);
                 assert_eq!(pub_ack.packet_identifier, 5);
-                assert_eq!(pub_ack.properties.len(), 0);
+                assert_eq!(pub_ack.reason.properties().len(), 0);
             }
             _ => panic!("Invalid message"),
         }
@@ -339,19 +287,18 @@ mod test {
 
     #[test]
     fn deserialize_good_puback_without_reason() {
-        let serialized_suback: [u8; 4] = [
+        let serialized_puback: [u8; 4] = [
             0x40, // PubAck
             0x02, // Remaining length
             0x00, 0x06, // Identifier
         ];
 
-        let reader = PacketParser::new(&serialized_suback);
-        let puback = ReceivedPacket::parse_packet(&reader).unwrap();
-        match puback {
+        let packet = MqttPacket::from_buffer(&serialized_puback).unwrap();
+        match packet.packet {
             ReceivedPacket::PubAck(pub_ack) => {
-                assert_eq!(pub_ack.reason, 0x00);
                 assert_eq!(pub_ack.packet_identifier, 6);
-                assert_eq!(pub_ack.properties.len(), 0);
+                assert_eq!(pub_ack.reason.code(), 0);
+                assert!(pub_ack.reason.reason.is_none());
             }
             _ => panic!("Invalid message"),
         }
@@ -367,11 +314,10 @@ mod test {
             0x02, // Response Code
         ];
 
-        let reader = PacketParser::new(&serialized_suback);
-        let suback = ReceivedPacket::parse_packet(&reader).unwrap();
-        match suback {
+        let packet = MqttPacket::from_buffer(&serialized_suback).unwrap();
+        match packet.packet {
             ReceivedPacket::SubAck(sub_ack) => {
-                assert_eq!(sub_ack.reason_code, 2);
+                assert_eq!(sub_ack.code(), 2);
                 assert_eq!(sub_ack.packet_identifier, 5);
             }
             _ => panic!("Invalid message"),
@@ -385,9 +331,8 @@ mod test {
             0x00, // Remaining length (0)
         ];
 
-        let reader = PacketParser::new(&serialized_ping_req);
-        let ping_req = ReceivedPacket::parse_packet(&reader).unwrap();
-        match ping_req {
+        let packet = MqttPacket::from_buffer(&serialized_ping_req).unwrap();
+        match packet.packet {
             ReceivedPacket::PingResp => {}
             _ => panic!("Invalid message"),
         }
@@ -403,13 +348,12 @@ mod test {
             0x16, // Response Code
             0x00, // Properties length
         ];
-        let reader = PacketParser::new(&serialized_pubcomp);
-        let pub_comp = ReceivedPacket::parse_packet(&reader).unwrap();
-        match pub_comp {
+        let packet = MqttPacket::from_buffer(&serialized_pubcomp).unwrap();
+        match packet.packet {
             ReceivedPacket::PubComp(comp) => {
                 assert_eq!(comp.packet_id, 5);
-                assert_eq!(comp.reason_code, 0x16);
-                assert_eq!(comp.properties.len(), 0);
+                assert_eq!(comp.reason.code(), 0x16);
+                assert_eq!(comp.reason.properties().len(), 0);
             }
             _ => panic!("Invalid message"),
         }
@@ -423,13 +367,12 @@ mod test {
             0x00,
             0x05, // Identifier
         ];
-        let reader = PacketParser::new(&serialized_pubcomp);
-        let pub_comp = ReceivedPacket::parse_packet(&reader).unwrap();
-        match pub_comp {
+        let packet = MqttPacket::from_buffer(&serialized_pubcomp).unwrap();
+        match packet.packet {
             ReceivedPacket::PubComp(comp) => {
                 assert_eq!(comp.packet_id, 5);
-                assert_eq!(comp.reason_code, 0);
-                assert_eq!(comp.properties.len(), 0);
+                assert_eq!(comp.reason.code(), 0);
+                assert!(comp.reason.reason.is_none());
             }
             _ => panic!("Invalid message"),
         }
@@ -445,13 +388,12 @@ mod test {
             0x10, // Response Code
             0x00, // Properties length
         ];
-        let reader = PacketParser::new(&serialized_pubrec);
-        let pub_rec = ReceivedPacket::parse_packet(&reader).unwrap();
-        match pub_rec {
+        let packet = MqttPacket::from_buffer(&serialized_pubrec).unwrap();
+        match packet.packet {
             ReceivedPacket::PubRec(rec) => {
                 assert_eq!(rec.packet_id, 5);
-                assert_eq!(rec.reason_code, 0x10);
-                assert_eq!(rec.properties.len(), 0);
+                assert_eq!(rec.reason.code(), 0x10);
+                assert_eq!(rec.reason.properties().len(), 0);
             }
             _ => panic!("Invalid message"),
         }
@@ -465,13 +407,12 @@ mod test {
             0x00,
             0x05, // Identifier
         ];
-        let reader = PacketParser::new(&serialized_pubrec);
-        let pub_rec = ReceivedPacket::parse_packet(&reader).unwrap();
-        match pub_rec {
+        let packet = MqttPacket::from_buffer(&serialized_pubrec).unwrap();
+        match packet.packet {
             ReceivedPacket::PubRec(rec) => {
                 assert_eq!(rec.packet_id, 5);
-                assert_eq!(rec.reason_code, 0);
-                assert_eq!(rec.properties.len(), 0);
+                assert_eq!(rec.reason.code(), 0);
+                assert!(rec.reason.reason.is_none());
             }
             _ => panic!("Invalid message"),
         }

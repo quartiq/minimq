@@ -1,5 +1,5 @@
 use crate::serde_minimq::varint::Varint;
-use crate::{de::PacketParser, ser::ReversedPacketWriter, ProtocolError as Error};
+use crate::{ser::ReversedPacketWriter, ProtocolError as Error};
 
 use core::convert::TryFrom;
 use num_enum::TryFromPrimitive;
@@ -259,92 +259,6 @@ impl<'a> From<&Property<'a>> for PropertyIdentifier {
 }
 
 impl<'a> Property<'a> {
-    pub(crate) fn parse<'reader: 'a>(
-        packet: &'reader PacketParser<'_>,
-    ) -> Result<Property<'a>, Error> {
-        let identifier = PropertyIdentifier::try_from(packet.read_variable_length_integer()?)
-            .unwrap_or(PropertyIdentifier::Invalid);
-
-        match identifier {
-            PropertyIdentifier::ResponseTopic => {
-                Ok(Property::ResponseTopic(packet.read_utf8_string()?))
-            }
-            PropertyIdentifier::PayloadFormatIndicator => {
-                Ok(Property::PayloadFormatIndicator(packet.read_u8()?))
-            }
-            PropertyIdentifier::MessageExpiryInterval => {
-                Ok(Property::MessageExpiryInterval(packet.read_u32()?))
-            }
-            PropertyIdentifier::ContentType => {
-                Ok(Property::ContentType(packet.read_utf8_string()?))
-            }
-            PropertyIdentifier::CorrelationData => {
-                Ok(Property::CorrelationData(packet.read_binary_data()?))
-            }
-            PropertyIdentifier::SubscriptionIdentifier => Ok(Property::SubscriptionIdentifier(
-                Varint::from(packet.read_variable_length_integer()?),
-            )),
-            PropertyIdentifier::SessionExpiryInterval => {
-                Ok(Property::SessionExpiryInterval(packet.read_u32()?))
-            }
-            PropertyIdentifier::AssignedClientIdentifier => Ok(Property::AssignedClientIdentifier(
-                packet.read_utf8_string()?,
-            )),
-            PropertyIdentifier::ServerKeepAlive => {
-                Ok(Property::ServerKeepAlive(packet.read_u16()?))
-            }
-            PropertyIdentifier::AuthenticationMethod => {
-                Ok(Property::AuthenticationMethod(packet.read_utf8_string()?))
-            }
-            PropertyIdentifier::AuthenticationData => {
-                Ok(Property::AuthenticationData(packet.read_binary_data()?))
-            }
-            PropertyIdentifier::RequestProblemInformation => {
-                Ok(Property::RequestProblemInformation(packet.read_u8()?))
-            }
-            PropertyIdentifier::WillDelayInterval => {
-                Ok(Property::WillDelayInterval(packet.read_u32()?))
-            }
-            PropertyIdentifier::RequestResponseInformation => {
-                Ok(Property::RequestResponseInformation(packet.read_u8()?))
-            }
-            PropertyIdentifier::ResponseInformation => {
-                Ok(Property::ResponseInformation(packet.read_utf8_string()?))
-            }
-            PropertyIdentifier::ServerReference => {
-                Ok(Property::ServerReference(packet.read_utf8_string()?))
-            }
-            PropertyIdentifier::ReasonString => {
-                Ok(Property::ReasonString(packet.read_utf8_string()?))
-            }
-            PropertyIdentifier::ReceiveMaximum => Ok(Property::ReceiveMaximum(packet.read_u16()?)),
-            PropertyIdentifier::TopicAliasMaximum => {
-                Ok(Property::TopicAliasMaximum(packet.read_u16()?))
-            }
-            PropertyIdentifier::TopicAlias => Ok(Property::TopicAlias(packet.read_u16()?)),
-            PropertyIdentifier::MaximumQoS => Ok(Property::MaximumQoS(packet.read_u8()?)),
-            PropertyIdentifier::RetainAvailable => Ok(Property::RetainAvailable(packet.read_u8()?)),
-            PropertyIdentifier::UserProperty => Ok(Property::UserProperty(
-                packet.read_utf8_string()?,
-                packet.read_utf8_string()?,
-            )),
-            PropertyIdentifier::MaximumPacketSize => {
-                Ok(Property::MaximumPacketSize(packet.read_u32()?))
-            }
-            PropertyIdentifier::WildcardSubscriptionAvailable => {
-                Ok(Property::WildcardSubscriptionAvailable(packet.read_u8()?))
-            }
-            PropertyIdentifier::SubscriptionIdentifierAvailable => {
-                Ok(Property::SubscriptionIdentifierAvailable(packet.read_u8()?))
-            }
-            PropertyIdentifier::SharedSubscriptionAvailable => {
-                Ok(Property::SharedSubscriptionAvailable(packet.read_u8()?))
-            }
-
-            _ => Err(Error::Invalid),
-        }
-    }
-
     pub(crate) fn encode_into<'b>(
         &self,
         packet: &mut ReversedPacketWriter<'b>,

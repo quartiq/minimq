@@ -1,6 +1,6 @@
 use crate::{
     de::{
-        deserialize::{ConnAck, ReceivedPacket, SubAck},
+        deserialize::{ConnAck, MqttPacket, ReceivedPacket, SubAck},
         PacketReader,
     },
     network_manager::InterfaceHolder,
@@ -74,8 +74,8 @@ where
             Some(index) => self.session_state.pending_subscriptions.swap_remove(index),
         };
 
-        if subscribe_acknowledge.reason_code != 0 {
-            return Err(Error::Failed(subscribe_acknowledge.reason_code));
+        if subscribe_acknowledge.code() != 0 {
+            return Err(Error::Failed(subscribe_acknowledge.code()));
         }
 
         Ok(())
@@ -485,7 +485,7 @@ impl<
 
     fn handle_packet<'a, F, T>(
         &mut self,
-        packet: ReceivedPacket<'a>,
+        control_packet: MqttPacket<'a>,
         f: &mut F,
     ) -> Result<Option<T>, Error<TcpStack::Error>>
     where
@@ -496,7 +496,7 @@ impl<
             &[Property<'a>],
         ) -> T,
     {
-        match packet {
+        match control_packet.packet {
             ReceivedPacket::ConnAck(ack) => {
                 self.sm.process_event(Events::Connected(ack))?;
 
@@ -508,12 +508,12 @@ impl<
             }
 
             ReceivedPacket::PubRec(rec) => {
-                if rec.reason_code >= 0x80 {
+                if rec.reason.code() >= 0x80 {
                     self.sm
                         .context_mut()
                         .session_state
                         .remove_packet(rec.packet_id)?;
-                    return Err(Error::Protocol(ProtocolError::Rejected(rec.reason_code)));
+                    return Err(Error::Protocol(ProtocolError::Rejected(rec.reason.code())));
                 }
 
                 let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
@@ -533,11 +533,17 @@ impl<
                     return Err(Error::Protocol(ProtocolError::Invalid));
                 }
 
-                return Ok(Some(f(self, info.topic, info.payload, &info.properties)));
+                return Ok(Some(f(
+                    self,
+                    info.topic,
+                    control_packet.remaining_payload,
+                    &info.properties,
+                )));
             }
 
             _ => {
-                self.sm.process_event(Events::ControlPacket(packet))?;
+                self.sm
+                    .process_event(Events::ControlPacket(control_packet.packet))?;
             }
         }
 
@@ -644,14 +650,13 @@ impl<
             }
         }
 
-        // Note(unwrap): We should be guaranteed to have a packet available at this point because
-        // of the loop on availability above.
-        let packet = self.packet_reader.received_packet().unwrap();
-
-        let packet = ReceivedPacket::parse_packet(&packet)?;
-        info!("Received {:?}", packet);
-
-        let result = self.client.handle_packet(packet, &mut f);
+        let result = {
+            // Note(unwrap): We should be guaranteed to have a packet available at this point because
+            // of the loop on availability above.
+            let packet = MqttPacket::from_buffer(self.packet_reader.received_packet().unwrap())?;
+            info!("Received {:?}", packet);
+            self.client.handle_packet(packet, &mut f)
+        };
 
         // We have now processed the packet. Remove it from the reader.
         self.packet_reader.reset();

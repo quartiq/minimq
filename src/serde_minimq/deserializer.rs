@@ -11,8 +11,8 @@ pub enum Error {
 }
 
 impl serde::de::Error for Error {
-    fn custom<T: core::fmt::Display>(msg: T) -> Self {
-        crate::error!("{}", msg);
+    fn custom<T: core::fmt::Display>(_msg: T) -> Self {
+        crate::error!("{}", _msg);
         Error::Custom
     }
 }
@@ -73,6 +73,10 @@ impl<'a> MqttDeserializer<'a> {
 
     pub fn read_varint(&mut self) -> Result<u32, Error> {
         self.read_u32_varint()
+    }
+
+    pub fn remainder(&self) -> &'a [u8] {
+        &self.buf[self.index..]
     }
 }
 
