@@ -2,10 +2,12 @@ use super::serializer::MqttSerializer;
 use crate::{message_types::ControlPacket, ProtocolError as Error};
 use serde::Serialize;
 
-pub fn to_buffer<'a, T: Serialize + ControlPacket>(
-    buf: &'a mut [u8],
-    packet: T,
-) -> Result<&'a [u8], Error> {
+/// Encode an MQTT control packet into a buffer.
+///
+/// # Args
+/// * `buf` - The buffer to encode data into.
+/// * `packet` - The packet to encode.
+pub fn to_buffer<T: Serialize + ControlPacket>(buf: &mut [u8], packet: T) -> Result<&[u8], Error> {
     let mut serializer = MqttSerializer::new(buf);
     packet.serialize(&mut serializer)?;
     let packet = serializer.finalize(T::MESSAGE_TYPE, packet.fixed_header_flags())?;

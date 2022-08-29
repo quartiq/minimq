@@ -109,6 +109,10 @@ where
             })
     }
 
+    /// Send an MQTT control packet over the interface.
+    ///
+    /// # Args
+    /// * `packet` - The packet to transmit.
     pub fn send_packet<T: Serialize + ControlPacket + core::fmt::Debug>(
         &mut self,
         packet: T,

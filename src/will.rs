@@ -62,7 +62,7 @@ impl<const MSG_SIZE: usize> Will<MSG_SIZE> {
             retain: Retain::NotRetained,
             // Note(unwrap): The vectro is declared as identical size to the vector, so it will
             // always fit.
-            payload: Vec::from_slice(serializer.finish()).unwrap(),
+            payload: Vec::from_slice(serializer.finish_without_fixed_header()).unwrap(),
         })
     }
 

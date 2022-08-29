@@ -1,14 +1,51 @@
+//! Custom MQTT message serializer
+//!
+//! # Design
+//! This serializer handles serializing MQTT packets.
+//!
+//! This serializer does _not_ assume MQTT packet format. It will encode data linearly into a
+//! buffer and converts all data types to big-endian byte notation.
+//!
+//! The serializer reserves the first number of bytes for the MQTT fixed header, which is filled
+//! out after the rest of the packet has been serialized.
+//!
+//! # Limitations
+//! It is the responsibility of the user to handle prefixing necessary lengths and types on any
+//! MQTT-specified datatypes, such as "Properties", "Binary Data", and "UTF-8 Encoded Strings".
+//!
+//! # Supported Data Types
+//!
+//! Basic data types are supported, including:
+//! * Signed & Unsigned integers
+//! * Booleans
+//! * Strings
+//! * Bytes
+//! * Options (Some is encoded as the contained contents, None is not encoded as any data)
+//! * Sequences
+//! * Tuples
+//! * Structs
+//!
+//! Other types are explicitly not implemented and there is no plan to implement them.
 use crate::message_types::MessageType;
 use crate::varint::VarintBuffer;
 use bit_field::BitField;
 use serde::Serialize;
 use varint_rs::VarintWriter;
 
+/// The maximum size of the MQTT fixed header in bytes. This accounts for the header byte and the
+/// maximum variable integer length.
+const MAX_FIXED_HEADER_SIZE: usize = 5;
+
+/// Errors that result from the serialization process
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Error {
+    /// The provided memory buffer did not have enough space to serialize into.
     InsufficientMemory,
+
+    /// The requested feature will not be implemented.
     WontImplement,
-    CannotEncodeNone,
+
+    /// A custom serialization error occurred.
     Custom,
 }
 
@@ -27,25 +64,36 @@ impl core::fmt::Display for Error {
             match self {
                 Error::WontImplement => "This feature won't ever be implemented",
                 Error::Custom => "Custom deserialization error",
-                Error::CannotEncodeNone => "None can only be encoded at the end of a packet",
                 Error::InsufficientMemory => "Not enough data to encode the packet",
             }
         )
     }
 }
 
+/// A structure to serialize MQTT data into a buffer.
 pub struct MqttSerializer<'a> {
     buf: &'a mut [u8],
     index: usize,
 }
 
 impl<'a> MqttSerializer<'a> {
+    /// Construct a new serializer.
+    ///
+    /// # Args
+    /// * `buf` - The location to serialize data into.
     pub fn new(buf: &'a mut [u8]) -> Self {
-        Self { buf, index: 5 }
+        Self {
+            buf,
+            index: MAX_FIXED_HEADER_SIZE,
+        }
     }
 
-    pub fn finish(self) -> &'a [u8] {
-        &self.buf[5..self.index]
+    /// Finish the packet without prepending the MQTT fixed header.
+    ///
+    /// # Returns
+    /// A slice representing the serialized packet without a fixed header.
+    pub fn finish_without_fixed_header(self) -> &'a [u8] {
+        &self.buf[MAX_FIXED_HEADER_SIZE..self.index]
     }
 
     /// Finalize the packet, prepending the MQTT fixed header.
@@ -56,8 +104,8 @@ impl<'a> MqttSerializer<'a> {
     ///
     /// # Returns
     /// A slice representing the serialized packet.
-    pub(crate) fn finalize(self, typ: MessageType, flags: u8) -> Result<&'a [u8], Error> {
-        let len = self.index - 5;
+    pub fn finalize(self, typ: MessageType, flags: u8) -> Result<&'a [u8], Error> {
+        let len = self.index - MAX_FIXED_HEADER_SIZE;
 
         let mut buffer = VarintBuffer::new();
         buffer
@@ -65,13 +113,14 @@ impl<'a> MqttSerializer<'a> {
             .map_err(|_| Error::InsufficientMemory)?;
 
         // Write the remaining packet length.
-        self.buf[5 - buffer.data.len()..][..buffer.data.len()].copy_from_slice(&buffer.data);
+        self.buf[MAX_FIXED_HEADER_SIZE - buffer.data.len()..][..buffer.data.len()]
+            .copy_from_slice(&buffer.data);
 
         // Write the header
         let header: u8 = *0u8.set_bits(4..8, typ as u8).set_bits(0..4, flags);
-        self.buf[5 - buffer.data.len() - 1] = header;
+        self.buf[MAX_FIXED_HEADER_SIZE - buffer.data.len() - 1] = header;
 
-        Ok(&self.buf[..self.index][5 - buffer.data.len() - 1..])
+        Ok(&self.buf[..self.index][MAX_FIXED_HEADER_SIZE - buffer.data.len() - 1..])
     }
 
     /// Write data into the packet.
@@ -102,10 +151,6 @@ impl<'a> MqttSerializer<'a> {
         self.index += 1;
 
         Ok(())
-    }
-
-    pub fn write_u16(&mut self, value: u16) -> Result<(), Error> {
-        self.push_bytes(&value.to_be_bytes())
     }
 }
 
@@ -170,7 +215,6 @@ impl<'a> serde::Serializer for &mut MqttSerializer<'a> {
     }
 
     fn serialize_unit_struct(self, _name: &'static str) -> Result<(), Error> {
-        // There is no data to serialize.
         Ok(())
     }
 
@@ -191,6 +235,14 @@ impl<'a> serde::Serializer for &mut MqttSerializer<'a> {
     }
 
     fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Error> {
+        Ok(self)
+    }
+
+    fn serialize_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStruct, Error> {
         Ok(self)
     }
 
@@ -243,14 +295,6 @@ impl<'a> serde::Serializer for &mut MqttSerializer<'a> {
         Err(Error::WontImplement)
     }
 
-    fn serialize_struct(
-        self,
-        _name: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeStruct, Error> {
-        Ok(self)
-    }
-
     fn serialize_struct_variant(
         self,
         _name: &'static str,
@@ -258,7 +302,7 @@ impl<'a> serde::Serializer for &mut MqttSerializer<'a> {
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStructVariant, Error> {
-        Ok(self)
+        Err(Error::WontImplement)
     }
 
     fn collect_str<T: ?Sized>(self, _value: &T) -> Result<Self::Ok, Error> {
@@ -274,80 +318,7 @@ impl<'a> serde::Serializer for &mut MqttSerializer<'a> {
     }
 }
 
-impl<'a> serde::ser::SerializeTuple for &'a mut MqttSerializer<'_> {
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Error> {
-        value.serialize(&mut **self)
-    }
-
-    fn end(self) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-impl<'a> serde::ser::SerializeTupleStruct for &'a mut MqttSerializer<'_> {
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Error> {
-        value.serialize(&mut **self)
-    }
-
-    fn end(self) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-impl<'a> serde::ser::SerializeTupleVariant for &'a mut MqttSerializer<'_> {
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Error> {
-        value.serialize(&mut **self)
-    }
-
-    fn end(self) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-impl<'a> serde::ser::SerializeMap for &'a mut MqttSerializer<'_> {
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<(), Error> {
-        key.serialize(&mut **self)
-    }
-
-    fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Error> {
-        value.serialize(&mut **self)
-    }
-
-    fn end(self) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
 impl<'a> serde::ser::SerializeStruct for &'a mut MqttSerializer<'_> {
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_field<T: ?Sized + Serialize>(
-        &mut self,
-        _key: &'static str,
-        value: &T,
-    ) -> Result<(), Error> {
-        value.serialize(&mut **self)
-    }
-
-    fn end(self) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-impl<'a> serde::ser::SerializeStructVariant for &'a mut MqttSerializer<'_> {
     type Ok = ();
     type Error = Error;
 
@@ -374,5 +345,78 @@ impl<'a> serde::ser::SerializeSeq for &'a mut MqttSerializer<'_> {
 
     fn end(self) -> Result<(), Error> {
         Ok(())
+    }
+}
+
+impl<'a> serde::ser::SerializeTuple for &'a mut MqttSerializer<'_> {
+    type Ok = ();
+    type Error = Error;
+
+    fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Error> {
+        value.serialize(&mut **self)
+    }
+
+    fn end(self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl<'a> serde::ser::SerializeTupleStruct for &'a mut MqttSerializer<'_> {
+    type Ok = ();
+    type Error = Error;
+
+    fn serialize_field<T: ?Sized + Serialize>(&mut self, _value: &T) -> Result<(), Error> {
+        Err(Error::WontImplement)
+    }
+
+    fn end(self) -> Result<(), Error> {
+        Err(Error::WontImplement)
+    }
+}
+
+impl<'a> serde::ser::SerializeTupleVariant for &'a mut MqttSerializer<'_> {
+    type Ok = ();
+    type Error = Error;
+
+    fn serialize_field<T: ?Sized + Serialize>(&mut self, _value: &T) -> Result<(), Error> {
+        Err(Error::WontImplement)
+    }
+
+    fn end(self) -> Result<(), Error> {
+        Err(Error::WontImplement)
+    }
+}
+
+impl<'a> serde::ser::SerializeMap for &'a mut MqttSerializer<'_> {
+    type Ok = ();
+    type Error = Error;
+
+    fn serialize_key<T: ?Sized + Serialize>(&mut self, _key: &T) -> Result<(), Error> {
+        Err(Error::WontImplement)
+    }
+
+    fn serialize_value<T: ?Sized + Serialize>(&mut self, _value: &T) -> Result<(), Error> {
+        Err(Error::WontImplement)
+    }
+
+    fn end(self) -> Result<(), Error> {
+        Err(Error::WontImplement)
+    }
+}
+
+impl<'a> serde::ser::SerializeStructVariant for &'a mut MqttSerializer<'_> {
+    type Ok = ();
+    type Error = Error;
+
+    fn serialize_field<T: ?Sized + Serialize>(
+        &mut self,
+        _key: &'static str,
+        _value: &T,
+    ) -> Result<(), Error> {
+        Err(Error::WontImplement)
+    }
+
+    fn end(self) -> Result<(), Error> {
+        Err(Error::WontImplement)
     }
 }
