@@ -1,8 +1,8 @@
 use super::serializer::MqttSerializer;
-use crate::{packets::ControlPacket, ProtocolError as Error};
+use crate::{message_types::ControlPacket, ProtocolError as Error};
 use serde::Serialize;
 
-pub fn serialize_control_packet<'a, T: Serialize + ControlPacket + core::fmt::Debug>(
+pub fn to_buffer<'a, T: Serialize + ControlPacket + core::fmt::Debug>(
     buf: &'a mut [u8],
     packet: T,
 ) -> Result<&'a [u8], Error> {
@@ -40,7 +40,7 @@ pub fn serialize_publish() {
     };
 
     let mut buffer: [u8; 900] = [0; 900];
-    let message = serialize_control_packet(&mut buffer, publish).unwrap();
+    let message = to_buffer(&mut buffer, publish).unwrap();
 
     assert_eq!(message, good_publish);
 }
@@ -67,7 +67,7 @@ pub fn serialize_publish_qos1() {
     };
 
     let mut buffer: [u8; 900] = [0; 900];
-    let message = serialize_control_packet(&mut buffer, publish).unwrap();
+    let message = to_buffer(&mut buffer, publish).unwrap();
 
     assert_eq!(message, good_publish);
 }
@@ -93,7 +93,7 @@ fn serialize_subscribe() {
     };
 
     let mut buffer: [u8; 900] = [0; 900];
-    let message = serialize_control_packet(&mut buffer, subscribe).unwrap();
+    let message = to_buffer(&mut buffer, subscribe).unwrap();
 
     assert_eq!(message, good_subscribe);
 }
@@ -123,7 +123,7 @@ pub fn serialize_publish_with_properties() {
     };
 
     let mut buffer: [u8; 900] = [0; 900];
-    let message = serialize_control_packet(&mut buffer, publish).unwrap();
+    let message = to_buffer(&mut buffer, publish).unwrap();
 
     assert_eq!(message, good_publish);
 }
@@ -149,7 +149,7 @@ fn serialize_connect() {
         clean_start: true,
     };
 
-    let message = serialize_control_packet(&mut buffer, connect).unwrap();
+    let message = to_buffer(&mut buffer, connect).unwrap();
 
     assert_eq!(message, good_serialized_connect)
 }
@@ -195,7 +195,7 @@ fn serialize_connect_with_will() {
         will: Some(&will),
     };
 
-    let message = serialize_control_packet(&mut buffer, connect).unwrap();
+    let message = to_buffer(&mut buffer, connect).unwrap();
 
     assert_eq!(message, good_serialized_connect)
 }
@@ -208,7 +208,7 @@ fn serialize_ping_req() {
     ];
 
     let mut buffer: [u8; 1024] = [0; 1024];
-    let message = serialize_control_packet(&mut buffer, crate::packets::PingReq {}).unwrap();
+    let message = to_buffer(&mut buffer, crate::packets::PingReq {}).unwrap();
     assert_eq!(message, good_ping_req);
 }
 
@@ -230,8 +230,5 @@ fn serialize_pubrel() {
     };
 
     let mut buffer: [u8; 1024] = [0; 1024];
-    assert_eq!(
-        serialize_control_packet(&mut buffer, pubrel).unwrap(),
-        good_pubrel
-    );
+    assert_eq!(to_buffer(&mut buffer, pubrel).unwrap(), good_pubrel);
 }

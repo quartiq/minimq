@@ -85,7 +85,7 @@ impl serde::Serialize for Varint {
             .map_err(|_| S::Error::custom("Failed to encode varint"))?;
 
         let mut seq = serializer.serialize_seq(Some(buffer.data.len()))?;
-        for byte in buffer.data.iter().rev() {
+        for byte in buffer.data.iter() {
             seq.serialize_element(byte)?;
         }
         seq.end()

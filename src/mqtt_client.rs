@@ -2,7 +2,7 @@ use crate::{
     de::{packets::ReceivedPacket, PacketReader},
     network_manager::InterfaceHolder,
     packets::{ConnAck, Connect, PingReq, Pub, PubRel, SubAck, Subscribe},
-    ser::serialize,
+    ser::control_packet,
     session_state::SessionState,
     types::{Properties, SubscriptionOptions, Utf8String},
     will::Will,
@@ -73,8 +73,8 @@ where
             Some(index) => self.session_state.pending_subscriptions.swap_remove(index),
         };
 
-        if subscribe_acknowledge.code() != 0 {
-            return Err(Error::Failed(subscribe_acknowledge.code()));
+        if subscribe_acknowledge.code != 0 {
+            return Err(Error::Failed(subscribe_acknowledge.code));
         }
 
         Ok(())
@@ -279,7 +279,7 @@ impl<
 
         info!("Sending: {:?}", subscribe);
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = serialize::serialize_control_packet(&mut buffer, subscribe)?;
+        let packet = control_packet::to_buffer(&mut buffer, subscribe)?;
 
         self.network.write(packet)?;
         self.sm.process_event(Events::SentSubscribe(packet_id))?;
@@ -385,7 +385,7 @@ impl<
         };
 
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = serialize::serialize_control_packet(&mut buffer, publish)?;
+        let packet = control_packet::to_buffer(&mut buffer, publish)?;
 
         self.network.write(packet)?;
 
@@ -421,7 +421,7 @@ impl<
 
         info!("Sending {:?}", connect);
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = serialize::serialize_control_packet(&mut buffer, connect)?;
+        let packet = control_packet::to_buffer(&mut buffer, connect)?;
 
         self.network.write(packet)?;
 
@@ -456,10 +456,10 @@ impl<
         }
 
         if self.sm.context_mut().session_state.ping_is_due()? {
-            // Note: If we fail to serialize or write the packet, the ping timeout timer is
+            // Note: If we fail to control_packet or write the packet, the ping timeout timer is
             // still running, so we will recover the TCP connection in the future.
             let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-            let packet = serialize::serialize_control_packet(&mut buffer, PingReq {})?;
+            let packet = control_packet::to_buffer(&mut buffer, PingReq {})?;
             self.network.write(packet)?;
         }
 
@@ -532,7 +532,7 @@ impl<
                 info!("Sending {:?}", pubrel);
 
                 let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-                let packet = serialize::serialize_control_packet(&mut buffer, pubrel)?;
+                let packet = control_packet::to_buffer(&mut buffer, pubrel)?;
                 self.network.write(packet)?;
 
                 // TODO: Utilize errors to generate reason codes.

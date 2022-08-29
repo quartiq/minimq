@@ -1,5 +1,4 @@
 use crate::{
-    message_types::MessageType,
     properties::Property,
     types::{Properties, SubscriptionOptions, Utf8String},
     will::Will,
@@ -20,8 +19,8 @@ pub struct Connect<'a, const T: usize> {
     pub clean_start: bool,
 }
 
-impl<'a, const T: usize> Connect<'a, T> {
-    fn flags(&self) -> u8 {
+impl<'a, const T: usize> serde::Serialize for Connect<'a, T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut flags: u8 = 0;
         flags.set_bit(1, self.clean_start);
 
@@ -33,16 +32,10 @@ impl<'a, const T: usize> Connect<'a, T> {
             flags.set_bit(5, will.retain == Retain::Retained);
         }
 
-        flags
-    }
-}
-
-impl<'a, const T: usize> serde::Serialize for Connect<'a, T> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut item = serializer.serialize_struct("Connect", 0)?;
         item.serialize_field("protocol_name", &Utf8String("MQTT"))?;
         item.serialize_field("protocol_version", &5u8)?;
-        item.serialize_field("flags", &self.flags())?;
+        item.serialize_field("flags", &flags)?;
         item.serialize_field("keep_alive", &self.keep_alive)?;
         item.serialize_field("properties", &self.properties)?;
         item.serialize_field("client_id", &self.client_id)?;
@@ -127,13 +120,7 @@ pub struct SubAck<'a> {
     #[serde(borrow)]
     pub properties: Vec<Property<'a>, 8>,
 
-    code: u8,
-}
-
-impl<'a> SubAck<'a> {
-    pub fn code(&self) -> u8 {
-        self.code
-    }
+    pub code: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -202,69 +189,4 @@ pub struct ReasonData<'a> {
     /// The properties transmitted with the publish data.
     #[serde(borrow)]
     pub properties: Vec<Property<'a>, 8>,
-}
-
-pub trait ControlPacket {
-    const MESSAGE_TYPE: MessageType;
-    fn fixed_header_flags(&self) -> u8 {
-        0u8
-    }
-}
-
-impl<'a, const T: usize> ControlPacket for Connect<'a, T> {
-    const MESSAGE_TYPE: MessageType = MessageType::Connect;
-}
-
-impl<'a> ControlPacket for ConnAck<'a> {
-    const MESSAGE_TYPE: MessageType = MessageType::ConnAck;
-}
-
-impl<'a> ControlPacket for Pub<'a> {
-    const MESSAGE_TYPE: MessageType = MessageType::Publish;
-    fn fixed_header_flags(&self) -> u8 {
-        *0u8.set_bits(1..=2, self.qos as u8)
-            .set_bit(0, self.retain == Retain::Retained)
-    }
-}
-
-impl<'a> ControlPacket for PubAck<'a> {
-    const MESSAGE_TYPE: MessageType = MessageType::PubAck;
-}
-
-impl<'a> ControlPacket for PubRec<'a> {
-    const MESSAGE_TYPE: MessageType = MessageType::PubRec;
-}
-
-impl<'a> ControlPacket for PubRel<'a> {
-    const MESSAGE_TYPE: MessageType = MessageType::PubRel;
-    fn fixed_header_flags(&self) -> u8 {
-        0b0010
-    }
-}
-
-impl<'a> ControlPacket for PubComp<'a> {
-    const MESSAGE_TYPE: MessageType = MessageType::PubRec;
-}
-
-impl<'a> ControlPacket for Subscribe<'a> {
-    const MESSAGE_TYPE: MessageType = MessageType::Subscribe;
-    fn fixed_header_flags(&self) -> u8 {
-        0b0010
-    }
-}
-
-impl<'a> ControlPacket for SubAck<'a> {
-    const MESSAGE_TYPE: MessageType = MessageType::SubAck;
-}
-
-impl ControlPacket for PingReq {
-    const MESSAGE_TYPE: MessageType = MessageType::PingReq;
-}
-
-impl ControlPacket for PingResp {
-    const MESSAGE_TYPE: MessageType = MessageType::PingResp;
-}
-
-impl<'a> ControlPacket for Disconnect<'a> {
-    const MESSAGE_TYPE: MessageType = MessageType::Disconnect;
 }

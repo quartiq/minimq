@@ -238,7 +238,7 @@ mod test {
         let packet = ReceivedPacket::from_buffer(&serialized_suback).unwrap();
         match packet {
             ReceivedPacket::SubAck(sub_ack) => {
-                assert_eq!(sub_ack.code(), 2);
+                assert_eq!(sub_ack.code, 2);
                 assert_eq!(sub_ack.packet_identifier, 5);
             }
             _ => panic!("Invalid message"),
