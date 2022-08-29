@@ -2,7 +2,6 @@ use crate::{
     de::{received_packet::ReceivedPacket, PacketReader},
     network_manager::InterfaceHolder,
     packets::{ConnAck, Connect, PingReq, Pub, PubRel, SubAck, Subscribe},
-    ser::control_packet,
     session_state::SessionState,
     types::{Properties, SubscriptionOptions, Utf8String},
     will::Will,
@@ -271,17 +270,12 @@ impl<
 
         let packet_id = self.sm.context_mut().session_state.get_packet_identifier();
 
-        let subscribe = Subscribe {
+        self.network.send_packet(Subscribe {
             packet_id,
             properties: Properties(properties),
             topics: &[(Utf8String(topic), SubscriptionOptions {})],
-        };
+        })?;
 
-        info!("Sending: {:?}", subscribe);
-        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = control_packet::to_buffer(&mut buffer, subscribe)?;
-
-        self.network.write(packet)?;
         self.sm.process_event(Events::SentSubscribe(packet_id))?;
 
         Ok(())
@@ -366,11 +360,6 @@ impl<
             return Err(Error::NotReady);
         }
 
-        info!(
-            "Publishing to `{}`: {:?} Props: {:?}",
-            topic, data, properties
-        );
-
         // If QoS 0 the ID will be ignored
         let id = self.sm.context_mut().session_state.get_packet_identifier();
 
@@ -384,9 +373,9 @@ impl<
             dup: false,
         };
 
+        crate::info!("Sending: {:?}", publish);
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = control_packet::to_buffer(&mut buffer, publish)?;
-
+        let packet = crate::ser::control_packet::to_buffer(&mut buffer, publish)?;
         self.network.write(packet)?;
 
         // TODO: Generate event.
@@ -411,19 +400,13 @@ impl<
             Property::ReceiveMaximum(MSG_COUNT as u16),
         ];
 
-        let connect = Connect {
+        self.network.send_packet(Connect {
             keep_alive: self.sm.context().session_state.keepalive_interval(),
             properties: Properties(&properties),
             client_id: Utf8String(self.sm.context().session_state.client_id.as_str()),
             will: self.will.as_ref(),
             clean_start: !self.sm.context().session_state.is_present(),
-        };
-
-        info!("Sending {:?}", connect);
-        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = control_packet::to_buffer(&mut buffer, connect)?;
-
-        self.network.write(packet)?;
+        })?;
 
         self.sm.process_event(Events::SentConnect)?;
 
@@ -458,9 +441,7 @@ impl<
         if self.sm.context_mut().session_state.ping_is_due()? {
             // Note: If we fail to control_packet or write the packet, the ping timeout timer is
             // still running, so we will recover the TCP connection in the future.
-            let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-            let packet = control_packet::to_buffer(&mut buffer, PingReq {})?;
-            self.network.write(packet)?;
+            self.network.send_packet(PingReq {})?;
         }
 
         Ok(())
@@ -529,10 +510,10 @@ impl<
                     code: 0,
                     properties: Properties(&[]),
                 };
-                info!("Sending {:?}", pubrel);
 
+                crate::info!("Sending: {:?}", pubrel);
                 let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-                let packet = control_packet::to_buffer(&mut buffer, pubrel)?;
+                let packet = crate::ser::control_packet::to_buffer(&mut buffer, pubrel)?;
                 self.network.write(packet)?;
 
                 // TODO: Utilize errors to generate reason codes.

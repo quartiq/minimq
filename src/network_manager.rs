@@ -5,8 +5,10 @@
 //! simple ownership semantics of reading and writing to the network stack. This allows the network
 //! stack to be used to transmit buffers that may be stored internally in other structs without
 //! violating Rust's borrow rules.
+use crate::message_types::ControlPacket;
 use embedded_nal::{nb, SocketAddr, TcpClientStack};
 use heapless::Vec;
+use serde::Serialize;
 
 use crate::Error;
 
@@ -105,6 +107,18 @@ where
                         .replace(Vec::from_slice(&data[written..]).unwrap());
                 }
             })
+    }
+
+    pub fn send_packet<T: Serialize + ControlPacket + core::fmt::Debug>(
+        &mut self,
+        packet: T,
+    ) -> Result<(), Error<TcpStack::Error>> {
+        crate::info!("Sending: {:?}", packet);
+        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
+        let packet = crate::ser::control_packet::to_buffer(&mut buffer, packet)?;
+
+        self.write(packet)?;
+        Ok(())
     }
 
     /// Finish writing an MQTT control packet to the interface if one exists.

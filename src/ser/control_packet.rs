@@ -2,21 +2,14 @@ use super::serializer::MqttSerializer;
 use crate::{message_types::ControlPacket, ProtocolError as Error};
 use serde::Serialize;
 
-pub fn to_buffer<'a, T: Serialize + ControlPacket + core::fmt::Debug>(
+pub fn to_buffer<'a, T: Serialize + ControlPacket>(
     buf: &'a mut [u8],
     packet: T,
 ) -> Result<&'a [u8], Error> {
     let mut serializer = MqttSerializer::new(buf);
-
-    crate::debug!("Serializing {:?}: {:?}", T::MESSAGE_TYPE, packet);
-    // TODO: Map this to a serialization error.
-    packet
-        .serialize(&mut serializer)
-        .map_err(|_| Error::MalformedPacket)?;
-
-    serializer
-        .finalize(T::MESSAGE_TYPE, packet.fixed_header_flags())
-        .map_err(|_| Error::MalformedPacket)
+    packet.serialize(&mut serializer)?;
+    let packet = serializer.finalize(T::MESSAGE_TYPE, packet.fixed_header_flags())?;
+    Ok(packet)
 }
 
 #[test]
