@@ -29,22 +29,25 @@ impl<'a> serde::Serialize for BinaryData<'a> {
     }
 }
 
-struct BinaryDataVisitor;
-
-impl<'de> serde::de::Visitor<'de> for BinaryDataVisitor {
-    type Value = BinaryData<'de>;
-
-    fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
-        write!(formatter, "BinaryData")
-    }
-
-    fn visit_borrowed_bytes<E: serde::de::Error>(self, data: &'de [u8]) -> Result<Self::Value, E> {
-        Ok(BinaryData(data))
-    }
-}
-
 impl<'de> serde::de::Deserialize<'de> for BinaryData<'de> {
     fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct BinaryDataVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for BinaryDataVisitor {
+            type Value = BinaryData<'de>;
+
+            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+                write!(formatter, "BinaryData")
+            }
+
+            fn visit_borrowed_bytes<E: serde::de::Error>(
+                self,
+                data: &'de [u8],
+            ) -> Result<Self::Value, E> {
+                Ok(BinaryData(data))
+            }
+        }
+
         deserializer.deserialize_bytes(BinaryDataVisitor)
     }
 }
@@ -62,24 +65,27 @@ impl<'a> serde::Serialize for Utf8String<'a> {
     }
 }
 
-struct Utf8StringVisitor<'a> {
-    _data: core::marker::PhantomData<&'a ()>,
-}
-
-impl<'a, 'de: 'a> serde::de::Visitor<'de> for Utf8StringVisitor<'a> {
-    type Value = Utf8String<'a>;
-
-    fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
-        write!(formatter, "Utf8String")
-    }
-
-    fn visit_borrowed_str<E: serde::de::Error>(self, data: &'de str) -> Result<Self::Value, E> {
-        Ok(Utf8String(data))
-    }
-}
-
 impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Utf8String<'a> {
     fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Utf8StringVisitor<'a> {
+            _data: core::marker::PhantomData<&'a ()>,
+        }
+
+        impl<'a, 'de: 'a> serde::de::Visitor<'de> for Utf8StringVisitor<'a> {
+            type Value = Utf8String<'a>;
+
+            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+                write!(formatter, "Utf8String")
+            }
+
+            fn visit_borrowed_str<E: serde::de::Error>(
+                self,
+                data: &'de str,
+            ) -> Result<Self::Value, E> {
+                Ok(Utf8String(data))
+            }
+        }
+
         deserializer.deserialize_str(Utf8StringVisitor {
             _data: core::marker::PhantomData::default(),
         })
