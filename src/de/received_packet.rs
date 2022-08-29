@@ -11,6 +11,18 @@ use bit_field::BitField;
 use core::convert::TryFrom;
 use serde::Deserialize;
 
+#[derive(Debug)]
+pub enum ReceivedPacket<'a> {
+    ConnAck(ConnAck<'a>),
+    Publish(Pub<'a>),
+    PubAck(PubAck<'a>),
+    SubAck(SubAck<'a>),
+    PubRec(PubRec<'a>),
+    PubComp(PubComp<'a>),
+    Disconnect(Disconnect<'a>),
+    PingResp,
+}
+
 impl<'a> ReceivedPacket<'a> {
     pub fn from_buffer(buf: &'a [u8]) -> Result<Self, ProtocolError> {
         let mut deserializer = MqttDeserializer::new(buf);
@@ -32,110 +44,77 @@ impl<'a> ReceivedPacket<'a> {
     }
 }
 
-#[derive(Debug)]
-pub enum ReceivedPacket<'a> {
-    ConnAck(ConnAck<'a>),
-    Publish(Pub<'a>),
-    PubAck(PubAck<'a>),
-    SubAck(SubAck<'a>),
-    PubRec(PubRec<'a>),
-    PubComp(PubComp<'a>),
-    Disconnect(Disconnect<'a>),
-    PingResp,
-}
-
-struct ControlPacketVisitor;
-
-impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
-    type Value = ReceivedPacket<'de>;
-
-    fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
-        write!(formatter, "MQTT Control Packet")
-    }
-
-    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-        use serde::de::Error;
-
-        let fixed_header: u8 = seq
-            .next_element()?
-            .ok_or_else(|| A::Error::custom("No header"))?;
-        let _length: Varint = seq
-            .next_element()?
-            .ok_or_else(|| A::Error::custom("No length"))?;
-        let packet_type = MessageType::try_from(fixed_header.get_bits(4..=7))
-            .map_err(|_| A::Error::custom("Invalid MQTT control packet type"))?;
-
-        let packet = match packet_type {
-            MessageType::ConnAck => ReceivedPacket::ConnAck(
-                seq.next_element()?
-                    .ok_or_else(|| A::Error::custom("No ConnAck"))?,
-            ),
-            MessageType::Publish => {
-                let qos = QoS::try_from(fixed_header.get_bits(1..=2))
-                    .map_err(|_| A::Error::custom("Bad QoS field"))?;
-
-                let topic = seq
-                    .next_element()?
-                    .ok_or_else(|| A::Error::custom("No topic"))?;
-                let packet_id = if qos > QoS::AtMostOnce {
-                    Some(
-                        seq.next_element()?
-                            .ok_or_else(|| A::Error::custom("No packet ID"))?,
-                    )
-                } else {
-                    None
-                };
-
-                let properties = seq
-                    .next_element()?
-                    .ok_or_else(|| A::Error::custom("No properties"))?;
-
-                let publish = Pub {
-                    topic,
-                    packet_id,
-                    properties,
-                    payload: &[],
-                    retain: if fixed_header.get_bit(0) {
-                        Retain::Retained
-                    } else {
-                        Retain::NotRetained
-                    },
-                    dup: fixed_header.get_bit(3),
-                    qos,
-                };
-
-                ReceivedPacket::Publish(publish)
-            }
-            MessageType::PubAck => ReceivedPacket::PubAck(
-                seq.next_element()?
-                    .ok_or_else(|| A::Error::custom("No PubAck"))?,
-            ),
-            MessageType::SubAck => ReceivedPacket::SubAck(
-                seq.next_element()?
-                    .ok_or_else(|| A::Error::custom("No SubAck"))?,
-            ),
-            MessageType::PingResp => ReceivedPacket::PingResp,
-            MessageType::PubRec => ReceivedPacket::PubRec(
-                seq.next_element()?
-                    .ok_or_else(|| A::Error::custom("No PubRec"))?,
-            ),
-            MessageType::PubComp => ReceivedPacket::PubComp(
-                seq.next_element()?
-                    .ok_or_else(|| A::Error::custom("No PubComp"))?,
-            ),
-            MessageType::Disconnect => ReceivedPacket::Disconnect(
-                seq.next_element()?
-                    .ok_or_else(|| A::Error::custom("No Disconnect"))?,
-            ),
-            _ => return Err(A::Error::custom("Unsupported message type")),
-        };
-
-        Ok(packet)
-    }
-}
-
 impl<'de> Deserialize<'de> for ReceivedPacket<'de> {
     fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ControlPacketVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
+            type Value = ReceivedPacket<'de>;
+
+            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+                write!(formatter, "MQTT Control Packet")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                use serde::de::Error;
+
+                // Note(unwraps): These unwraps should never fail - the next_element() function
+                // should be always providing us some new element or an error that we return based
+                // on our deserialization implementation.
+                let fixed_header: u8 = seq.next_element()?.unwrap();
+                let _length: Varint = seq.next_element()?.unwrap();
+                let packet_type = MessageType::try_from(fixed_header.get_bits(4..=7))
+                    .map_err(|_| A::Error::custom("Invalid MQTT control packet type"))?;
+
+                let packet = match packet_type {
+                    MessageType::ConnAck => ReceivedPacket::ConnAck(seq.next_element()?.unwrap()),
+                    MessageType::Publish => {
+                        let qos = QoS::try_from(fixed_header.get_bits(1..=2))
+                            .map_err(|_| A::Error::custom("Bad QoS field"))?;
+
+                        let topic = seq.next_element()?.unwrap();
+                        let packet_id = if qos > QoS::AtMostOnce {
+                            Some(seq.next_element()?.unwrap())
+                        } else {
+                            None
+                        };
+
+                        let properties = seq.next_element()?.unwrap();
+
+                        let publish = Pub {
+                            topic,
+                            packet_id,
+                            properties,
+                            payload: &[],
+                            retain: if fixed_header.get_bit(0) {
+                                Retain::Retained
+                            } else {
+                                Retain::NotRetained
+                            },
+                            dup: fixed_header.get_bit(3),
+                            qos,
+                        };
+
+                        ReceivedPacket::Publish(publish)
+                    }
+                    MessageType::PubAck => ReceivedPacket::PubAck(seq.next_element()?.unwrap()),
+                    MessageType::SubAck => ReceivedPacket::SubAck(seq.next_element()?.unwrap()),
+                    MessageType::PingResp => ReceivedPacket::PingResp,
+                    MessageType::PubRec => ReceivedPacket::PubRec(seq.next_element()?.unwrap()),
+                    MessageType::PubComp => ReceivedPacket::PubComp(seq.next_element()?.unwrap()),
+                    MessageType::Disconnect => {
+                        ReceivedPacket::Disconnect(seq.next_element()?.unwrap())
+                    }
+                    _ => return Err(A::Error::custom("Unsupported message type")),
+                };
+
+                Ok(packet)
+            }
+        }
+
         // Deserialize the (fixed_header, length, control_packet | (topic, packet_id, properties)),
         // which corresponds to a maximum of 5 elements.
         deserializer.deserialize_tuple(5, ControlPacketVisitor)
