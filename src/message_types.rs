@@ -2,7 +2,7 @@ use num_enum::TryFromPrimitive;
 
 #[derive(Copy, Clone, Debug, TryFromPrimitive)]
 #[repr(u8)]
-pub(crate) enum MessageType {
+pub enum MessageType {
     Connect = 1,
     ConnAck = 2,
     Publish = 3,

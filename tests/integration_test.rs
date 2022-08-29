@@ -1,4 +1,4 @@
-use minimq::{Minimq, Property, QoS, Retain};
+use minimq::{types::Utf8String, Minimq, Property, QoS, Retain};
 
 use embedded_nal::{self, IpAddr, Ipv4Addr};
 use std_embedded_time::StandardClock;
@@ -31,13 +31,13 @@ fn main() -> std::io::Result<()> {
 
     loop {
         mqtt.poll(|client, topic, payload, properties| {
-            println!("{} < {}", topic, core::str::from_utf8(payload).unwrap());
+            log::info!("{} < {}", topic, core::str::from_utf8(payload).unwrap());
 
             for property in properties {
                 if let Property::ResponseTopic(topic) = property {
                     client
                         .publish(
-                            topic,
+                            topic.0,
                             "Pong".as_bytes(),
                             QoS::AtMostOnce,
                             Retain::NotRetained,
@@ -66,7 +66,7 @@ fn main() -> std::io::Result<()> {
             }
         } else if !client.subscriptions_pending() && !published {
             println!("PUBLISH request");
-            let properties = [Property::ResponseTopic("response")];
+            let properties = [Property::ResponseTopic(Utf8String("response"))];
             client
                 .publish(
                     "request",

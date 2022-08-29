@@ -37,7 +37,7 @@ use core::convert::TryInto;
 use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 use varint_rs::VarintReader;
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Error {
     /// The feature is not designed to ever be supported.
     WontImplement,

@@ -1,15 +1,28 @@
 use crate::{
     properties::{Property, PropertyIdentifier},
-    ser::ReversedPacketWriter,
+    ser::serializer::MqttSerializer,
+    types::{BinaryData, Properties, Utf8String},
     ProtocolError, QoS, Retain,
 };
 
+use serde::Serialize;
+
 use heapless::Vec;
 
+#[derive(Serialize, Debug)]
 pub struct Will<const MSG_SIZE: usize> {
     pub payload: Vec<u8, MSG_SIZE>,
+    #[serde(skip)]
     pub qos: QoS,
+    #[serde(skip)]
     pub retain: Retain,
+}
+
+#[derive(Serialize)]
+struct WillMessage<'a> {
+    properties: Properties<'a>,
+    topic: Utf8String<'a>,
+    data: BinaryData<'a>,
 }
 
 impl<const MSG_SIZE: usize> Will<MSG_SIZE> {
@@ -34,20 +47,24 @@ impl<const MSG_SIZE: usize> Will<MSG_SIZE> {
             }
         }
 
-        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let mut packet = ReversedPacketWriter::new(&mut buffer);
+        let will_data = WillMessage {
+            topic: Utf8String(topic),
+            properties: Properties(properties),
+            data: BinaryData(data),
+        };
 
-        // Serialize the will payload
-        packet.write_binary_data(data)?;
-        packet.write_utf8_string(topic)?;
-        packet.write_properties(properties)?;
+        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
+        let mut serializer = MqttSerializer::new(&mut buffer);
+        will_data
+            .serialize(&mut serializer)
+            .map_err(|_| ProtocolError::MalformedPacket)?;
 
         Ok(Self {
             qos: QoS::AtMostOnce,
             retain: Retain::NotRetained,
             // Note(unwrap): The vectro is declared as identical size to the vector, so it will
             // always fit.
-            payload: Vec::from_slice(packet.finish()).unwrap(),
+            payload: Vec::from_slice(serializer.finish()).unwrap(),
         })
     }
 

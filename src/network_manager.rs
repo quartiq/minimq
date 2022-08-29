@@ -130,8 +130,10 @@ where
 
         #[cfg(feature = "logging")]
         if let Ok(len) = result {
-            let data = &buf[..len];
-            crate::trace!("Read: {:0x?}", data);
+            if len > 0 {
+                let data = &buf[..len];
+                crate::trace!("Read: {:0x?}", data);
+            }
         }
 
         result.or_else(|err| match err {

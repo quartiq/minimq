@@ -1,3 +1,3 @@
-mod packet_writer;
 pub mod serialize;
-pub(crate) use packet_writer::ReversedPacketWriter;
+pub mod serializer;
+pub use serializer::Error;
