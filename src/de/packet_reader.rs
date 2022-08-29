@@ -1,4 +1,4 @@
-use super::packets::ReceivedPacket;
+use super::received_packet::ReceivedPacket;
 use crate::ProtocolError as Error;
 
 pub(crate) struct PacketReader<const T: usize> {

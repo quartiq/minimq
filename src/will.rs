@@ -11,11 +11,11 @@ use heapless::Vec;
 
 #[derive(Serialize, Debug)]
 pub struct Will<const MSG_SIZE: usize> {
-    pub payload: Vec<u8, MSG_SIZE>,
+    pub(crate) payload: Vec<u8, MSG_SIZE>,
     #[serde(skip)]
-    pub qos: QoS,
+    pub(crate) qos: QoS,
     #[serde(skip)]
-    pub retain: Retain,
+    pub(crate) retain: Retain,
 }
 
 #[derive(Serialize)]
@@ -55,9 +55,7 @@ impl<const MSG_SIZE: usize> Will<MSG_SIZE> {
 
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
         let mut serializer = MqttSerializer::new(&mut buffer);
-        will_data
-            .serialize(&mut serializer)
-            .map_err(|_| ProtocolError::MalformedPacket)?;
+        will_data.serialize(&mut serializer)?;
 
         Ok(Self {
             qos: QoS::AtMostOnce,

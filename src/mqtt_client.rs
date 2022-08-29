@@ -1,5 +1,5 @@
 use crate::{
-    de::{packets::ReceivedPacket, PacketReader},
+    de::{received_packet::ReceivedPacket, PacketReader},
     network_manager::InterfaceHolder,
     packets::{ConnAck, Connect, PingReq, Pub, PubRel, SubAck, Subscribe},
     ser::control_packet,
@@ -17,7 +17,7 @@ use core::str::FromStr;
 
 mod sm {
 
-    use crate::{de::packets::ReceivedPacket, packets::ConnAck};
+    use crate::{de::received_packet::ReceivedPacket, packets::ConnAck};
     use smlang::statemachine;
 
     statemachine! {
