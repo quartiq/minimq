@@ -375,7 +375,7 @@ impl<
 
         crate::info!("Sending: {:?}", publish);
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = crate::ser::control_packet::to_buffer(&mut buffer, publish)?;
+        let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, publish)?;
         self.network.write(packet)?;
 
         // TODO: Generate event.
@@ -439,8 +439,8 @@ impl<
         }
 
         if self.sm.context_mut().session_state.ping_is_due()? {
-            // Note: If we fail to control_packet or write the packet, the ping timeout timer is
-            // still running, so we will recover the TCP connection in the future.
+            // Note: If we fail to serialize or write the packet, the ping timeout timer is still
+            // running, so we will recover the TCP connection in the future.
             self.network.send_packet(PingReq {})?;
         }
 
@@ -513,7 +513,7 @@ impl<
 
                 crate::info!("Sending: {:?}", pubrel);
                 let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-                let packet = crate::ser::control_packet::to_buffer(&mut buffer, pubrel)?;
+                let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, pubrel)?;
                 self.network.write(packet)?;
 
                 // TODO: Utilize errors to generate reason codes.

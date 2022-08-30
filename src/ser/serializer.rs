@@ -26,7 +26,7 @@
 //! * Structs
 //!
 //! Other types are explicitly not implemented and there is no plan to implement them.
-use crate::message_types::MessageType;
+use crate::message_types::{MessageType, ControlPacket};
 use crate::varint::VarintBuffer;
 use bit_field::BitField;
 use serde::Serialize;
@@ -86,6 +86,18 @@ impl<'a> MqttSerializer<'a> {
             buf,
             index: MAX_FIXED_HEADER_SIZE,
         }
+    }
+
+    /// Encode an MQTT control packet into a buffer.
+    ///
+    /// # Args
+    /// * `buf` - The buffer to encode data into.
+    /// * `packet` - The packet to encode.
+    pub fn to_buffer<T: Serialize + ControlPacket>(buf: &'a mut [u8], packet: T) -> Result<&'a [u8], Error> {
+        let mut serializer = Self::new(buf);
+        packet.serialize(&mut serializer)?;
+        let packet = serializer.finalize(T::MESSAGE_TYPE, packet.fixed_header_flags())?;
+        Ok(packet)
     }
 
     /// Finish the packet without prepending the MQTT fixed header.

@@ -1,6 +1,6 @@
 use crate::{
     properties::{Property, PropertyIdentifier},
-    ser::serializer::MqttSerializer,
+    ser::MqttSerializer,
     types::{BinaryData, Properties, Utf8String},
     ProtocolError, QoS, Retain,
 };

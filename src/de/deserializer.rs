@@ -39,9 +39,6 @@ use varint_rs::VarintReader;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Error {
-    /// The feature is not designed to ever be supported.
-    WontImplement,
-
     /// A custom deserialization error occurred.
     Custom,
 
@@ -68,7 +65,6 @@ impl core::fmt::Display for Error {
             f,
             "{}",
             match self {
-                Error::WontImplement => "This feature won't ever be implemented",
                 Error::Custom => "Custom deserialization error",
                 Error::BadString => "Improper UTF-8 string encountered",
                 Error::BadBool => "Bad boolean encountered",
@@ -265,7 +261,7 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
         _name: &'static str,
         _visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        Err(Error::WontImplement)
+        unimplemented!()
     }
 
     fn deserialize_newtype_struct<V: Visitor<'de>>(
@@ -273,49 +269,49 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
         _name: &'static str,
         _visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        Err(Error::WontImplement)
+        unimplemented!()
     }
 
     fn deserialize_map<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::WontImplement)
+        unimplemented!()
     }
 
     fn deserialize_identifier<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::WontImplement)
+        unimplemented!()
     }
 
     fn deserialize_unit<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::WontImplement)
+        unimplemented!()
     }
 
     fn deserialize_ignored_any<V: Visitor<'de>>(
         self,
         _visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        Err(Error::WontImplement)
+        unimplemented!()
     }
 
     fn deserialize_f32<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::WontImplement)
+        unimplemented!()
     }
 
     fn deserialize_f64<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::WontImplement)
+        unimplemented!()
     }
 
     fn deserialize_char<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::WontImplement)
+        unimplemented!()
     }
 
     fn deserialize_i64<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::WontImplement)
+        unimplemented!()
     }
 
     fn deserialize_u64<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::WontImplement)
+        unimplemented!()
     }
     fn deserialize_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::WontImplement)
+        unimplemented!()
     }
 }
 
@@ -384,7 +380,7 @@ impl<'a, 'de> serde::de::VariantAccess<'de> for &'a mut MqttDeserializer<'de> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<(), Error> {
-        Err(Error::WontImplement)
+        unimplemented!()
     }
 
     fn newtype_variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<V::Value, Error> {

@@ -204,7 +204,7 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
                 let (key, value) = variant.tuple_variant(
                     2,
                     UserPropertyVisitor {
-                        _data: core::marker::PhantomData::default(),
+                        _data: core::marker::PhantomData,
                     },
                 )?;
                 Property::UserProperty(key, value)
@@ -235,7 +235,7 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Property<'a> {
             "Property",
             &[],
             PropertyVisitor {
-                _data: core::marker::PhantomData::default(),
+                _data: core::marker::PhantomData,
             },
         )?;
         crate::debug!("Deserialized {:?}", prop);
@@ -333,9 +333,8 @@ impl<'a> From<&Property<'a>> for PropertyIdentifier {
 
 impl<'a> Property<'a> {
     pub(crate) fn size(&self) -> usize {
-        // Although property identifiers are technically encoded as variable length integers, in
-        // practice, they are all small enough to fit in 1 byte.
-        let identifier_length = 1;
+        let identifier: PropertyIdentifier = self.into();
+        let identifier_length = Varint(identifier as u32).len();
 
         match self {
             Property::ContentType(data)

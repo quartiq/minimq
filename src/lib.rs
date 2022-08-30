@@ -97,11 +97,10 @@ pub const MQTT_INSECURE_DEFAULT_PORT: u16 = 1883;
 pub const MQTT_SECURE_DEFAULT_PORT: u16 = 8883;
 
 /// The quality-of-service for an MQTT message.
-#[derive(Debug, Copy, Clone, PartialEq, Default, TryFromPrimitive, PartialOrd)]
+#[derive(Debug, Copy, Clone, PartialEq, TryFromPrimitive, PartialOrd)]
 #[repr(u8)]
 pub enum QoS {
     /// A packet will be delivered at most once, but may not be delivered at all.
-    #[default]
     AtMostOnce = 0,
 
     /// A packet will be delivered at least one time, but possibly more than once.
@@ -112,11 +111,10 @@ pub enum QoS {
 }
 
 /// The retained status for an MQTT message.
-#[derive(Debug, Copy, Clone, PartialEq, Default, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, TryFromPrimitive)]
 #[repr(u8)]
 pub enum Retain {
     /// The message shall not be retained by the broker.
-    #[default]
     NotRetained = 0,
 
     /// The message shall be marked for retention by the broker.
@@ -156,6 +154,19 @@ impl From<crate::de::Error> for ProtocolError {
         ProtocolError::Deserialization(err)
     }
 }
+
+impl<E> From<crate::ser::Error> for Error<E> {
+    fn from(err: crate::ser::Error) -> Self {
+        Error::Protocol(ProtocolError::Serialization(err))
+    }
+}
+
+impl<E> From<crate::de::Error> for Error<E> {
+    fn from(err: crate::de::Error) -> Self {
+        Error::Protocol(ProtocolError::Deserialization(err))
+    }
+}
+
 /// Possible errors encountered during an MQTT connection.
 #[derive(Debug, PartialEq)]
 pub enum Error<E> {

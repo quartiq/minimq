@@ -17,7 +17,7 @@ impl<'a> serde::Serialize for Properties<'a> {
 
         // Properties in MQTTv5 must be prefixed with a variable-length integer denoting the size
         // of the all of the properties in bytes.
-        let property_length = self.0.iter().fold(0, |len, prop| len + prop.size());
+        let property_length: usize = self.0.iter().map(|prop| prop.size()).sum();
         item.serialize_field("_len", &Varint(property_length as u32))?;
         item.serialize_field("_props", self.0)?;
         item.end()
@@ -120,7 +120,7 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Utf8String<'a> {
 
         // The UTF-8 string in MQTTv5 is semantically equivalent to a rust &str.
         deserializer.deserialize_str(Utf8StringVisitor {
-            _data: core::marker::PhantomData::default(),
+            _data: core::marker::PhantomData,
         })
     }
 }

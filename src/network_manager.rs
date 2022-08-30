@@ -119,7 +119,7 @@ where
     ) -> Result<(), Error<TcpStack::Error>> {
         crate::info!("Sending: {:?}", packet);
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = crate::ser::control_packet::to_buffer(&mut buffer, packet)?;
+        let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, packet)?;
 
         self.write(packet)?;
         Ok(())
