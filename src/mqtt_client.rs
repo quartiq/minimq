@@ -1,24 +1,22 @@
 use crate::{
-    de::{
-        packets::{ConnAck, MqttPacket, ReceivedPacket, SubAck},
-        PacketReader,
-    },
+    de::{received_packet::ReceivedPacket, PacketReader},
     network_manager::InterfaceHolder,
-    ser::serialize,
+    packets::{ConnAck, Connect, PingReq, Pub, PubRel, SubAck, Subscribe},
     session_state::SessionState,
+    types::{Properties, SubscriptionOptions, Utf8String},
     will::Will,
     Error, Property, ProtocolError, QoS, Retain, MQTT_INSECURE_DEFAULT_PORT, {debug, error, info},
 };
 
 use embedded_nal::{IpAddr, SocketAddr, TcpClientStack};
 
-use heapless::String;
+use heapless::{String, Vec};
 
 use core::str::FromStr;
 
 mod sm {
 
-    use crate::de::packets::{ConnAck, ReceivedPacket};
+    use crate::{de::received_packet::ReceivedPacket, packets::ConnAck};
     use smlang::statemachine;
 
     statemachine! {
@@ -74,8 +72,8 @@ where
             Some(index) => self.session_state.pending_subscriptions.swap_remove(index),
         };
 
-        if subscribe_acknowledge.code() != 0 {
-            return Err(Error::Failed(subscribe_acknowledge.code()));
+        if subscribe_acknowledge.code != 0 {
+            return Err(Error::Failed(subscribe_acknowledge.code));
         }
 
         Ok(())
@@ -137,7 +135,7 @@ where
                 }
                 Property::AssignedClientIdentifier(id) => {
                     self.session_state.client_id =
-                        String::from_str(id).or(Err(Error::ProvidedClientIdTooLong))?;
+                        String::from_str(id.0).or(Err(Error::ProvidedClientIdTooLong))?;
                 }
                 Property::ServerKeepAlive(keep_alive) => {
                     self.session_state.set_keepalive(*keep_alive);
@@ -276,11 +274,12 @@ impl<
 
         let packet_id = self.sm.context_mut().session_state.get_packet_identifier();
 
-        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = serialize::subscribe_packet(&mut buffer, topic, packet_id, properties)?;
+        self.network.send_packet(Subscribe {
+            packet_id,
+            properties: Properties(properties),
+            topics: &[(Utf8String(topic), SubscriptionOptions {})],
+        })?;
 
-        info!("Subscribing to `{}`: {}", topic, packet_id);
-        self.network.write(packet)?;
         self.sm.process_event(Events::SentSubscribe(packet_id))?;
 
         Ok(())
@@ -363,18 +362,22 @@ impl<
             return Err(Error::NotReady);
         }
 
-        debug!(
-            "Publishing to `{}`: {:?} Props: {:?}",
-            topic, data, properties
-        );
-
         // If QoS 0 the ID will be ignored
         let id = self.sm.context_mut().session_state.get_packet_identifier();
 
-        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet =
-            serialize::publish_packet(&mut buffer, topic, data, qos, retain, id, properties)?;
+        let publish = Pub {
+            topic: Utf8String(topic),
+            properties: Vec::from_slice(properties).map_err(|_| Error::TooManyProperties)?,
+            packet_id: Some(id),
+            payload: data,
+            retain,
+            qos,
+            dup: false,
+        };
 
+        crate::info!("Sending: {:?}", publish);
+        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
+        let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, publish)?;
         self.network.write(packet)?;
 
         // TODO: Generate event.
@@ -399,24 +402,13 @@ impl<
             Property::ReceiveMaximum(MSG_COUNT as u16),
         ];
 
-        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = serialize::connect_packet(
-            &mut buffer,
-            self.sm
-                .context()
-                .session_state
-                .client_id
-                .as_str()
-                .as_bytes(),
-            self.sm.context().session_state.keepalive_interval(),
-            &properties,
-            // Only perform a clean start if we do not have any session state.
-            !self.sm.context().session_state.is_present(),
-            self.will.as_ref(),
-        )?;
-
-        info!("Sending CONNECT");
-        self.network.write(packet)?;
+        self.network.send_packet(Connect {
+            keep_alive: self.sm.context().session_state.keepalive_interval(),
+            properties: Properties(&properties),
+            client_id: Utf8String(self.sm.context().session_state.client_id.as_str()),
+            will: self.will.as_ref(),
+            clean_start: !self.sm.context().session_state.is_present(),
+        })?;
 
         self.sm.process_event(Events::SentConnect)?;
 
@@ -449,12 +441,9 @@ impl<
         }
 
         if self.sm.context_mut().session_state.ping_is_due()? {
-            let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-
-            // Note: If we fail to serialize or write the packet, the ping timeout timer is
-            // still running, so we will recover the TCP connection in the future.
-            let packet = serialize::ping_req_packet(&mut buffer)?;
-            self.network.write(packet)?;
+            // Note: If we fail to serialize or write the packet, the ping timeout timer is still
+            // running, so we will recover the TCP connection in the future.
+            self.network.send_packet(PingReq {})?;
         }
 
         Ok(())
@@ -487,7 +476,7 @@ impl<
 
     fn handle_packet<'a, F, T>(
         &mut self,
-        control_packet: MqttPacket<'a>,
+        control_packet: ReceivedPacket<'a>,
         f: &mut F,
     ) -> Result<Option<T>, Error<TcpStack::Error>>
     where
@@ -498,7 +487,7 @@ impl<
             &[Property<'a>],
         ) -> T,
     {
-        match control_packet.packet {
+        match control_packet {
             ReceivedPacket::ConnAck(ack) => {
                 self.sm.process_event(Events::Connected(ack))?;
 
@@ -518,9 +507,15 @@ impl<
                     return Err(Error::Protocol(ProtocolError::Rejected(rec.reason.code())));
                 }
 
+                let pubrel = PubRel {
+                    packet_id: rec.packet_id,
+                    code: 0,
+                    properties: Properties(&[]),
+                };
+
+                crate::info!("Sending: {:?}", pubrel);
                 let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-                let packet = serialize::pubrel_packet(&mut buffer, rec.packet_id, 0, &[])?;
-                info!("Sending PubRel({})", rec.packet_id);
+                let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, pubrel)?;
                 self.network.write(packet)?;
 
                 // TODO: Utilize errors to generate reason codes.
@@ -535,17 +530,12 @@ impl<
                     return Err(Error::Protocol(ProtocolError::Invalid));
                 }
 
-                return Ok(Some(f(
-                    self,
-                    info.topic,
-                    control_packet.remaining_payload,
-                    &info.properties,
-                )));
+                return Ok(Some(f(self, info.topic.0, info.payload, &info.properties)));
             }
 
             _ => {
                 self.sm
-                    .process_event(Events::ControlPacket(control_packet.packet))?;
+                    .process_event(Events::ControlPacket(control_packet))?;
             }
         }
 

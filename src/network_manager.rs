@@ -5,8 +5,10 @@
 //! simple ownership semantics of reading and writing to the network stack. This allows the network
 //! stack to be used to transmit buffers that may be stored internally in other structs without
 //! violating Rust's borrow rules.
+use crate::message_types::ControlPacket;
 use embedded_nal::{nb, SocketAddr, TcpClientStack};
 use heapless::Vec;
+use serde::Serialize;
 
 use crate::Error;
 
@@ -107,6 +109,22 @@ where
             })
     }
 
+    /// Send an MQTT control packet over the interface.
+    ///
+    /// # Args
+    /// * `packet` - The packet to transmit.
+    pub fn send_packet<T: Serialize + ControlPacket + core::fmt::Debug>(
+        &mut self,
+        packet: T,
+    ) -> Result<(), Error<TcpStack::Error>> {
+        crate::info!("Sending: {:?}", packet);
+        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
+        let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, packet)?;
+
+        self.write(packet)?;
+        Ok(())
+    }
+
     /// Finish writing an MQTT control packet to the interface if one exists.
     pub fn finish_write(&mut self) -> Result<(), Error<TcpStack::Error>> {
         if let Some(ref packet) = self.pending_write.take() {
@@ -130,8 +148,10 @@ where
 
         #[cfg(feature = "logging")]
         if let Ok(len) = result {
-            let data = &buf[..len];
-            crate::trace!("Read: {:0x?}", data);
+            if len > 0 {
+                let data = &buf[..len];
+                crate::trace!("Read: {:0x?}", data);
+            }
         }
 
         result.or_else(|err| match err {

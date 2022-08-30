@@ -57,23 +57,25 @@
 //! }
 //! ```
 
-pub(crate) mod de;
-pub(crate) mod ser;
+mod de;
+mod ser;
 
 mod message_types;
 pub mod mqtt_client;
 mod network_manager;
+mod packets;
 mod properties;
 mod session_state;
+pub mod types;
 mod varint;
 mod will;
 
-use message_types::MessageType;
 pub use properties::Property;
 
 pub use embedded_nal;
 pub use embedded_time;
 pub use mqtt_client::Minimq;
+use num_enum::TryFromPrimitive;
 
 #[cfg(feature = "logging")]
 pub(crate) use log::{debug, error, info, trace, warn};
@@ -91,7 +93,8 @@ pub const MQTT_INSECURE_DEFAULT_PORT: u16 = 1883;
 pub const MQTT_SECURE_DEFAULT_PORT: u16 = 8883;
 
 /// The quality-of-service for an MQTT message.
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, TryFromPrimitive, PartialOrd)]
+#[repr(u8)]
 pub enum QoS {
     /// A packet will be delivered at most once, but may not be delivered at all.
     AtMostOnce = 0,
@@ -104,7 +107,8 @@ pub enum QoS {
 }
 
 /// The retained status for an MQTT message.
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, TryFromPrimitive)]
+#[repr(u8)]
 pub enum Retain {
     /// The message shall not be retained by the broker.
     NotRetained = 0,
@@ -131,6 +135,32 @@ pub enum ProtocolError {
     Unacknowledged,
     WrongQos,
     Rejected(u8),
+    Serialization(crate::ser::Error),
+    Deserialization(crate::de::Error),
+}
+
+impl From<crate::ser::Error> for ProtocolError {
+    fn from(err: crate::ser::Error) -> Self {
+        ProtocolError::Serialization(err)
+    }
+}
+
+impl From<crate::de::Error> for ProtocolError {
+    fn from(err: crate::de::Error) -> Self {
+        ProtocolError::Deserialization(err)
+    }
+}
+
+impl<E> From<crate::ser::Error> for Error<E> {
+    fn from(err: crate::ser::Error) -> Self {
+        Error::Protocol(ProtocolError::Serialization(err))
+    }
+}
+
+impl<E> From<crate::de::Error> for Error<E> {
+    fn from(err: crate::de::Error) -> Self {
+        Error::Protocol(ProtocolError::Deserialization(err))
+    }
 }
 
 /// Possible errors encountered during an MQTT connection.
@@ -145,6 +175,7 @@ pub enum Error<E> {
     Protocol(ProtocolError),
     SessionReset,
     Clock(embedded_time::clock::Error),
+    TooManyProperties,
 }
 
 impl<E> From<embedded_time::clock::Error> for Error<E> {

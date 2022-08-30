@@ -1,7 +1,11 @@
-use crate::{ser::ReversedPacketWriter, varint::Varint, ProtocolError as Error};
+use crate::{
+    types::{BinaryData, Utf8String},
+    varint::Varint,
+};
 
 use core::convert::TryFrom;
 use num_enum::TryFromPrimitive;
+use serde::ser::SerializeSeq;
 
 #[derive(Debug, Copy, Clone, PartialEq, TryFromPrimitive)]
 #[repr(u32)]
@@ -70,27 +74,27 @@ impl<'de> serde::de::Deserialize<'de> for PropertyIdentifier {
 pub enum Property<'a> {
     PayloadFormatIndicator(u8),
     MessageExpiryInterval(u32),
-    ContentType(&'a str),
-    ResponseTopic(&'a str),
-    CorrelationData(&'a [u8]),
+    ContentType(Utf8String<'a>),
+    ResponseTopic(Utf8String<'a>),
+    CorrelationData(BinaryData<'a>),
     SubscriptionIdentifier(Varint),
     SessionExpiryInterval(u32),
-    AssignedClientIdentifier(&'a str),
+    AssignedClientIdentifier(Utf8String<'a>),
     ServerKeepAlive(u16),
-    AuthenticationMethod(&'a str),
-    AuthenticationData(&'a [u8]),
+    AuthenticationMethod(Utf8String<'a>),
+    AuthenticationData(BinaryData<'a>),
     RequestProblemInformation(u8),
     WillDelayInterval(u32),
     RequestResponseInformation(u8),
-    ResponseInformation(&'a str),
-    ServerReference(&'a str),
-    ReasonString(&'a str),
+    ResponseInformation(Utf8String<'a>),
+    ServerReference(Utf8String<'a>),
+    ReasonString(Utf8String<'a>),
     ReceiveMaximum(u16),
     TopicAliasMaximum(u16),
     TopicAlias(u16),
     MaximumQoS(u8),
     RetainAvailable(u8),
-    UserProperty(&'a str, &'a str),
+    UserProperty(Utf8String<'a>, Utf8String<'a>),
     MaximumPacketSize(u32),
     WildcardSubscriptionAvailable(u8),
     SubscriptionIdentifierAvailable(u8),
@@ -102,7 +106,7 @@ struct UserPropertyVisitor<'a> {
 }
 
 impl<'a, 'de: 'a> serde::de::Visitor<'de> for UserPropertyVisitor<'a> {
-    type Value = (&'a str, &'a str);
+    type Value = (Utf8String<'a>, Utf8String<'a>);
 
     fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(formatter, "UserProperty")
@@ -200,7 +204,7 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
                 let (key, value) = variant.tuple_variant(
                     2,
                     UserPropertyVisitor {
-                        _data: core::marker::PhantomData::default(),
+                        _data: core::marker::PhantomData,
                     },
                 )?;
                 Property::UserProperty(key, value)
@@ -231,11 +235,57 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Property<'a> {
             "Property",
             &[],
             PropertyVisitor {
-                _data: core::marker::PhantomData::default(),
+                _data: core::marker::PhantomData,
             },
         )?;
         crate::debug!("Deserialized {:?}", prop);
         Ok(prop)
+    }
+}
+
+impl<'a> serde::Serialize for Property<'a> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut serializer = serializer.serialize_seq(None)?;
+
+        let id: PropertyIdentifier = self.into();
+        serializer.serialize_element(&Varint(id as u32))?;
+
+        match self {
+            Property::PayloadFormatIndicator(value) => serializer.serialize_element(value)?,
+            Property::MessageExpiryInterval(value) => serializer.serialize_element(value)?,
+            Property::ContentType(content_type) => serializer.serialize_element(content_type)?,
+            Property::ResponseTopic(topic) => serializer.serialize_element(topic)?,
+            Property::CorrelationData(data) => serializer.serialize_element(data)?,
+            Property::SubscriptionIdentifier(data) => serializer.serialize_element(data)?,
+            Property::SessionExpiryInterval(data) => serializer.serialize_element(data)?,
+            Property::AssignedClientIdentifier(data) => serializer.serialize_element(data)?,
+            Property::ServerKeepAlive(data) => serializer.serialize_element(data)?,
+            Property::AuthenticationMethod(data) => serializer.serialize_element(data)?,
+            Property::AuthenticationData(data) => serializer.serialize_element(data)?,
+            Property::RequestProblemInformation(data) => serializer.serialize_element(data)?,
+            Property::WillDelayInterval(data) => serializer.serialize_element(data)?,
+            Property::RequestResponseInformation(data) => serializer.serialize_element(data)?,
+            Property::ResponseInformation(data) => serializer.serialize_element(data)?,
+            Property::ServerReference(data) => serializer.serialize_element(data)?,
+            Property::ReasonString(data) => serializer.serialize_element(data)?,
+            Property::ReceiveMaximum(data) => serializer.serialize_element(data)?,
+            Property::TopicAliasMaximum(data) => serializer.serialize_element(data)?,
+            Property::TopicAlias(data) => serializer.serialize_element(data)?,
+            Property::MaximumQoS(data) => serializer.serialize_element(data)?,
+            Property::RetainAvailable(data) => serializer.serialize_element(data)?,
+            Property::UserProperty(key, value) => {
+                serializer.serialize_element(value)?;
+                serializer.serialize_element(key)?;
+            }
+            Property::MaximumPacketSize(data) => serializer.serialize_element(data)?,
+            Property::WildcardSubscriptionAvailable(data) => serializer.serialize_element(data)?,
+            Property::SubscriptionIdentifierAvailable(data) => {
+                serializer.serialize_element(data)?
+            }
+            Property::SharedSubscriptionAvailable(data) => serializer.serialize_element(data)?,
+        }
+
+        serializer.end()
     }
 }
 
@@ -282,46 +332,42 @@ impl<'a> From<&Property<'a>> for PropertyIdentifier {
 }
 
 impl<'a> Property<'a> {
-    pub(crate) fn encode_into<'b>(
-        &self,
-        packet: &mut ReversedPacketWriter<'b>,
-    ) -> Result<(), Error> {
-        match self {
-            Property::PayloadFormatIndicator(value) => packet.write_u8(*value)?,
-            Property::MessageExpiryInterval(value) => packet.write_u32(*value)?,
-            Property::ContentType(content_type) => packet.write_utf8_string(content_type)?,
-            Property::ResponseTopic(topic) => packet.write_utf8_string(topic)?,
-            Property::CorrelationData(data) => packet.write_binary_data(data)?,
-            Property::SubscriptionIdentifier(data) => {
-                packet.write_variable_length_integer(data.0)?
-            }
-            Property::SessionExpiryInterval(data) => packet.write_u32(*data)?,
-            Property::AssignedClientIdentifier(data) => packet.write_utf8_string(data)?,
-            Property::ServerKeepAlive(data) => packet.write_u16(*data)?,
-            Property::AuthenticationMethod(data) => packet.write_utf8_string(data)?,
-            Property::AuthenticationData(data) => packet.write_binary_data(data)?,
-            Property::RequestProblemInformation(data) => packet.write_u8(*data)?,
-            Property::WillDelayInterval(data) => packet.write_u32(*data)?,
-            Property::RequestResponseInformation(data) => packet.write_u8(*data)?,
-            Property::ResponseInformation(data) => packet.write_utf8_string(data)?,
-            Property::ServerReference(data) => packet.write_utf8_string(data)?,
-            Property::ReasonString(data) => packet.write_utf8_string(data)?,
-            Property::ReceiveMaximum(data) => packet.write_u16(*data)?,
-            Property::TopicAliasMaximum(data) => packet.write_u16(*data)?,
-            Property::TopicAlias(data) => packet.write_u16(*data)?,
-            Property::MaximumQoS(data) => packet.write_u8(*data)?,
-            Property::RetainAvailable(data) => packet.write_u8(*data)?,
-            Property::UserProperty(key, value) => {
-                packet.write_utf8_string(value)?;
-                packet.write_utf8_string(key)?;
-            }
-            Property::MaximumPacketSize(data) => packet.write_u32(*data)?,
-            Property::WildcardSubscriptionAvailable(data) => packet.write_u8(*data)?,
-            Property::SubscriptionIdentifierAvailable(data) => packet.write_u8(*data)?,
-            Property::SharedSubscriptionAvailable(data) => packet.write_u8(*data)?,
-        };
+    pub(crate) fn size(&self) -> usize {
+        let identifier: PropertyIdentifier = self.into();
+        let identifier_length = Varint(identifier as u32).len();
 
-        let id: PropertyIdentifier = self.into();
-        packet.write_variable_length_integer(id as u32)
+        match self {
+            Property::ContentType(data)
+            | Property::ResponseTopic(data)
+            | Property::AuthenticationMethod(data)
+            | Property::ResponseInformation(data)
+            | Property::ServerReference(data)
+            | Property::ReasonString(data)
+            | Property::AssignedClientIdentifier(data) => data.0.len() + 2 + identifier_length,
+            Property::UserProperty(key, value) => {
+                (value.0.len() + 2) + (key.0.len() + 2) + identifier_length
+            }
+            Property::CorrelationData(data) | Property::AuthenticationData(data) => {
+                data.0.len() + 2 + identifier_length
+            }
+            Property::SubscriptionIdentifier(id) => id.len() + identifier_length,
+
+            Property::MessageExpiryInterval(_)
+            | Property::SessionExpiryInterval(_)
+            | Property::WillDelayInterval(_)
+            | Property::MaximumPacketSize(_) => 4 + identifier_length,
+            Property::ServerKeepAlive(_)
+            | Property::ReceiveMaximum(_)
+            | Property::TopicAliasMaximum(_)
+            | Property::TopicAlias(_) => 2 + identifier_length,
+            Property::PayloadFormatIndicator(_)
+            | Property::RequestProblemInformation(_)
+            | Property::RequestResponseInformation(_)
+            | Property::MaximumQoS(_)
+            | Property::RetainAvailable(_)
+            | Property::WildcardSubscriptionAvailable(_)
+            | Property::SubscriptionIdentifierAvailable(_)
+            | Property::SharedSubscriptionAvailable(_) => 1 + identifier_length,
+        }
     }
 }
