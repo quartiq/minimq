@@ -9,7 +9,7 @@ This document describes the changes to Minimq between releases.
 * Support added for QoS::ExactlyOnce transmission
 * `poll()` now supports returning from the closure. An `Option::Some()` will be generated whenever
 the `poll()` closure executes on an inbound `Publish` message.
-* Added a `reply()` API to reply to quickly inbound messages.
+* Added a `reply()` API to reply quickly inbound messages.
 
 ## Changed
 * [breaking] The client is no longer publicly exposed, and is instead accessible via `Minimq::client()`
