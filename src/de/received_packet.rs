@@ -119,6 +119,7 @@ impl<'de> Deserialize<'de> for ReceivedPacket<'de> {
 #[cfg(test)]
 mod test {
     use super::ReceivedPacket;
+    use crate::reason_codes::ReasonCode;
 
     #[test]
     fn deserialize_good_connack() {
@@ -133,7 +134,7 @@ mod test {
         let packet = ReceivedPacket::from_buffer(&serialized_connack).unwrap();
         match packet {
             ReceivedPacket::ConnAck(conn_ack) => {
-                assert_eq!(conn_ack.reason_code, 0);
+                assert_eq!(conn_ack.reason_code, ReasonCode::Success);
             }
             _ => panic!("Invalid message"),
         }
@@ -173,7 +174,7 @@ mod test {
         let packet = ReceivedPacket::from_buffer(&serialized_puback).unwrap();
         match packet {
             ReceivedPacket::PubAck(pub_ack) => {
-                assert_eq!(pub_ack.reason.code(), 0x10);
+                assert_eq!(pub_ack.reason.code(), ReasonCode::NoMatchingSubscribers);
                 assert_eq!(pub_ack.packet_identifier, 5);
                 assert_eq!(pub_ack.reason.properties().len(), 0);
             }
@@ -193,7 +194,7 @@ mod test {
         match packet {
             ReceivedPacket::PubAck(pub_ack) => {
                 assert_eq!(pub_ack.packet_identifier, 6);
-                assert_eq!(pub_ack.reason.code(), 0);
+                assert_eq!(pub_ack.reason.code(), ReasonCode::Success);
             }
             _ => panic!("Invalid message"),
         }
@@ -212,7 +213,7 @@ mod test {
         let packet = ReceivedPacket::from_buffer(&serialized_suback).unwrap();
         match packet {
             ReceivedPacket::SubAck(sub_ack) => {
-                assert_eq!(sub_ack.code, 2);
+                assert_eq!(sub_ack.code, ReasonCode::GrantedQos2);
                 assert_eq!(sub_ack.packet_identifier, 5);
             }
             _ => panic!("Invalid message"),
@@ -240,14 +241,14 @@ mod test {
             0x04,   // Remaining length
             0x00,
             0x05, // Identifier
-            0x16, // Response Code
+            0x92, // Response Code
             0x00, // Properties length
         ];
         let packet = ReceivedPacket::from_buffer(&serialized_pubcomp).unwrap();
         match packet {
             ReceivedPacket::PubComp(comp) => {
                 assert_eq!(comp.packet_id, 5);
-                assert_eq!(comp.reason.code(), 0x16);
+                assert_eq!(comp.reason.code(), ReasonCode::PacketIdNotFound);
                 assert_eq!(comp.reason.properties().len(), 0);
             }
             _ => panic!("Invalid message"),
@@ -266,7 +267,7 @@ mod test {
         match packet {
             ReceivedPacket::PubComp(comp) => {
                 assert_eq!(comp.packet_id, 5);
-                assert_eq!(comp.reason.code(), 0);
+                assert_eq!(comp.reason.code(), ReasonCode::Success);
             }
             _ => panic!("Invalid message"),
         }
@@ -286,7 +287,7 @@ mod test {
         match packet {
             ReceivedPacket::PubRec(rec) => {
                 assert_eq!(rec.packet_id, 5);
-                assert_eq!(rec.reason.code(), 0x10);
+                assert_eq!(rec.reason.code(), ReasonCode::NoMatchingSubscribers);
                 assert_eq!(rec.reason.properties().len(), 0);
             }
             _ => panic!("Invalid message"),
@@ -305,7 +306,7 @@ mod test {
         match packet {
             ReceivedPacket::PubRec(rec) => {
                 assert_eq!(rec.packet_id, 5);
-                assert_eq!(rec.reason.code(), 0);
+                assert_eq!(rec.reason.code(), ReasonCode::Success);
             }
             _ => panic!("Invalid message"),
         }

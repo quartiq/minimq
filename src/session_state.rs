@@ -1,5 +1,5 @@
 /// This module represents the session state of an MQTT communication session.
-use crate::{warn, Error, ProtocolError, QoS};
+use crate::{reason_codes::ReasonCode, warn, Error, ProtocolError, QoS};
 use core::marker::PhantomData;
 use embedded_nal::TcpClientStack;
 use heapless::{LinearMap, String, Vec};
@@ -170,16 +170,29 @@ impl<
         Ok(())
     }
 
-    pub fn handle_pubrec(&mut self, packet_id: u16, pubrel: &[u8]) -> Result<(), ProtocolError> {
+    pub fn find_packet(
+        &mut self,
+        packet_id: u16,
+        expected_qos: QoS,
+    ) -> Result<&mut MessageRecord<MSG_SIZE>, ReasonCode> {
         let item = self
             .pending_publish
             .get_mut(&packet_id)
-            .ok_or(ProtocolError::BadIdentifier)?;
+            .ok_or(ReasonCode::PacketIdNotFound)?;
 
-        if item.qos != QoS::ExactlyOnce {
-            return Err(ProtocolError::WrongQos);
+        if item.qos != expected_qos {
+            return Err(ReasonCode::ProtocolError);
         }
 
+        Ok(item)
+    }
+
+    pub fn handle_pubrec(
+        &mut self,
+        packet_id: u16,
+        pubrel: &[u8],
+    ) -> Result<(), Error<TcpStack::Error>> {
+        let item = self.find_packet(packet_id, QoS::ExactlyOnce)?;
         // Replace the message with the new acknowledgement.
         item.msg.clear();
         item.msg.extend_from_slice(pubrel).unwrap();
@@ -190,18 +203,11 @@ impl<
         Ok(())
     }
 
-    pub fn handle_pubcomp(&mut self, id: u16) -> Result<(), ProtocolError> {
-        let item = self
-            .pending_publish
-            .get(&id)
-            .ok_or(ProtocolError::BadIdentifier)?;
-
-        if item.qos != QoS::ExactlyOnce {
-            return Err(ProtocolError::WrongQos);
-        }
+    pub fn handle_pubcomp(&mut self, id: u16) -> Result<(), Error<TcpStack::Error>> {
+        let item = self.find_packet(id, QoS::ExactlyOnce)?;
 
         if !item.acknowledged {
-            return Err(ProtocolError::Unacknowledged);
+            return Err(ProtocolError::Unacknowledged.into());
         }
 
         self.remove_packet(id)?;
