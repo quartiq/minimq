@@ -18,8 +18,12 @@ fn main() -> std::io::Result<()> {
     let mut published = false;
 
     loop {
-        mqtt.poll(|_client, _topic, _payload, _properties| {})
-            .unwrap();
+        // Continually process the client until no more data is received.
+        while mqtt
+            .poll(|_client, _topic, _payload, _properties| {})
+            .unwrap()
+            .is_some()
+        {}
 
         if mqtt.client().is_connected() && !published && mqtt.client().can_publish(QoS::ExactlyOnce)
         {
