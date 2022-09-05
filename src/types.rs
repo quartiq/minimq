@@ -1,9 +1,9 @@
 //! MQTT-Specific Data Types
 //!
 //! This module provides wrapper methods and serde functionality for MQTT-specified data types.
-use crate::{QoS, properties::Property, varint::Varint};
-use serde::ser::SerializeStruct;
+use crate::{properties::Property, varint::Varint, QoS};
 use bit_field::BitField;
+use serde::ser::SerializeStruct;
 use serde::Serialize;
 
 /// A wrapper type for a number of MQTT `Property`s.
@@ -188,10 +188,11 @@ impl SubscriptionOptions {
 
 impl serde::Serialize for SubscriptionOptions {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let value = *0u8.set_bits(0..2, self.maximum_qos as u8)
-                        .set_bit(2, self.no_local)
-                        .set_bit(3, self.retain_as_published)
-                        .set_bits(4..6, self.retain_behavior as u8);
+        let value = *0u8
+            .set_bits(0..2, self.maximum_qos as u8)
+            .set_bit(2, self.no_local)
+            .set_bit(3, self.retain_as_published)
+            .set_bits(4..6, self.retain_behavior as u8);
         serializer.serialize_u8(value)
     }
 }

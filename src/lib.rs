@@ -60,6 +60,7 @@
 mod de;
 mod ser;
 
+mod design_parameters;
 mod message_types;
 pub mod mqtt_client;
 mod network_manager;
@@ -70,7 +71,6 @@ mod session_state;
 pub mod types;
 mod varint;
 mod will;
-mod design_parameters;
 
 pub use properties::Property;
 pub use reason_codes::ReasonCode;
