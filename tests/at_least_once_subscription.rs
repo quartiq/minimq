@@ -1,4 +1,7 @@
-use minimq::{Minimq, QoS, Retain, types::{SubscriptionOptions, TopicFilter}};
+use minimq::{
+    types::{SubscriptionOptions, TopicFilter},
+    Minimq, QoS, Retain,
+};
 
 use embedded_nal::{self, IpAddr, Ipv4Addr};
 use std_embedded_time::StandardClock;
@@ -22,7 +25,7 @@ fn main() -> std::io::Result<()> {
     loop {
         // Continually process the client until no more data is received.
         while let Some(count) = mqtt
-            .poll(|_client, _topic, _payload, _properties| {1})
+            .poll(|_client, _topic, _payload, _properties| 1)
             .unwrap()
         {
             received_messages += count;
@@ -34,8 +37,7 @@ fn main() -> std::io::Result<()> {
 
         if !subscribed {
             let topic_filter = TopicFilter::new("data")
-                                    .options(SubscriptionOptions::default()
-                                             .maximum_qos(QoS::AtLeastOnce));
+                .options(SubscriptionOptions::default().maximum_qos(QoS::AtLeastOnce));
             mqtt.client().subscribe(&[topic_filter], &[]).unwrap();
             subscribed = true;
         }
