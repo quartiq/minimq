@@ -1,7 +1,8 @@
 use crate::{
     de::{received_packet::ReceivedPacket, PacketReader},
     network_manager::InterfaceHolder,
-    packets::{ConnAck, Connect, PingReq, Pub, PubRel, SubAck, Subscribe},
+    packets::{ConnAck, Connect, PingReq, Pub, PubAck, PubRel, SubAck, Subscribe},
+    reason_codes::ReasonCode,
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
     will::Will,
@@ -538,6 +539,28 @@ impl<
                     return Err(Error::NotReady);
                 }
 
+                // Handle transmitting any necessary acknowledges
+                match info.qos {
+                    QoS::AtMostOnce => {}
+                    QoS::AtLeastOnce => {
+                        let puback = PubAck {
+                            // Note(uwnrap): There should always be a packet ID for QoS >
+                            // AtMostOnce.
+                            packet_identifier: info.packet_id.unwrap(),
+
+                            // Note: Because we do not support ExactlyOnce, it's not possible for
+                            // us to receive two packets with the same ID.
+                            reason: ReasonCode::Success.into(),
+                        };
+
+                        self.network.send_packet(puback)?;
+                    }
+
+                    // TODO: Add support.
+                    QoS::ExactlyOnce => unimplemented!(),
+                }
+
+                // Provide the packet to the application for further processing.
                 return Ok(Some(f(self, info.topic.0, info.payload, &info.properties)));
             }
 

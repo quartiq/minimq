@@ -1,8 +1,8 @@
 use crate::{
     message_types::MessageType,
     packets::{ConnAck, Disconnect, Pub, PubAck, PubComp, PubRec, SubAck},
-    varint::Varint,
     reason_codes::ReasonCode,
+    varint::Varint,
     ProtocolError, QoS, Retain,
 };
 

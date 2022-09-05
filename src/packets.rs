@@ -68,7 +68,7 @@ pub struct ConnAck<'a> {
 
     /// A list of properties associated with the connection.
     #[serde(borrow)]
-    pub properties: Vec<Property<'a>, {crate::design_parameters::MAX_RX_PROPERTIES}>,
+    pub properties: Vec<Property<'a>, { crate::design_parameters::MAX_RX_PROPERTIES }>,
 }
 
 /// An MQTT PUBLISH packet, containing data to be sent or received.
@@ -81,7 +81,7 @@ pub struct Pub<'a> {
     pub packet_id: Option<u16>,
 
     /// The properties transmitted with the publish data.
-    pub properties: Vec<Property<'a>, {crate::design_parameters::MAX_RX_PROPERTIES}>,
+    pub properties: Vec<Property<'a>, { crate::design_parameters::MAX_RX_PROPERTIES }>,
 
     /// The message to be transmitted.
     pub payload: &'a [u8],
@@ -135,7 +135,7 @@ pub struct PingReq;
 pub struct PingResp;
 
 /// An MQTT PUBACK control packet
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PubAck<'a> {
     /// The ID of the packet being acknowledged.
     pub packet_identifier: u16,
@@ -153,11 +153,11 @@ pub struct SubAck<'a> {
 
     /// The optional properties associated with the acknowledgement.
     #[serde(borrow)]
-    pub properties: Vec<Property<'a>, {crate::design_parameters::MAX_RX_PROPERTIES}>,
+    pub properties: Vec<Property<'a>, { crate::design_parameters::MAX_RX_PROPERTIES }>,
 
     /// The response status code of the subscription request.
     #[serde(skip)]
-    pub codes: Vec<ReasonCode, {crate::design_parameters::MAX_TOPICS_PER_SUBSCRIPTION}>,
+    pub codes: Vec<ReasonCode, { crate::design_parameters::MAX_TOPICS_PER_SUBSCRIPTION }>,
 }
 
 /// An MQTT PUBREC control packet
@@ -203,14 +203,25 @@ pub struct Disconnect<'a> {
 
     /// Properties associated with the disconnection.
     #[serde(borrow)]
-    pub properties: Vec<Property<'a>, {crate::design_parameters::MAX_RX_PROPERTIES}>,
+    pub properties: Vec<Property<'a>, { crate::design_parameters::MAX_RX_PROPERTIES }>,
 }
 
 /// Success information for a control packet with optional data.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Reason<'a> {
     #[serde(borrow)]
     reason: Option<ReasonData<'a>>,
+}
+
+impl<'a> From<ReasonCode> for Reason<'a> {
+    fn from(code: ReasonCode) -> Self {
+        Self {
+            reason: Some(ReasonData {
+                code,
+                _properties: Vec::new(),
+            }),
+        }
+    }
 }
 
 impl<'a> Reason<'a> {
@@ -232,14 +243,14 @@ impl<'a> Reason<'a> {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ReasonData<'a> {
     /// Reason code
     pub code: ReasonCode,
 
     /// The properties transmitted with the publish data.
     #[serde(borrow)]
-    pub _properties: Vec<Property<'a>, {crate::design_parameters::MAX_RX_PROPERTIES}>,
+    pub _properties: Vec<Property<'a>, { crate::design_parameters::MAX_RX_PROPERTIES }>,
 }
 
 #[cfg(test)]
