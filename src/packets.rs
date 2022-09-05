@@ -1,5 +1,6 @@
 use crate::{
     properties::Property,
+    reason_codes::ReasonCode,
     types::{Properties, SubscriptionOptions, Utf8String},
     will::Will,
     QoS, Retain,
@@ -63,7 +64,7 @@ pub struct ConnAck<'a> {
     pub session_present: bool,
 
     /// A status code indicating the success status of the connection.
-    pub reason_code: u8,
+    pub reason_code: ReasonCode,
 
     /// A list of properties associated with the connection.
     #[serde(borrow)]
@@ -155,7 +156,7 @@ pub struct SubAck<'a> {
     pub properties: Vec<Property<'a>, 8>,
 
     /// The response status code of the subscription request.
-    pub code: u8,
+    pub code: ReasonCode,
 }
 
 /// An MQTT PUBREC control packet
@@ -176,7 +177,7 @@ pub struct PubRel<'a> {
     pub packet_id: u16,
 
     /// The response code of the publish release message.
-    pub code: u8,
+    pub code: ReasonCode,
 
     /// Properties associated wtih the packet
     pub properties: Properties<'a>,
@@ -197,7 +198,7 @@ pub struct PubComp<'a> {
 #[derive(Debug, Deserialize)]
 pub struct Disconnect<'a> {
     /// The success status of the disconnection.
-    pub reason_code: u8,
+    pub reason_code: ReasonCode,
 
     /// Properties associated with the disconnection.
     #[serde(borrow)]
@@ -213,8 +214,11 @@ pub struct Reason<'a> {
 
 impl<'a> Reason<'a> {
     /// Get the reason code of the packet.
-    pub fn code(&self) -> u8 {
-        self.reason.as_ref().map(|data| data.code).unwrap_or(0)
+    pub fn code(&self) -> ReasonCode {
+        self.reason
+            .as_ref()
+            .map(|data| data.code)
+            .unwrap_or(0.into())
     }
 
     /// Get the properties assocaited with the packet.
@@ -229,7 +233,7 @@ impl<'a> Reason<'a> {
 #[derive(Debug, Deserialize)]
 struct ReasonData<'a> {
     /// Reason code
-    pub code: u8,
+    pub code: ReasonCode,
 
     /// The properties transmitted with the publish data.
     #[serde(borrow)]
@@ -238,6 +242,7 @@ struct ReasonData<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::reason_codes::ReasonCode;
     use crate::ser::MqttSerializer;
 
     #[test]
@@ -446,7 +451,7 @@ mod tests {
 
         let pubrel = crate::packets::PubRel {
             packet_id: 5,
-            code: 16,
+            code: ReasonCode::NoMatchingSubscribers,
             properties: crate::types::Properties(&[]),
         };
 

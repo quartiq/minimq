@@ -65,12 +65,14 @@ pub mod mqtt_client;
 mod network_manager;
 mod packets;
 mod properties;
+mod reason_codes;
 mod session_state;
 pub mod types;
 mod varint;
 mod will;
 
 pub use properties::Property;
+pub use reason_codes::ReasonCode;
 
 pub use embedded_nal;
 pub use embedded_time;
@@ -120,21 +122,14 @@ pub enum Retain {
 /// Errors that are specific to the MQTT protocol implementation.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ProtocolError {
-    Bounds,
-    DataSize,
-    Invalid,
-    Failed,
     PacketSize,
     MalformedPacket,
-    MalformedInteger,
-    UnknownProperty,
-    UnsupportedPacket,
     BufferSize,
     InvalidProperty,
     BadIdentifier,
     Unacknowledged,
     WrongQos,
-    Rejected(u8),
+    UnsupportedPacket,
     Serialization(crate::ser::Error),
     Deserialization(crate::de::Error),
 }
@@ -163,6 +158,12 @@ impl<E> From<crate::de::Error> for Error<E> {
     }
 }
 
+impl<E> From<ReasonCode> for Error<E> {
+    fn from(code: ReasonCode) -> Self {
+        Error::Failed(code)
+    }
+}
+
 /// Possible errors encountered during an MQTT connection.
 #[derive(Debug, PartialEq)]
 pub enum Error<E> {
@@ -171,7 +172,7 @@ pub enum Error<E> {
     NotReady,
     Unsupported,
     ProvidedClientIdTooLong,
-    Failed(u8),
+    Failed(ReasonCode),
     Protocol(ProtocolError),
     SessionReset,
     Clock(embedded_time::clock::Error),
