@@ -9,6 +9,9 @@ This document describes the changes to Minimq between releases.
 * Support added for QoS::ExactlyOnce transmission
 * `poll()` now supports returning from the closure. An `Option::Some()` will be generated whenever
 the `poll()` closure executes on an inbound `Publish` message.
+* `subscribe()` now supports subscription configuration, such as retain configuration, QoS
+  specification, and no-local publications.
+* `subscribe()` modified to take a list of topic filters.
 
 ## Changed
 * [breaking] The client is no longer publicly exposed, and is instead accessible via `Minimq::client()`
