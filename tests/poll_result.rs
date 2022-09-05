@@ -20,17 +20,13 @@ fn main() -> std::io::Result<()> {
 
     loop {
         // Service the MQTT client until there's no more data to process.
-        loop {
-            match mqtt
-                .poll(|_client, topic, _payload, _properties| topic == "data")
-                .unwrap()
-            {
-                Some(true) => {
-                    log::info!("Transmission complete");
-                    std::process::exit(0);
-                }
-                Some(_) => {}
-                None => break,
+        while let Some(complete) = mqtt
+            .poll(|_client, topic, _payload, _properties| topic == "data")
+            .unwrap()
+        {
+            if complete {
+                log::info!("Transmission complete");
+                std::process::exit(0);
             }
         }
 
