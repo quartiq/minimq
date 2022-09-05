@@ -17,6 +17,7 @@ the `poll()` closure executes on an inbound `Publish` message.
 * [breaking] External crate is now used for `varint` encoding. Varints changed to u32 format.
 * Deserialization and serialization is now handled directly by `serde`.
 * [breaking] Properties are now wrapped in MQTT-specific data types.
+* [breaking] Packets now support reason codes. Unused error codes were removed.
 * `poll()` updated such that the user should call it repeatedly until it returns `Ok(None)`.
 
 ## Fixed

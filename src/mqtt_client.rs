@@ -68,14 +68,12 @@ where
         {
             None => {
                 error!("Got bad suback: {:?}", subscribe_acknowledge);
-                return Err(Error::Protocol(ProtocolError::Invalid));
+                return Err(Error::Protocol(ProtocolError::BadIdentifier));
             }
             Some(index) => self.session_state.pending_subscriptions.swap_remove(index),
         };
 
-        if subscribe_acknowledge.code != 0 {
-            return Err(Error::Failed(subscribe_acknowledge.code));
-        }
+        subscribe_acknowledge.code.as_result()?;
 
         Ok(())
     }
@@ -109,7 +107,7 @@ where
                 // No matter the status code the message is considered acknowledged at this point
                 self.session_state.handle_puback(ack.packet_identifier)?;
             }
-            _ => return Err(Error::Protocol(ProtocolError::Invalid)),
+            _ => return Err(Error::Protocol(ProtocolError::UnsupportedPacket)),
         }
 
         Ok(())
@@ -119,9 +117,7 @@ where
         &mut self,
         acknowledge: &ConnAck<'a>,
     ) -> Result<(), Error<TcpStack::Error>> {
-        if acknowledge.reason_code != 0 {
-            return Err(Error::Failed(acknowledge.reason_code));
-        }
+        acknowledge.reason_code.as_result()?;
 
         // Reset the session state upon connection with a broker that doesn't have a session state
         // saved for us.
@@ -155,7 +151,7 @@ impl<T> From<sm::Error<Error<T>>> for Error<T> {
     fn from(error: sm::Error<Error<T>>) -> Error<T> {
         match error {
             sm::Error::GuardFailed(err) => err,
-            sm::Error::InvalidEvent => Error::Protocol(ProtocolError::Invalid),
+            sm::Error::InvalidEvent => Error::NotReady,
         }
     }
 }
@@ -545,17 +541,22 @@ impl<
             }
 
             ReceivedPacket::PubRec(rec) => {
-                if rec.reason.code() >= 0x80 {
+                rec.reason.code().as_result().or_else(|e| {
                     self.sm
                         .context_mut()
                         .session_state
                         .remove_packet(rec.packet_id)?;
-                    return Err(Error::Protocol(ProtocolError::Rejected(rec.reason.code())));
-                }
+                    Err(e)
+                })?;
 
                 let pubrel = PubRel {
                     packet_id: rec.packet_id,
-                    code: 0,
+                    code: self
+                        .sm
+                        .context_mut()
+                        .session_state
+                        .find_packet(rec.packet_id, QoS::ExactlyOnce)
+                        .into(),
                     properties: Properties(&[]),
                 };
 
@@ -564,7 +565,6 @@ impl<
                 let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, pubrel)?;
                 self.network.write(packet)?;
 
-                // TODO: Utilize errors to generate reason codes.
                 self.sm
                     .context_mut()
                     .session_state
@@ -573,7 +573,7 @@ impl<
 
             ReceivedPacket::Publish(info) => {
                 if &States::Active != self.sm.state() {
-                    return Err(Error::Protocol(ProtocolError::Invalid));
+                    return Err(Error::NotReady);
                 }
 
                 return Ok(Some(f(self, info.topic.0, info.payload, &info.properties)));
