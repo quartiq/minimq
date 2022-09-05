@@ -20,6 +20,7 @@ aren't:
 * Message publication is supported for all quality-of-service (QoS) levels
 * Message subscription is only supported for the following QoS levels:
     1. At Most once (Level 0)
+    2. At Least Once (Level 1)
 * Topic aliasing is not yet supported
 
 If there are features that you would like to have that are not yet supported, we are always
