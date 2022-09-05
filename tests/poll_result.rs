@@ -35,7 +35,7 @@ fn main() -> std::io::Result<()> {
         }
 
         if !subscribed {
-            mqtt.client().subscribe("data", &[]).unwrap();
+            mqtt.client().subscribe(&["data".into()], &[]).unwrap();
             subscribed = true;
         }
 

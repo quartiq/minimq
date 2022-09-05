@@ -3,7 +3,7 @@ use crate::{
     network_manager::InterfaceHolder,
     packets::{ConnAck, Connect, PingReq, Pub, PubRel, SubAck, Subscribe},
     session_state::SessionState,
-    types::{Properties, SubscriptionOptions, Utf8String},
+    types::{Properties, TopicFilter, Utf8String},
     will::Will,
     Error, Property, ProtocolError, QoS, Retain, MQTT_INSECURE_DEFAULT_PORT, {debug, error, info},
 };
@@ -72,7 +72,9 @@ where
             Some(index) => self.session_state.pending_subscriptions.swap_remove(index),
         };
 
-        subscribe_acknowledge.code.as_result()?;
+        for code in subscribe_acknowledge.codes.iter() {
+            code.as_result()?;
+        }
 
         Ok(())
     }
@@ -252,15 +254,21 @@ impl<
     /// `MqttClient::subscriptions_pending()` to check for subscriptions being completed.
     ///
     /// # Args
-    /// * `topic` - The topic to subscribe to.
+    /// * `topics` - A list of [`TopicFilter`]s to subscribe to.
     /// * `properties` - A list of properties to attach to the subscription request. May be empty.
-    pub fn subscribe<'a, 'b>(
+    pub fn subscribe(
         &mut self,
-        topic: &'a str,
-        properties: &[Property<'b>],
+        topics: &[TopicFilter<'_>],
+        properties: &[Property<'_>],
     ) -> Result<(), Error<TcpStack::Error>> {
         if !self.is_connected() {
             return Err(Error::NotReady);
+        }
+
+        // We can only support so many received response codes. As such, make sure that we don't
+        // allow too many concurrent topics.
+        if topics.len() > crate::design_parameters::MAX_TOPICS_PER_SUBSCRIPTION {
+            return Err(Error::TooManyTopics);
         }
 
         // We can't subscribe if there's a pending write in the network.
@@ -273,7 +281,7 @@ impl<
         self.network.send_packet(Subscribe {
             packet_id,
             properties: Properties(properties),
-            topics: &[(Utf8String(topic), SubscriptionOptions {})],
+            topics,
         })?;
 
         self.sm.process_event(Events::SentSubscribe(packet_id))?;

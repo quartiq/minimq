@@ -40,7 +40,7 @@
 //!
 //! loop {
 //!     if mqtt.client().is_connected() && !subscribed {
-//!         mqtt.client().subscribe("topic", &[]).unwrap();
+//!         mqtt.client().subscribe(&["topic".into()], &[]).unwrap();
 //!         subscribed = true;
 //!     }
 //!
@@ -70,6 +70,7 @@ mod session_state;
 pub mod types;
 mod varint;
 mod will;
+mod design_parameters;
 
 pub use properties::Property;
 pub use reason_codes::ReasonCode;
@@ -177,6 +178,7 @@ pub enum Error<E> {
     SessionReset,
     Clock(embedded_time::clock::Error),
     TooManyProperties,
+    TooManyTopics,
 }
 
 impl<E> From<embedded_time::clock::Error> for Error<E> {

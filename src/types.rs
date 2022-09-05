@@ -1,8 +1,10 @@
 //! MQTT-Specific Data Types
 //!
 //! This module provides wrapper methods and serde functionality for MQTT-specified data types.
-use crate::{properties::Property, varint::Varint};
+use crate::{QoS, properties::Property, varint::Varint};
 use serde::ser::SerializeStruct;
+use bit_field::BitField;
+use serde::Serialize;
 
 /// A wrapper type for a number of MQTT `Property`s.
 ///
@@ -119,16 +121,109 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Utf8String<'a> {
     }
 }
 
+/// Used to specify how currently-retained messages should be handled after the topic is subscribed to.
+#[derive(Copy, Clone, Debug)]
+#[repr(u8)]
+pub enum RetainHandling {
+    /// All retained messages should immediately be transmitted if they are present.
+    Immediately = 0b00,
+
+    /// Retained messages should only be published if the subscription does not already exist.
+    IfSubscriptionDoesNotExist = 0b01,
+
+    /// Do not provide any retained messages on this topic.
+    Never = 0b10,
+}
+
 /// A wrapper type for "Subscription Options" as defined in the MQTT v5 specification.
 ///
 /// # Note
 /// This wrapper type is primarily used to support custom serde functionality.
 #[derive(Copy, Clone, Debug)]
-pub struct SubscriptionOptions {}
+pub struct SubscriptionOptions {
+    maximum_qos: QoS,
+    no_local: bool,
+    retain_as_published: bool,
+    retain_behavior: RetainHandling,
+}
+
+impl Default for SubscriptionOptions {
+    fn default() -> Self {
+        Self {
+            maximum_qos: QoS::AtMostOnce,
+            no_local: false,
+            retain_as_published: false,
+            retain_behavior: RetainHandling::Immediately,
+        }
+    }
+}
+
+impl SubscriptionOptions {
+    /// Specify the maximum QoS supported on this subscription.
+    pub fn maximum_qos(mut self, qos: QoS) -> Self {
+        // TODO: Support for higher QoS levels.
+        assert!(qos == QoS::AtMostOnce);
+        self.maximum_qos = qos;
+        self
+    }
+
+    /// Specify the retain behavior of the topic subscription.
+    pub fn retain_behavior(mut self, handling: RetainHandling) -> Self {
+        self.retain_behavior = handling;
+        self
+    }
+
+    /// Ignore locally-published messages on this subscription.
+    pub fn ignore_local_messages(mut self) -> Self {
+        self.no_local = true;
+        self
+    }
+
+    /// Keep the retain bits unchanged for this subscription.
+    pub fn retain_as_published(mut self) -> Self {
+        self.retain_as_published = true;
+        self
+    }
+}
 
 impl serde::Serialize for SubscriptionOptions {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // TODO: Support subscription options
-        serializer.serialize_u8(0)
+        let value = *0u8.set_bits(0..2, self.maximum_qos as u8)
+                        .set_bit(2, self.no_local)
+                        .set_bit(3, self.retain_as_published)
+                        .set_bits(4..6, self.retain_behavior as u8);
+        serializer.serialize_u8(value)
+    }
+}
+
+impl<'a> From<&'a str> for TopicFilter<'a> {
+    fn from(topic: &'a str) -> Self {
+        Self {
+            topic: Utf8String(topic),
+            options: SubscriptionOptions::default(),
+        }
+    }
+}
+
+/// A single topic subscription.
+///
+/// # Note
+/// Many topic filters may be requested in a single subscription request.
+#[derive(Serialize, Copy, Clone, Debug)]
+pub struct TopicFilter<'a> {
+    topic: Utf8String<'a>,
+    options: SubscriptionOptions,
+}
+
+impl<'a> TopicFilter<'a> {
+    /// Create a new topic filter for subscription.
+    pub fn new(topic: &'a str) -> Self {
+        topic.into()
+    }
+
+    /// Specify custom options for the subscription.
+    pub fn options(mut self, options: SubscriptionOptions) -> Self {
+        self.options = options;
+        self
     }
 }
