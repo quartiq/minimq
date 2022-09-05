@@ -1,4 +1,4 @@
-use minimq::{types::Utf8String, Minimq, Property, QoS, Retain};
+use minimq::{types::Utf8String, Minimq, Property, QoS, ReplyOptions, Retain};
 
 use embedded_nal::{self, IpAddr, Ipv4Addr};
 use std_embedded_time::StandardClock;
@@ -34,24 +34,15 @@ fn main() -> std::io::Result<()> {
         while let Some(was_response) = mqtt
             .poll(|client, topic, payload, properties| {
                 log::info!("{} < {}", topic, core::str::from_utf8(payload).unwrap());
-
-                if let Some(response_topic) = properties.iter().find_map(|p| {
-                    if let Property::ResponseTopic(topic) = p {
-                        Some(topic)
-                    } else {
-                        None
-                    }
-                }) {
-                    client
-                        .publish(
-                            response_topic.0,
-                            "Pong".as_bytes(),
-                            QoS::AtMostOnce,
-                            Retain::NotRetained,
-                            &[],
-                        )
-                        .unwrap();
-                }
+                client
+                    .reply::<1>(
+                        ReplyOptions::new(properties).ignore_missing_response_topic(),
+                        "Pong".as_bytes(),
+                        QoS::AtMostOnce,
+                        Retain::NotRetained,
+                        &[],
+                    )
+                    .unwrap();
 
                 topic == "response"
             })
