@@ -19,13 +19,15 @@ fn main() -> std::io::Result<()> {
     let mut subscribed = false;
 
     loop {
-        if mqtt
+        // Service the MQTT client until there's no more data to process.
+        while let Some(complete) = mqtt
             .poll(|_client, topic, _payload, _properties| topic == "data")
             .unwrap()
-            .unwrap_or(false)
         {
-            log::info!("Transmission complete");
-            std::process::exit(0);
+            if complete {
+                log::info!("Transmission complete");
+                std::process::exit(0);
+            }
         }
 
         if !mqtt.client().is_connected() {

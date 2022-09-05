@@ -30,14 +30,21 @@ fn main() -> std::io::Result<()> {
         .unwrap();
 
     loop {
-        mqtt.poll(|client, topic, payload, properties| {
-            log::info!("{} < {}", topic, core::str::from_utf8(payload).unwrap());
+        // Continually poll the client until there is no more data.
+        while let Some(was_response) = mqtt
+            .poll(|client, topic, payload, properties| {
+                log::info!("{} < {}", topic, core::str::from_utf8(payload).unwrap());
 
-            for property in properties {
-                if let Property::ResponseTopic(topic) = property {
+                if let Some(response_topic) = properties.iter().find_map(|p| {
+                    if let Property::ResponseTopic(topic) = p {
+                        Some(topic)
+                    } else {
+                        None
+                    }
+                }) {
                     client
                         .publish(
-                            topic.0,
+                            response_topic.0,
                             "Pong".as_bytes(),
                             QoS::AtMostOnce,
                             Retain::NotRetained,
@@ -45,17 +52,20 @@ fn main() -> std::io::Result<()> {
                         )
                         .unwrap();
                 }
-            }
 
-            if topic == "response" {
+                topic == "response"
+            })
+            .unwrap()
+        {
+            if was_response {
                 responses += 1;
                 if responses == 2 {
-                    assert_eq!(0, client.pending_messages(QoS::AtLeastOnce));
+                    assert_eq!(0, mqtt.client().pending_messages(QoS::AtLeastOnce));
                     std::process::exit(0);
                 }
             }
-        })
-        .unwrap();
+        }
+
         let client = mqtt.client();
 
         if !subscribed {

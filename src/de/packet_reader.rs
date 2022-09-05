@@ -75,8 +75,13 @@ impl<const T: usize> PacketReader<T> {
         self.packet_length = None;
     }
 
-    pub fn received_packet(&self) -> Result<ReceivedPacket<'_>, Error> {
-        let packet_length = self.packet_length.as_ref().ok_or(Error::PacketSize)?;
-        ReceivedPacket::from_buffer(&self.buffer[..*packet_length])
+    pub fn received_packet(&mut self) -> Result<ReceivedPacket<'_>, Error> {
+        let packet_length = *self.packet_length.as_ref().ok_or(Error::PacketSize)?;
+
+        // Reset the buffer now. Once the user drops the `ReceivedPacket`, this reader will then be
+        // immediately ready to begin receiving a new packet.
+        self.reset();
+
+        ReceivedPacket::from_buffer(&self.buffer[..packet_length])
     }
 }
