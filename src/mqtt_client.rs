@@ -603,7 +603,9 @@ impl<
     /// Check the MQTT interface for available messages.
     ///
     /// # Note
-    /// This method will processes at most a single MQTT packet per call.
+    /// This method will processes as many MQTT control packets as possible until a PUBLISH message
+    /// is received. The user should thus contintually call this function until it returns
+    /// `Ok(None)`, as this is indicative that there is no further data to process.
     ///
     /// # Args
     /// * `f` - A closure to process any received messages. The closure should accept the client,
@@ -638,37 +640,37 @@ impl<
             return Ok(None);
         }
 
-        // Attempt to read an MQTT packet from the network.
-        while !self.packet_reader.packet_available() {
-            let buffer = match self.packet_reader.receive_buffer() {
-                Ok(buffer) => buffer,
-                Err(e) => {
-                    self.client.sm.process_event(Events::ProtocolError).unwrap();
-                    self.packet_reader.reset();
-                    return Err(Error::Protocol(e));
+        // Read MQTT packets and process them until either:
+        // 1. There are no available MQTT packets from the network
+        // 2. A packet was processed that generates a result that needs to be propagated.
+        loop {
+            // Attempt to read an MQTT packet from the network.
+            while !self.packet_reader.packet_available() {
+                let buffer = match self.packet_reader.receive_buffer() {
+                    Ok(buffer) => buffer,
+                    Err(e) => {
+                        self.client.sm.process_event(Events::ProtocolError).unwrap();
+                        self.packet_reader.reset();
+                        return Err(Error::Protocol(e));
+                    }
+                };
+
+                let received = self.client.network.read(buffer)?;
+                self.packet_reader.commit(received);
+
+                if received > 0 {
+                    debug!("Received {} bytes", received);
+                } else {
+                    return Ok(None);
                 }
-            };
-
-            let received = self.client.network.read(buffer)?;
-            self.packet_reader.commit(received);
-
-            if received > 0 {
-                debug!("Received {} bytes", received);
-            } else {
-                return Ok(None);
             }
-        }
 
-        let result = {
             let packet = self.packet_reader.received_packet()?;
             info!("Received {:?}", packet);
-            self.client.handle_packet(packet, &mut f)
-        };
-
-        // We have now processed the packet. Remove it from the reader.
-        self.packet_reader.reset();
-
-        result
+            if let Some(result) = self.client.handle_packet(packet, &mut f)? {
+                return Ok(Some(result));
+            }
+        }
     }
 
     /// Directly access the MQTT client.
