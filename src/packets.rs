@@ -218,13 +218,14 @@ impl<'a> Reason<'a> {
         self.reason
             .as_ref()
             .map(|data| data.code)
-            .unwrap_or(0.into())
+            .unwrap_or(ReasonCode::Success)
     }
 
     /// Get the properties assocaited with the packet.
+    #[cfg(test)]
     pub fn properties(&self) -> &'_ [Property<'a>] {
         match &self.reason {
-            Some(ReasonData { properties, .. }) => properties,
+            Some(ReasonData { _properties, .. }) => _properties,
             _ => &[],
         }
     }
@@ -237,7 +238,7 @@ struct ReasonData<'a> {
 
     /// The properties transmitted with the publish data.
     #[serde(borrow)]
-    pub properties: Vec<Property<'a>, 8>,
+    pub _properties: Vec<Property<'a>, 8>,
 }
 
 #[cfg(test)]
