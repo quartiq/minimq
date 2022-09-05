@@ -17,6 +17,7 @@ the `poll()` closure executes on an inbound `Publish` message.
 * Deserialization and serialization is now handled directly by `serde`.
 * [breaking] Properties are now wrapped in MQTT-specific data types.
 * [breaking] Packets now support reason codes. Unused error codes were removed.
+* `poll()` updated such that the user should call it repeatedly until it returns `Ok(None)`.
 
 ## Fixed
 * All unacknowledged messages will be guaranteed to be retransmitted upon connection with the
