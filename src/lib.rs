@@ -65,16 +65,16 @@ pub mod mqtt_client;
 mod network_manager;
 mod packets;
 mod properties;
-pub mod reply_options;
 mod reason_codes;
+pub mod reply_options;
 mod session_state;
 pub mod types;
 mod varint;
 mod will;
 
 pub use properties::Property;
-pub use reply_options::ReplyOptions;
 pub use reason_codes::ReasonCode;
+pub use reply_options::ReplyOptions;
 
 pub use embedded_nal;
 pub use embedded_time;
