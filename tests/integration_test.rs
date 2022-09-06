@@ -70,8 +70,9 @@ fn main() -> std::io::Result<()> {
 
         if !subscribed {
             if client.is_connected() {
-                client.subscribe("response", &[]).unwrap();
-                client.subscribe("request", &[]).unwrap();
+                client
+                    .subscribe(&["response".into(), "request".into()], &[])
+                    .unwrap();
                 subscribed = true;
             }
         } else if !client.subscriptions_pending() && !published {

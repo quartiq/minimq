@@ -1,7 +1,7 @@
 use crate::{
     properties::Property,
     reason_codes::ReasonCode,
-    types::{Properties, SubscriptionOptions, Utf8String},
+    types::{Properties, TopicFilter, Utf8String},
     will::Will,
     QoS, Retain,
 };
@@ -68,7 +68,7 @@ pub struct ConnAck<'a> {
 
     /// A list of properties associated with the connection.
     #[serde(borrow)]
-    pub properties: Vec<Property<'a>, 8>,
+    pub properties: Vec<Property<'a>, { crate::MAX_RX_PROPERTIES }>,
 }
 
 /// An MQTT PUBLISH packet, containing data to be sent or received.
@@ -81,7 +81,7 @@ pub struct Pub<'a> {
     pub packet_id: Option<u16>,
 
     /// The properties transmitted with the publish data.
-    pub properties: Vec<Property<'a>, 8>,
+    pub properties: Vec<Property<'a>, { crate::MAX_RX_PROPERTIES }>,
 
     /// The message to be transmitted.
     pub payload: &'a [u8],
@@ -123,7 +123,7 @@ pub struct Subscribe<'a> {
     pub properties: Properties<'a>,
 
     /// A list of topic filters and associated subscription options for the subscription request.
-    pub topics: &'a [(Utf8String<'a>, SubscriptionOptions)],
+    pub topics: &'a [TopicFilter<'a>],
 }
 
 /// An MQTT PINGREQ control packet
@@ -153,10 +153,11 @@ pub struct SubAck<'a> {
 
     /// The optional properties associated with the acknowledgement.
     #[serde(borrow)]
-    pub properties: Vec<Property<'a>, 8>,
+    pub properties: Vec<Property<'a>, { crate::MAX_RX_PROPERTIES }>,
 
     /// The response status code of the subscription request.
-    pub code: ReasonCode,
+    #[serde(skip)]
+    pub codes: Vec<ReasonCode, { crate::MAX_TOPICS_PER_SUBSCRIPTION }>,
 }
 
 /// An MQTT PUBREC control packet
@@ -202,7 +203,7 @@ pub struct Disconnect<'a> {
 
     /// Properties associated with the disconnection.
     #[serde(borrow)]
-    pub properties: Vec<Property<'a>, 8>,
+    pub properties: Vec<Property<'a>, { crate::MAX_RX_PROPERTIES }>,
 }
 
 /// Success information for a control packet with optional data.
@@ -238,7 +239,7 @@ struct ReasonData<'a> {
 
     /// The properties transmitted with the publish data.
     #[serde(borrow)]
-    pub _properties: Vec<Property<'a>, 8>,
+    pub _properties: Vec<Property<'a>, { crate::MAX_RX_PROPERTIES }>,
 }
 
 #[cfg(test)]
@@ -313,10 +314,7 @@ mod tests {
         let subscribe = crate::packets::Subscribe {
             packet_id: 16,
             properties: crate::types::Properties(&[]),
-            topics: &[(
-                crate::types::Utf8String("ABC"),
-                crate::types::SubscriptionOptions {},
-            )],
+            topics: &["ABC".into()],
         };
 
         let mut buffer: [u8; 900] = [0; 900];
