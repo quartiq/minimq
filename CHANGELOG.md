@@ -12,6 +12,7 @@ the `poll()` closure executes on an inbound `Publish` message.
 * `subscribe()` now supports subscription configuration, such as retain configuration, QoS
   specification, and no-local publications.
 * `subscribe()` modified to take a list of topic filters.
+* Added a `reply()` API to reply quickly inbound messages.
 * Subscriptions at QoS::AtLeastOnce are now supported.
 
 ## Changed
