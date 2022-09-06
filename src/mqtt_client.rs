@@ -2,6 +2,7 @@ use crate::{
     de::{received_packet::ReceivedPacket, PacketReader},
     network_manager::InterfaceHolder,
     packets::{ConnAck, Connect, PingReq, Pub, PubRel, SubAck, Subscribe},
+    reply_options::ReplyOptions,
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
     will::Will,
@@ -389,6 +390,51 @@ impl<
             .context_mut()
             .session_state
             .handle_publish(qos, id, packet)?;
+
+        Ok(())
+    }
+
+    /// Reply to a previously-received message.
+    ///
+    /// # Generics
+    /// * `N` specifies the maximum number of properties that the reply can contain.
+    ///
+    /// # Args
+    /// * [`ReplyOptions`] - Options used for constructing the reply.
+    /// * `default_response` - An optional default response topic to reply to.
+    /// * `data` - The data containing the response.
+    /// * `qos` - The QoS to transmit the response at.
+    /// * `retain` - The retain state of the response.
+    /// * `properties` - The properties to attach to the response.
+    pub fn reply<'a, const N: usize>(
+        &mut self,
+        options: ReplyOptions<'a>,
+        data: &[u8],
+        qos: QoS,
+        retain: Retain,
+        properties: &[Property<'a>],
+    ) -> Result<(), Error<TcpStack::Error>> {
+        let response_topic = match options.response_topic {
+            Some(topic) => topic,
+            None => {
+                if options.ignore_missing_response {
+                    return Ok(());
+                }
+
+                return Err(Error::NoResponseTopic);
+            }
+        };
+        let mut properties: Vec<_, N> =
+            Vec::from_slice(properties).map_err(|_| Error::TooManyProperties)?;
+
+        // Next, copy over any correlation data to the outbound properties.
+        if let Some(cd) = options.correlation_data {
+            properties
+                .push(Property::CorrelationData(cd))
+                .map_err(|_| Error::TooManyProperties)?;
+        }
+
+        self.publish(response_topic, data, qos, retain, &properties)?;
 
         Ok(())
     }

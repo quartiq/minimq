@@ -66,6 +66,7 @@ mod network_manager;
 mod packets;
 mod properties;
 mod reason_codes;
+pub mod reply_options;
 mod session_state;
 pub mod types;
 mod varint;
@@ -73,6 +74,7 @@ mod will;
 
 pub use properties::Property;
 pub use reason_codes::ReasonCode;
+pub use reply_options::ReplyOptions;
 
 pub use embedded_nal;
 pub use embedded_time;
@@ -178,6 +180,7 @@ pub enum Error<E> {
     NotReady,
     Unsupported,
     ProvidedClientIdTooLong,
+    NoResponseTopic,
     Failed(ReasonCode),
     Protocol(ProtocolError),
     SessionReset,
