@@ -40,7 +40,7 @@
 //!
 //! loop {
 //!     if mqtt.client().is_connected() && !subscribed {
-//!         mqtt.client().subscribe("topic", &[]).unwrap();
+//!         mqtt.client().subscribe(&["topic".into()], &[]).unwrap();
 //!         subscribed = true;
 //!     }
 //!
@@ -95,6 +95,12 @@ pub const MQTT_INSECURE_DEFAULT_PORT: u16 = 1883;
 /// # Note:
 /// See [IANA Port Numbers](https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.txt)
 pub const MQTT_SECURE_DEFAULT_PORT: u16 = 8883;
+
+/// The maximum number of subscriptions supported in a single request.
+pub const MAX_TOPICS_PER_SUBSCRIPTION: usize = 8;
+
+/// The maximum number of properties that can be received in a single message.
+pub const MAX_RX_PROPERTIES: usize = 8;
 
 /// The quality-of-service for an MQTT message.
 #[derive(Debug, Copy, Clone, PartialEq, TryFromPrimitive, PartialOrd)]
@@ -180,6 +186,7 @@ pub enum Error<E> {
     SessionReset,
     Clock(embedded_time::clock::Error),
     TooManyProperties,
+    TooManyTopics,
 }
 
 impl<E> From<embedded_time::clock::Error> for Error<E> {
