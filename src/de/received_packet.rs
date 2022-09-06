@@ -39,7 +39,10 @@ impl<'a> ReceivedPacket<'a> {
                 }
                 ReceivedPacket::SubAck(suback) => {
                     for code in remaining_payload.iter().map(|&x| ReasonCode::from(x)) {
-                        suback.codes.push(code).ok();
+                        suback
+                            .codes
+                            .push(code)
+                            .map_err(|_| ProtocolError::BufferSize)?;
                     }
                 }
                 _ => return Err(ProtocolError::MalformedPacket),
