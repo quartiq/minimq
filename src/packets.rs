@@ -71,7 +71,7 @@ pub struct ConnAck<'a> {
 }
 
 /// An MQTT PUBLISH packet, containing data to be sent or received.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Pub<'a> {
     /// The topic that the message was received on.
     pub topic: Utf8String<'a>,
@@ -86,30 +86,16 @@ pub struct Pub<'a> {
     pub payload: &'a [u8],
 
     /// Specifies whether or not the message should be retained on the broker.
+    #[serde(skip)]
     pub retain: Retain,
 
     /// Specifies the quality-of-service of the transmission.
+    #[serde(skip)]
     pub qos: QoS,
 
     /// Specified true if this message is a duplicate (e.g. it has already been transmitted).
+    #[serde(skip)]
     pub dup: bool,
-}
-
-impl<'a> serde::Serialize for Pub<'a> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut item = serializer.serialize_struct("Publish", 0)?;
-        item.serialize_field("topic", &self.topic)?;
-
-        // Packet identifiers are absent unless a QoS requiring IDs is specified.
-        if self.qos > QoS::AtMostOnce {
-            item.serialize_field("packet_identifier", self.packet_id.as_ref().unwrap())?;
-        }
-
-        item.serialize_field("properties", &self.properties)?;
-        item.serialize_field("payload", self.payload)?;
-
-        item.end()
-    }
 }
 
 /// An MQTT SUBSCRIBE control packet

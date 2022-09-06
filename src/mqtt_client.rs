@@ -369,12 +369,16 @@ impl<
         }
 
         // If QoS 0 the ID will be ignored
-        let id = self.sm.context_mut().session_state.get_packet_identifier();
+        let id = if qos > QoS::AtMostOnce {
+            Some(self.sm.context_mut().session_state.get_packet_identifier())
+        } else {
+            None
+        };
 
         let publish = Pub {
             topic: Utf8String(topic),
             properties: Properties::Slice(properties),
-            packet_id: Some(id),
+            packet_id: id,
             payload: data,
             retain,
             qos,
@@ -387,10 +391,12 @@ impl<
         self.network.write(packet)?;
 
         // TODO: Generate event.
-        self.sm
-            .context_mut()
-            .session_state
-            .handle_publish(qos, id, packet)?;
+        if let Some(id) = id {
+            self.sm
+                .context_mut()
+                .session_state
+                .handle_publish(qos, id, packet)?;
+        }
 
         Ok(())
     }
