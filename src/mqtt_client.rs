@@ -267,7 +267,7 @@ impl<
 
         // We can only support so many received response codes. As such, make sure that we don't
         // allow too many concurrent topics.
-        if topics.len() > crate::design_parameters::MAX_TOPICS_PER_SUBSCRIPTION {
+        if topics.len() > crate::MAX_TOPICS_PER_SUBSCRIPTION {
             return Err(Error::TooManyTopics);
         }
 
