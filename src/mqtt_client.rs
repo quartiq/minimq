@@ -128,17 +128,17 @@ where
             self.session_state.reset();
         }
 
-        for property in &acknowledge.properties {
-            match property {
+        for property in acknowledge.properties.into_iter() {
+            match property? {
                 Property::MaximumPacketSize(size) => {
-                    self.session_state.maximum_packet_size.replace(*size);
+                    self.session_state.maximum_packet_size.replace(size);
                 }
                 Property::AssignedClientIdentifier(id) => {
                     self.session_state.client_id =
                         String::from_str(id.0).or(Err(Error::ProvidedClientIdTooLong))?;
                 }
                 Property::ServerKeepAlive(keep_alive) => {
-                    self.session_state.set_keepalive(*keep_alive);
+                    self.session_state.set_keepalive(keep_alive);
                 }
                 _prop => info!("Ignoring property: {:?}", _prop),
             };
@@ -282,7 +282,7 @@ impl<
 
         self.network.send_packet(Subscribe {
             packet_id,
-            properties: Properties(properties),
+            properties: Properties::Slice(properties),
             topics,
         })?;
 
@@ -373,7 +373,7 @@ impl<
 
         let publish = Pub {
             topic: Utf8String(topic),
-            properties: Vec::from_slice(properties).map_err(|_| Error::TooManyProperties)?,
+            properties: Properties::Slice(properties),
             packet_id: Some(id),
             payload: data,
             retain,
@@ -455,7 +455,7 @@ impl<
 
         self.network.send_packet(Connect {
             keep_alive: self.sm.context().session_state.keepalive_interval(),
-            properties: Properties(&properties),
+            properties: Properties::Slice(&properties),
             client_id: Utf8String(self.sm.context().session_state.client_id.as_str()),
             will: self.will.as_ref(),
             clean_start: !self.sm.context().session_state.is_present(),
@@ -535,7 +535,7 @@ impl<
             &mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
             &'a str,
             &[u8],
-            &[Property<'a>],
+            &Properties<'a>,
         ) -> T,
     {
         match control_packet {
@@ -566,7 +566,7 @@ impl<
                         .session_state
                         .find_packet(rec.packet_id, QoS::ExactlyOnce)
                         .into(),
-                    properties: Properties(&[]),
+                    properties: Properties::Slice(&[]),
                 };
 
                 crate::info!("Sending: {:?}", pubrel);
@@ -703,7 +703,7 @@ impl<
             &mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
             &'a str,
             &[u8],
-            &[Property<'a>],
+            &Properties<'a>,
         ) -> T,
     {
         self.client.update()?;

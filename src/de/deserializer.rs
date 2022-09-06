@@ -78,12 +78,25 @@ impl core::fmt::Display for Error {
 pub struct MqttDeserializer<'a> {
     buf: &'a [u8],
     index: usize,
+    next_binary_read_size: Option<usize>,
 }
 
 impl<'a> MqttDeserializer<'a> {
     /// Construct a deserializer from a provided data buffer.
     pub fn new(buf: &'a [u8]) -> Self {
-        Self { buf, index: 0 }
+        Self {
+            buf,
+            index: 0,
+            next_binary_read_size: None,
+        }
+    }
+
+    /// Override the next binary bytes read with some pre-determined size.
+    ///
+    /// # Args
+    /// * `len` - The known length of the next binary data blob.
+    pub fn set_next_binary_size(&mut self, len: usize) {
+        self.next_binary_read_size.replace(len);
     }
 
     /// Attempt to take N bytes from the buffer.
@@ -121,6 +134,11 @@ impl<'a> MqttDeserializer<'a> {
     /// Read a variable-length integer from the data buffer.
     pub fn read_varint(&mut self) -> Result<u32, Error> {
         self.read_u32_varint()
+    }
+
+    /// Determine the number of bytes that were deserialized.
+    pub fn deserialized_bytes(&self) -> usize {
+        self.index
     }
 
     /// Extract any remaining data from the buffer.
@@ -188,7 +206,10 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 
     fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let length = self.read_u16()?;
+        let length = match self.next_binary_read_size.take() {
+            Some(length) => length,
+            None => self.read_u16()? as usize,
+        };
         let bytes: &'de [u8] = self.try_take_n(length as usize)?;
         visitor.visit_borrowed_bytes(bytes)
     }
@@ -356,6 +377,10 @@ impl<'a, 'de: 'a> serde::de::SeqAccess<'de> for SeqAccess<'a, 'de> {
         seed: V,
     ) -> Result<Option<V::Value>, Error> {
         if self.len > 0 {
+            // If the properties are read as a binary blob, we already know the size and we don't
+            // want to read a u16-prefixed size.
+            self.deserializer.set_next_binary_size(self.len);
+
             // We are deserializing a specified number of bytes in this case, so we need to track
             // how many bytes each serialization request uses.
             let original_remaining = self.deserializer.len();

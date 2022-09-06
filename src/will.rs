@@ -49,7 +49,7 @@ impl<const MSG_SIZE: usize> Will<MSG_SIZE> {
 
         let will_data = WillMessage {
             topic: Utf8String(topic),
-            properties: Properties(properties),
+            properties: Properties::Slice(properties),
             data: BinaryData(data),
         };
 

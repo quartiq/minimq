@@ -1,4 +1,7 @@
-use crate::{properties::Property, types::BinaryData};
+use crate::{
+    properties::Property,
+    types::{BinaryData, Properties},
+};
 
 /// Used to specify information about replies to received MQTT messages.
 pub struct ReplyOptions<'a> {
@@ -17,10 +20,10 @@ impl<'a> ReplyOptions<'a> {
     ///
     /// # Args
     /// * `properties` - The properties of the message being replied to.
-    pub fn new(properties: &[Property<'a>]) -> Self {
+    pub fn new(properties: &'a Properties<'a>) -> Self {
         // First, extract the response topic from the inbound properties.
-        let response_topic = properties.iter().find_map(|p| {
-            if let Property::ResponseTopic(topic) = p {
+        let response_topic = properties.into_iter().find_map(|p| {
+            if let Ok(Property::ResponseTopic(topic)) = p {
                 Some(topic.0)
             } else {
                 None
@@ -28,9 +31,9 @@ impl<'a> ReplyOptions<'a> {
         });
 
         // Next, copy over any correlation data to the outbound properties.
-        let correlation_data = properties.iter().find_map(|p| {
-            if let Property::CorrelationData(data) = p {
-                Some(*data)
+        let correlation_data = properties.into_iter().find_map(|p| {
+            if let Ok(Property::CorrelationData(data)) = p {
+                Some(data)
             } else {
                 None
             }
