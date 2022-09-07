@@ -255,7 +255,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, publish).unwrap();
+        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -282,7 +282,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, publish).unwrap();
+        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -305,7 +305,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, subscribe).unwrap();
+        let message = MqttSerializer::to_buffer(&mut buffer, &subscribe).unwrap();
 
         assert_eq!(message, good_subscribe);
     }
@@ -334,7 +334,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, publish).unwrap();
+        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -360,7 +360,7 @@ mod tests {
             clean_start: true,
         };
 
-        let message = MqttSerializer::to_buffer(&mut buffer, connect).unwrap();
+        let message = MqttSerializer::to_buffer(&mut buffer, &connect).unwrap();
 
         assert_eq!(message, good_serialized_connect)
     }
@@ -406,7 +406,7 @@ mod tests {
             will: Some(&will),
         };
 
-        let message = MqttSerializer::to_buffer(&mut buffer, connect).unwrap();
+        let message = MqttSerializer::to_buffer(&mut buffer, &connect).unwrap();
 
         assert_eq!(message, good_serialized_connect)
     }
@@ -419,7 +419,7 @@ mod tests {
         ];
 
         let mut buffer: [u8; 1024] = [0; 1024];
-        let message = MqttSerializer::to_buffer(&mut buffer, crate::packets::PingReq {}).unwrap();
+        let message = MqttSerializer::to_buffer(&mut buffer, &crate::packets::PingReq {}).unwrap();
         assert_eq!(message, good_ping_req);
     }
 
@@ -442,7 +442,7 @@ mod tests {
 
         let mut buffer: [u8; 1024] = [0; 1024];
         assert_eq!(
-            MqttSerializer::to_buffer(&mut buffer, pubrel).unwrap(),
+            MqttSerializer::to_buffer(&mut buffer, &pubrel).unwrap(),
             good_pubrel
         );
     }
@@ -470,7 +470,7 @@ mod tests {
 
         let mut buffer: [u8; 1024] = [0; 1024];
         assert_eq!(
-            MqttSerializer::to_buffer(&mut buffer, pubrel).unwrap(),
+            MqttSerializer::to_buffer(&mut buffer, &pubrel).unwrap(),
             good_puback
         );
     }

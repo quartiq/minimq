@@ -17,6 +17,12 @@ pub enum Properties<'a> {
     /// Properties have an unknown size when being received. As such, we store them as a binary
     /// blob that we iterate across.
     DataBlock(&'a [u8]),
+
+    /// Properties that are correlated to a previous message.
+    CorrelatedSlice {
+        correlation: Property<'a>,
+        properties: &'a [Property<'a>],
+    },
 }
 
 pub struct PropertiesIter<'a> {
@@ -37,6 +43,23 @@ impl<'a> core::iter::Iterator for PropertiesIter<'a> {
                 let next_item = props[self.index];
                 self.index += 1;
                 Some(Ok(next_item))
+            }
+
+            Properties::CorrelatedSlice {
+                correlation,
+                properties,
+            } => {
+                if self.index == 0 {
+                    self.index += 1;
+                    return Some(Ok(*correlation));
+                }
+
+                let index = self.index - 1;
+                if index >= properties.len() {
+                    return None;
+                }
+
+                Some(Ok(properties[index]))
             }
 
             Properties::DataBlock(data) => {
@@ -78,6 +101,19 @@ impl<'a> serde::Serialize for Properties<'a> {
                 let property_length: usize = props.iter().map(|prop| prop.size()).sum();
                 item.serialize_field("_len", &Varint(property_length as u32))?;
                 item.serialize_field("_props", props)?;
+            }
+            Properties::CorrelatedSlice {
+                correlation,
+                properties,
+            } => {
+                let property_length: usize = properties
+                    .iter()
+                    .chain([*correlation].iter())
+                    .map(|prop| prop.size())
+                    .sum();
+                item.serialize_field("_len", &Varint(property_length as u32))?;
+                item.serialize_field("_correlation", &correlation)?;
+                item.serialize_field("_props", properties)?;
             }
             Properties::DataBlock(block) => {
                 item.serialize_field("_len", &Varint(block.len() as u32))?;

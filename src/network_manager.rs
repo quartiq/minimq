@@ -115,7 +115,7 @@ where
     /// * `packet` - The packet to transmit.
     pub fn send_packet<T: Serialize + ControlPacket + core::fmt::Debug>(
         &mut self,
-        packet: T,
+        packet: &T,
     ) -> Result<(), Error<TcpStack::Error>> {
         crate::info!("Sending: {:?}", packet);
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];

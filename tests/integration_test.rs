@@ -1,4 +1,4 @@
-use minimq::{types::Utf8String, Minimq, Property, QoS, ReplyOptions, Retain};
+use minimq::{types::Utf8String, Minimq, Property, Publication, QoS, Retain};
 
 use embedded_nal::{self, IpAddr, Ipv4Addr};
 use std_embedded_time::StandardClock;
@@ -34,15 +34,13 @@ fn main() -> std::io::Result<()> {
         while let Some(was_response) = mqtt
             .poll(|client, topic, payload, properties| {
                 log::info!("{} < {}", topic, core::str::from_utf8(payload).unwrap());
-                client
-                    .reply::<1>(
-                        ReplyOptions::new(properties).ignore_missing_response_topic(),
-                        "Pong".as_bytes(),
-                        QoS::AtMostOnce,
-                        Retain::NotRetained,
-                        &[],
-                    )
-                    .unwrap();
+
+                if let Ok(response) = Publication::new("Pong".as_bytes())
+                    .reply(properties)
+                    .finish()
+                {
+                    client.publish(response).unwrap();
+                }
 
                 topic == "response"
             })
@@ -69,25 +67,21 @@ fn main() -> std::io::Result<()> {
         } else if !client.subscriptions_pending() && !published {
             println!("PUBLISH request");
             let properties = [Property::ResponseTopic(Utf8String("response"))];
-            client
-                .publish(
-                    "request",
-                    "Ping".as_bytes(),
-                    QoS::AtMostOnce,
-                    Retain::NotRetained,
-                    &properties,
-                )
+            let publication = Publication::new(b"Ping")
+                .topic("request")
+                .properties(&properties)
+                .finish()
                 .unwrap();
 
-            client
-                .publish(
-                    "request",
-                    "Ping".as_bytes(),
-                    QoS::AtLeastOnce,
-                    Retain::NotRetained,
-                    &properties,
-                )
+            client.publish(publication).unwrap();
+
+            let publication = Publication::new(b"Ping")
+                .topic("request")
+                .properties(&properties)
+                .qos(QoS::AtLeastOnce)
+                .finish()
                 .unwrap();
+            client.publish(publication).unwrap();
 
             // The message cannot be ack'd until the next poll call
             assert_eq!(1, client.pending_messages(QoS::AtLeastOnce));

@@ -91,7 +91,7 @@ impl<'a> MqttSerializer<'a> {
     /// * `packet` - The packet to encode.
     pub fn to_buffer<T: Serialize + ControlPacket>(
         buf: &'a mut [u8],
-        packet: T,
+        packet: &T,
     ) -> Result<&'a [u8], Error> {
         let mut serializer = Self::new(buf);
         packet.serialize(&mut serializer)?;

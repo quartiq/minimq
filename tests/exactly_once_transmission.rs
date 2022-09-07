@@ -1,4 +1,4 @@
-use minimq::{Minimq, QoS, Retain};
+use minimq::{Minimq, Publication, QoS};
 
 use embedded_nal::{self, IpAddr, Ipv4Addr};
 use std_embedded_time::StandardClock;
@@ -29,11 +29,11 @@ fn main() -> std::io::Result<()> {
         {
             mqtt.client()
                 .publish(
-                    "data",
-                    "Ping".as_bytes(),
-                    QoS::ExactlyOnce,
-                    Retain::NotRetained,
-                    &[],
+                    Publication::new("Ping".as_bytes())
+                        .topic("data")
+                        .qos(QoS::ExactlyOnce)
+                        .finish()
+                        .unwrap(),
                 )
                 .unwrap();
             log::info!("Publishing message");
