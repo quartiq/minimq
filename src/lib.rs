@@ -136,7 +136,6 @@ pub enum ProtocolError {
     Unacknowledged,
     WrongQos,
     UnsupportedPacket,
-    TooManyProperties,
     NoTopic,
     Serialization(crate::ser::Error),
     Deserialization(crate::de::Error),
