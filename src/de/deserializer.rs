@@ -78,7 +78,7 @@ impl core::fmt::Display for Error {
 pub struct MqttDeserializer<'a> {
     buf: &'a [u8],
     index: usize,
-    next_binary_read_size: Option<usize>,
+    next_pending_length: Option<usize>,
 }
 
 impl<'a> MqttDeserializer<'a> {
@@ -87,7 +87,7 @@ impl<'a> MqttDeserializer<'a> {
         Self {
             buf,
             index: 0,
-            next_binary_read_size: None,
+            next_pending_length: None,
         }
     }
 
@@ -95,8 +95,8 @@ impl<'a> MqttDeserializer<'a> {
     ///
     /// # Args
     /// * `len` - The known length of the next binary data blob.
-    pub fn set_next_binary_size(&mut self, len: usize) {
-        self.next_binary_read_size.replace(len);
+    pub fn set_next_pending_length(&mut self, len: usize) {
+        self.next_pending_length.replace(len);
     }
 
     /// Attempt to take N bytes from the buffer.
@@ -206,11 +206,11 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 
     fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let length = match self.next_binary_read_size.take() {
+        let length = match self.next_pending_length.take() {
             Some(length) => length,
             None => self.read_u16()? as usize,
         };
-        let bytes: &'de [u8] = self.try_take_n(length as usize)?;
+        let bytes: &'de [u8] = self.try_take_n(length)?;
         visitor.visit_borrowed_bytes(bytes)
     }
 
@@ -230,15 +230,15 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         // Sequences, which are properties, are always prefixed with the number of bytes contained
         // within them encoded as a variable-length integer.
-        let len = self.read_varint()?;
+        let length = self.read_varint()? as usize;
 
         // If the properties are read as a binary blob, we already know the size and we don't
         // want to read a u16-prefixed size.
-        self.set_next_binary_size(len as usize);
+        self.set_next_pending_length(length);
 
         visitor.visit_seq(SeqAccess {
             deserializer: self,
-            len: len as usize,
+            length,
         })
     }
 
@@ -371,7 +371,7 @@ impl<'a, 'de: 'a> serde::de::SeqAccess<'de> for ElementAccess<'a, 'de> {
 /// Structure used to access a specified number of bytes.
 struct SeqAccess<'a, 'de: 'a> {
     deserializer: &'a mut MqttDeserializer<'de>,
-    len: usize,
+    length: usize,
 }
 
 impl<'a, 'de: 'a> serde::de::SeqAccess<'de> for SeqAccess<'a, 'de> {
@@ -381,18 +381,18 @@ impl<'a, 'de: 'a> serde::de::SeqAccess<'de> for SeqAccess<'a, 'de> {
         &mut self,
         seed: V,
     ) -> Result<Option<V::Value>, Error> {
-        if self.len > 0 {
+        if self.length > 0 {
             // We are deserializing a specified number of bytes in this case, so we need to track
             // how many bytes each serialization request uses.
             let original_remaining = self.deserializer.len();
             let data = DeserializeSeed::deserialize(seed, &mut *self.deserializer)?;
-            self.len = self
-                .len
+            self.length = self
+                .length
                 .checked_sub(original_remaining - self.deserializer.len())
                 .ok_or(Error::InsufficientData)?;
 
             // Since some data was just read, we no longer know the size of the binary data block.
-            self.deserializer.next_binary_read_size.take();
+            self.deserializer.next_pending_length.take();
 
             Ok(Some(data))
         } else {
