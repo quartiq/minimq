@@ -17,10 +17,17 @@ pub enum Properties<'a> {
     /// Properties have an unknown size when being received. As such, we store them as a binary
     /// blob that we iterate across.
     DataBlock(&'a [u8]),
+
+    /// Properties that are correlated to a previous message.
+    CorrelatedSlice {
+        correlation: Property<'a>,
+        properties: &'a [Property<'a>],
+    },
 }
 
+/// Used to progressively iterate across binary property blocks, deserializing them along the way.
 pub struct PropertiesIter<'a> {
-    props: &'a Properties<'a>,
+    props: &'a [u8],
     index: usize,
 }
 
@@ -28,30 +35,16 @@ impl<'a> core::iter::Iterator for PropertiesIter<'a> {
     type Item = Result<Property<'a>, ProtocolError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.props {
-            Properties::Slice(props) => {
-                if self.index >= props.len() {
-                    return None;
-                }
-
-                let next_item = props[self.index];
-                self.index += 1;
-                Some(Ok(next_item))
-            }
-
-            Properties::DataBlock(data) => {
-                if self.index >= data.len() {
-                    return None;
-                }
-
-                // Progressively deserialize properties and yield them.
-                let mut deserializer = MqttDeserializer::new(&data[self.index..]);
-                let property = Property::deserialize(&mut deserializer)
-                    .map_err(ProtocolError::Deserialization);
-                self.index += deserializer.deserialized_bytes();
-                Some(property)
-            }
+        if self.index >= self.props.len() {
+            return None;
         }
+
+        // Progressively deserialize properties and yield them.
+        let mut deserializer = MqttDeserializer::new(&self.props[self.index..]);
+        let property =
+            Property::deserialize(&mut deserializer).map_err(ProtocolError::Deserialization);
+        self.index += deserializer.deserialized_bytes();
+        Some(property)
     }
 }
 
@@ -59,10 +52,16 @@ impl<'a> core::iter::IntoIterator for &'a Properties<'a> {
     type Item = Result<Property<'a>, ProtocolError>;
     type IntoIter = PropertiesIter<'a>;
 
-    fn into_iter(self) -> Self::IntoIter {
-        PropertiesIter {
-            props: self,
-            index: 0,
+    fn into_iter(self) -> PropertiesIter<'a> {
+        if let Properties::DataBlock(data) = self {
+            PropertiesIter {
+                props: data,
+                index: 0,
+            }
+        } else {
+            // Iterating over other property types is not implemented. The user may instead iterate
+            // through slices directly.
+            unimplemented!()
         }
     }
 }
@@ -78,6 +77,19 @@ impl<'a> serde::Serialize for Properties<'a> {
                 let property_length: usize = props.iter().map(|prop| prop.size()).sum();
                 item.serialize_field("_len", &Varint(property_length as u32))?;
                 item.serialize_field("_props", props)?;
+            }
+            Properties::CorrelatedSlice {
+                correlation,
+                properties,
+            } => {
+                let property_length: usize = properties
+                    .iter()
+                    .chain([*correlation].iter())
+                    .map(|prop| prop.size())
+                    .sum();
+                item.serialize_field("_len", &Varint(property_length as u32))?;
+                item.serialize_field("_correlation", &correlation)?;
+                item.serialize_field("_props", properties)?;
             }
             Properties::DataBlock(block) => {
                 item.serialize_field("_len", &Varint(block.len() as u32))?;

@@ -3,7 +3,6 @@ use crate::{
     network_manager::InterfaceHolder,
     packets::{ConnAck, Connect, PingReq, Pub, PubAck, PubRel, SubAck, Subscribe},
     reason_codes::ReasonCode,
-    reply_options::ReplyOptions,
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
     will::Will,
@@ -12,7 +11,7 @@ use crate::{
 
 use embedded_nal::{IpAddr, SocketAddr, TcpClientStack};
 
-use heapless::{String, Vec};
+use heapless::String;
 
 use core::str::FromStr;
 
@@ -280,7 +279,7 @@ impl<
 
         let packet_id = self.sm.context_mut().session_state.get_packet_identifier();
 
-        self.network.send_packet(Subscribe {
+        self.network.send_packet(&Subscribe {
             packet_id,
             properties: Properties::Slice(properties),
             topics,
@@ -346,102 +345,40 @@ impl<
     /// If the client is not yet connected to the broker, the message will be silently ignored.
     ///
     /// # Args
-    /// * `topic` - The topic to publish the message to.
-    /// * `data` - The data to transmit as the message contents.
-    /// * `qos` - The desired quality-of-service level of the message. Must be QoS::AtMostOnce
-    /// * `properties` - A list of properties to associate with the message being published. May be
-    ///   empty.
-    pub fn publish(
-        &mut self,
-        topic: &str,
-        data: &[u8],
-        qos: QoS,
-        retain: Retain,
-        properties: &[Property],
-    ) -> Result<(), Error<TcpStack::Error>> {
+    /// * `publish` - The publication to generate. See [Publication] for a builder pattern to
+    /// generate a message.
+    pub fn publish(&mut self, mut publish: Pub<'_>) -> Result<(), Error<TcpStack::Error>> {
         // If we are not yet connected to the broker, we can't transmit a message.
         if !self.is_connected() {
             return Ok(());
         }
 
-        if !self.can_publish(qos) {
+        if !self.can_publish(publish.qos) {
             return Err(Error::NotReady);
         }
 
-        // If QoS 0 the ID will be ignored
-        let id = if qos > QoS::AtMostOnce {
-            Some(self.sm.context_mut().session_state.get_packet_identifier())
-        } else {
-            None
-        };
+        publish.dup = false;
 
-        let publish = Pub {
-            topic: Utf8String(topic),
-            properties: Properties::Slice(properties),
-            packet_id: id,
-            payload: data,
-            retain,
-            qos,
-            dup: false,
-        };
+        // If QoS 0 the ID will be ignored
+        publish.packet_id.take();
+        if publish.qos > QoS::AtMostOnce {
+            publish
+                .packet_id
+                .replace(self.sm.context_mut().session_state.get_packet_identifier());
+        }
 
         crate::info!("Sending: {:?}", publish);
         let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, publish)?;
+        let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, &publish)?;
         self.network.write(packet)?;
 
         // TODO: Generate event.
-        if let Some(id) = id {
+        if let Some(id) = publish.packet_id {
             self.sm
                 .context_mut()
                 .session_state
-                .handle_publish(qos, id, packet)?;
+                .handle_publish(publish.qos, id, packet)?;
         }
-
-        Ok(())
-    }
-
-    /// Reply to a previously-received message.
-    ///
-    /// # Generics
-    /// * `N` specifies the maximum number of properties that the reply can contain.
-    ///
-    /// # Args
-    /// * [`ReplyOptions`] - Options used for constructing the reply.
-    /// * `default_response` - An optional default response topic to reply to.
-    /// * `data` - The data containing the response.
-    /// * `qos` - The QoS to transmit the response at.
-    /// * `retain` - The retain state of the response.
-    /// * `properties` - The properties to attach to the response.
-    pub fn reply<'a, const N: usize>(
-        &mut self,
-        options: ReplyOptions<'a>,
-        data: &[u8],
-        qos: QoS,
-        retain: Retain,
-        properties: &[Property<'a>],
-    ) -> Result<(), Error<TcpStack::Error>> {
-        let response_topic = match options.response_topic {
-            Some(topic) => topic,
-            None => {
-                if options.ignore_missing_response {
-                    return Ok(());
-                }
-
-                return Err(Error::NoResponseTopic);
-            }
-        };
-        let mut properties: Vec<_, N> =
-            Vec::from_slice(properties).map_err(|_| Error::TooManyProperties)?;
-
-        // Next, copy over any correlation data to the outbound properties.
-        if let Some(cd) = options.correlation_data {
-            properties
-                .push(Property::CorrelationData(cd))
-                .map_err(|_| Error::TooManyProperties)?;
-        }
-
-        self.publish(response_topic, data, qos, retain, &properties)?;
 
         Ok(())
     }
@@ -459,7 +396,7 @@ impl<
             Property::ReceiveMaximum(MSG_COUNT as u16),
         ];
 
-        self.network.send_packet(Connect {
+        self.network.send_packet(&Connect {
             keep_alive: self.sm.context().session_state.keepalive_interval(),
             properties: Properties::Slice(&properties),
             client_id: Utf8String(self.sm.context().session_state.client_id.as_str()),
@@ -500,7 +437,7 @@ impl<
         if self.sm.context_mut().session_state.ping_is_due()? {
             // Note: If we fail to serialize or write the packet, the ping timeout timer is still
             // running, so we will recover the TCP connection in the future.
-            self.network.send_packet(PingReq {})?;
+            self.network.send_packet(&PingReq {})?;
         }
 
         Ok(())
@@ -577,7 +514,7 @@ impl<
 
                 crate::info!("Sending: {:?}", pubrel);
                 let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-                let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, pubrel)?;
+                let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, &pubrel)?;
                 self.network.write(packet)?;
 
                 self.sm
@@ -605,7 +542,7 @@ impl<
                             reason: ReasonCode::Success.into(),
                         };
 
-                        self.network.send_packet(puback)?;
+                        self.network.send_packet(&puback)?;
                     }
 
                     // TODO: Add support.

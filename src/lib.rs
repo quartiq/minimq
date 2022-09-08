@@ -23,7 +23,7 @@
 //! Below is a sample snippet showing how this library is used.
 //!
 //! ```no_run
-//! use minimq::{Minimq, QoS, Retain};
+//! use minimq::{Minimq, Publication};
 //!
 //! // Construct an MQTT client with a maximum packet size of 256 bytes
 //! // and a maximum of 16 messages that are allowed to be "in flight".
@@ -49,7 +49,8 @@
 //!         match topic {
 //!             "topic" => {
 //!                println!("{:?}", message);
-//!                client.publish("echo", message, QoS::AtMostOnce, Retain::NotRetained, &[]).unwrap();
+//!                let response = Publication::new(message).topic("echo").finish().unwrap();
+//!                client.publish(response).unwrap();
 //!             },
 //!             topic => println!("Unknown topic: {}", topic),
 //!         };
@@ -65,16 +66,16 @@ pub mod mqtt_client;
 mod network_manager;
 mod packets;
 mod properties;
+pub mod publication;
 mod reason_codes;
-pub mod reply_options;
 mod session_state;
 pub mod types;
 mod varint;
 mod will;
 
 pub use properties::Property;
+pub use publication::Publication;
 pub use reason_codes::ReasonCode;
-pub use reply_options::ReplyOptions;
 
 pub use embedded_nal;
 pub use embedded_time;
@@ -135,6 +136,7 @@ pub enum ProtocolError {
     Unacknowledged,
     WrongQos,
     UnsupportedPacket,
+    NoTopic,
     Serialization(crate::ser::Error),
     Deserialization(crate::de::Error),
 }
@@ -182,7 +184,6 @@ pub enum Error<E> {
     Protocol(ProtocolError),
     SessionReset,
     Clock(embedded_time::clock::Error),
-    TooManyProperties,
     TooManyTopics,
 }
 

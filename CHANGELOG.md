@@ -8,12 +8,13 @@ This document describes the changes to Minimq between releases.
 * Allow configuration of non-default broker port numbers
 * Support added for QoS::ExactlyOnce transmission
 * `poll()` now supports returning from the closure. An `Option::Some()` will be generated whenever
-the `poll()` closure executes on an inbound `Publish` message.
+  the `poll()` closure executes on an inbound `Publish` message.
 * `subscribe()` now supports subscription configuration, such as retain configuration, QoS
   specification, and no-local publications.
 * `subscribe()` modified to take a list of topic filters.
-* Added a `reply()` API to reply quickly inbound messages.
 * Subscriptions at QoS::AtLeastOnce are now supported.
+* Added a new `Publication` builder API to easily construct new messages or reply to received
+  messages.
 
 ## Changed
 * [breaking] The client is no longer publicly exposed, and is instead accessible via `Minimq::client()`
@@ -25,6 +26,8 @@ the `poll()` closure executes on an inbound `Publish` message.
 * `poll()` updated such that the user should call it repeatedly until it returns `Ok(None)`.
 * [breaking] Property handling has been changed such that an arbitrary number can be received.
   Properties are deserialized as needed by the application.
+* [breaking] `publish` now accepts a single `Pub` message type, which can be easily created using
+  the `Publication` builder utility.
 
 ## Fixed
 * All unacknowledged messages will be guaranteed to be retransmitted upon connection with the

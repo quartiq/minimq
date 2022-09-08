@@ -1,6 +1,6 @@
 use minimq::{
     types::{SubscriptionOptions, TopicFilter},
-    Minimq, QoS, Retain,
+    Minimq, Publication, QoS,
 };
 
 use embedded_nal::{self, IpAddr, Ipv4Addr};
@@ -49,11 +49,11 @@ fn main() -> std::io::Result<()> {
         if !published && mqtt.client().can_publish(QoS::AtLeastOnce) {
             mqtt.client()
                 .publish(
-                    "data",
-                    "Ping".as_bytes(),
-                    QoS::AtLeastOnce,
-                    Retain::NotRetained,
-                    &[],
+                    Publication::new("Ping".as_bytes())
+                        .topic("data")
+                        .qos(QoS::AtLeastOnce)
+                        .finish()
+                        .unwrap(),
                 )
                 .unwrap();
             log::info!("Publishing message");
