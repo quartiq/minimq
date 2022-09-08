@@ -1,7 +1,8 @@
 use crate::{
     de::{received_packet::ReceivedPacket, PacketReader},
     network_manager::InterfaceHolder,
-    packets::{ConnAck, Connect, PingReq, Pub, PubRel, SubAck, Subscribe},
+    packets::{ConnAck, Connect, PingReq, Pub, PubAck, PubRel, SubAck, Subscribe},
+    reason_codes::ReasonCode,
     reply_options::ReplyOptions,
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
@@ -127,17 +128,17 @@ where
             self.session_state.reset();
         }
 
-        for property in &acknowledge.properties {
-            match property {
+        for property in acknowledge.properties.into_iter() {
+            match property? {
                 Property::MaximumPacketSize(size) => {
-                    self.session_state.maximum_packet_size.replace(*size);
+                    self.session_state.maximum_packet_size.replace(size);
                 }
                 Property::AssignedClientIdentifier(id) => {
                     self.session_state.client_id =
                         String::from_str(id.0).or(Err(Error::ProvidedClientIdTooLong))?;
                 }
                 Property::ServerKeepAlive(keep_alive) => {
-                    self.session_state.set_keepalive(*keep_alive);
+                    self.session_state.set_keepalive(keep_alive);
                 }
                 _prop => info!("Ignoring property: {:?}", _prop),
             };
@@ -281,7 +282,7 @@ impl<
 
         self.network.send_packet(Subscribe {
             packet_id,
-            properties: Properties(properties),
+            properties: Properties::Slice(properties),
             topics,
         })?;
 
@@ -368,12 +369,16 @@ impl<
         }
 
         // If QoS 0 the ID will be ignored
-        let id = self.sm.context_mut().session_state.get_packet_identifier();
+        let id = if qos > QoS::AtMostOnce {
+            Some(self.sm.context_mut().session_state.get_packet_identifier())
+        } else {
+            None
+        };
 
         let publish = Pub {
             topic: Utf8String(topic),
-            properties: Vec::from_slice(properties).map_err(|_| Error::TooManyProperties)?,
-            packet_id: Some(id),
+            properties: Properties::Slice(properties),
+            packet_id: id,
             payload: data,
             retain,
             qos,
@@ -386,10 +391,12 @@ impl<
         self.network.write(packet)?;
 
         // TODO: Generate event.
-        self.sm
-            .context_mut()
-            .session_state
-            .handle_publish(qos, id, packet)?;
+        if let Some(id) = id {
+            self.sm
+                .context_mut()
+                .session_state
+                .handle_publish(qos, id, packet)?;
+        }
 
         Ok(())
     }
@@ -454,7 +461,7 @@ impl<
 
         self.network.send_packet(Connect {
             keep_alive: self.sm.context().session_state.keepalive_interval(),
-            properties: Properties(&properties),
+            properties: Properties::Slice(&properties),
             client_id: Utf8String(self.sm.context().session_state.client_id.as_str()),
             will: self.will.as_ref(),
             clean_start: !self.sm.context().session_state.is_present(),
@@ -534,7 +541,7 @@ impl<
             &mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
             &'a str,
             &[u8],
-            &[Property<'a>],
+            &Properties<'a>,
         ) -> T,
     {
         match control_packet {
@@ -565,7 +572,7 @@ impl<
                         .session_state
                         .find_packet(rec.packet_id, QoS::ExactlyOnce)
                         .into(),
-                    properties: Properties(&[]),
+                    properties: Properties::Slice(&[]),
                 };
 
                 crate::info!("Sending: {:?}", pubrel);
@@ -584,6 +591,28 @@ impl<
                     return Err(Error::NotReady);
                 }
 
+                // Handle transmitting any necessary acknowledges
+                match info.qos {
+                    QoS::AtMostOnce => {}
+                    QoS::AtLeastOnce => {
+                        let puback = PubAck {
+                            // Note(uwnrap): There should always be a packet ID for QoS >
+                            // AtMostOnce.
+                            packet_identifier: info.packet_id.unwrap(),
+
+                            // Note: Because we do not support ExactlyOnce, it's not possible for
+                            // us to receive two packets with the same ID.
+                            reason: ReasonCode::Success.into(),
+                        };
+
+                        self.network.send_packet(puback)?;
+                    }
+
+                    // TODO: Add support.
+                    QoS::ExactlyOnce => unimplemented!(),
+                }
+
+                // Provide the packet to the application for further processing.
                 return Ok(Some(f(self, info.topic.0, info.payload, &info.properties)));
             }
 
@@ -680,7 +709,7 @@ impl<
             &mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
             &'a str,
             &[u8],
-            &[Property<'a>],
+            &Properties<'a>,
         ) -> T,
     {
         self.client.update()?;

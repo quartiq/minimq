@@ -13,6 +13,7 @@ the `poll()` closure executes on an inbound `Publish` message.
   specification, and no-local publications.
 * `subscribe()` modified to take a list of topic filters.
 * Added a `reply()` API to reply quickly inbound messages.
+* Subscriptions at QoS::AtLeastOnce are now supported.
 
 ## Changed
 * [breaking] The client is no longer publicly exposed, and is instead accessible via `Minimq::client()`
@@ -22,6 +23,8 @@ the `poll()` closure executes on an inbound `Publish` message.
 * [breaking] Properties are now wrapped in MQTT-specific data types.
 * [breaking] Packets now support reason codes. Unused error codes were removed.
 * `poll()` updated such that the user should call it repeatedly until it returns `Ok(None)`.
+* [breaking] Property handling has been changed such that an arbitrary number can be received.
+  Properties are deserialized as needed by the application.
 
 ## Fixed
 * All unacknowledged messages will be guaranteed to be retransmitted upon connection with the

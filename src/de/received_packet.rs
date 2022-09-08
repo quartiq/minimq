@@ -132,6 +132,7 @@ mod test {
 
     #[test]
     fn deserialize_good_connack() {
+        env_logger::init();
         let serialized_connack: [u8; 5] = [
             0x20, 0x03, // Remaining length = 3 bytes
             0x00, // Connect acknowledge flags - bit 0 clear.
@@ -151,7 +152,6 @@ mod test {
 
     #[test]
     fn deserialize_good_publish() {
-        env_logger::init();
         let serialized_publish: [u8; 7] = [
             0x30, // Publish, no QoS
             0x05, // Remaining length
@@ -185,7 +185,6 @@ mod test {
             ReceivedPacket::PubAck(pub_ack) => {
                 assert_eq!(pub_ack.reason.code(), ReasonCode::NoMatchingSubscribers);
                 assert_eq!(pub_ack.packet_identifier, 5);
-                assert_eq!(pub_ack.reason.properties().len(), 0);
             }
             _ => panic!("Invalid message"),
         }
@@ -259,7 +258,6 @@ mod test {
             ReceivedPacket::PubComp(comp) => {
                 assert_eq!(comp.packet_id, 5);
                 assert_eq!(comp.reason.code(), ReasonCode::PacketIdNotFound);
-                assert_eq!(comp.reason.properties().len(), 0);
             }
             _ => panic!("Invalid message"),
         }
@@ -298,7 +296,6 @@ mod test {
             ReceivedPacket::PubRec(rec) => {
                 assert_eq!(rec.packet_id, 5);
                 assert_eq!(rec.reason.code(), ReasonCode::NoMatchingSubscribers);
-                assert_eq!(rec.reason.properties().len(), 0);
             }
             _ => panic!("Invalid message"),
         }

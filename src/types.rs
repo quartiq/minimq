@@ -1,17 +1,71 @@
 //! MQTT-Specific Data Types
 //!
 //! This module provides wrapper methods and serde functionality for MQTT-specified data types.
-use crate::{properties::Property, varint::Varint, QoS};
+use crate::{
+    de::deserializer::MqttDeserializer, properties::Property, varint::Varint, ProtocolError, QoS,
+};
 use bit_field::BitField;
 use serde::ser::SerializeStruct;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-/// A wrapper type for a number of MQTT `Property`s.
-///
-/// # Note
-/// This wrapper type is primarily used to support custom serialization.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Properties<'a>(pub &'a [Property<'a>]);
+#[derive(Debug, PartialEq)]
+pub enum Properties<'a> {
+    /// Properties ready for transmission are provided as a list of properties that will be later
+    /// encoded into a packet.
+    Slice(&'a [Property<'a>]),
+
+    /// Properties have an unknown size when being received. As such, we store them as a binary
+    /// blob that we iterate across.
+    DataBlock(&'a [u8]),
+}
+
+pub struct PropertiesIter<'a> {
+    props: &'a Properties<'a>,
+    index: usize,
+}
+
+impl<'a> core::iter::Iterator for PropertiesIter<'a> {
+    type Item = Result<Property<'a>, ProtocolError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.props {
+            Properties::Slice(props) => {
+                if self.index >= props.len() {
+                    return None;
+                }
+
+                let next_item = props[self.index];
+                self.index += 1;
+                Some(Ok(next_item))
+            }
+
+            Properties::DataBlock(data) => {
+                if self.index >= data.len() {
+                    return None;
+                }
+
+                // Progressively deserialize properties and yield them.
+                let mut deserializer = MqttDeserializer::new(&data[self.index..]);
+                let property = Property::deserialize(&mut deserializer)
+                    .map_err(ProtocolError::Deserialization);
+                self.index += deserializer.deserialized_bytes();
+                Some(property)
+            }
+        }
+    }
+}
+
+impl<'a> core::iter::IntoIterator for &'a Properties<'a> {
+    type Item = Result<Property<'a>, ProtocolError>;
+    type IntoIter = PropertiesIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        PropertiesIter {
+            props: self,
+            index: 0,
+        }
+    }
+}
 
 impl<'a> serde::Serialize for Properties<'a> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -19,10 +73,40 @@ impl<'a> serde::Serialize for Properties<'a> {
 
         // Properties in MQTTv5 must be prefixed with a variable-length integer denoting the size
         // of the all of the properties in bytes.
-        let property_length: usize = self.0.iter().map(|prop| prop.size()).sum();
-        item.serialize_field("_len", &Varint(property_length as u32))?;
-        item.serialize_field("_props", self.0)?;
+        match self {
+            Properties::Slice(props) => {
+                let property_length: usize = props.iter().map(|prop| prop.size()).sum();
+                item.serialize_field("_len", &Varint(property_length as u32))?;
+                item.serialize_field("_props", props)?;
+            }
+            Properties::DataBlock(block) => {
+                item.serialize_field("_len", &Varint(block.len() as u32))?;
+                item.serialize_field("_data", block)?;
+            }
+        }
+
         item.end()
+    }
+}
+
+struct PropertiesVisitor;
+
+impl<'de> serde::de::Visitor<'de> for PropertiesVisitor {
+    type Value = Properties<'de>;
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(formatter, "Properties")
+    }
+
+    fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
+        let data = seq.next_element()?;
+        Ok(Properties::DataBlock(data.unwrap_or(&[])))
+    }
+}
+
+impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Properties<'a> {
+    fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_seq(PropertiesVisitor)
     }
 }
 
@@ -162,7 +246,7 @@ impl SubscriptionOptions {
     /// Specify the maximum QoS supported on this subscription.
     pub fn maximum_qos(mut self, qos: QoS) -> Self {
         // TODO: Support for higher QoS levels.
-        assert!(qos == QoS::AtMostOnce);
+        assert!(qos != QoS::ExactlyOnce);
         self.maximum_qos = qos;
         self
     }
