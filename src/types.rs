@@ -25,8 +25,9 @@ pub enum Properties<'a> {
     },
 }
 
+/// Used to progressively iterate across binary property blocks, deserializing them along the way.
 pub struct PropertiesIter<'a> {
-    props: &'a Properties<'a>,
+    props: &'a [u8],
     index: usize,
 }
 
@@ -34,47 +35,16 @@ impl<'a> core::iter::Iterator for PropertiesIter<'a> {
     type Item = Result<Property<'a>, ProtocolError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.props {
-            Properties::Slice(props) => {
-                if self.index >= props.len() {
-                    return None;
-                }
-
-                let next_item = props[self.index];
-                self.index += 1;
-                Some(Ok(next_item))
-            }
-
-            Properties::CorrelatedSlice {
-                correlation,
-                properties,
-            } => {
-                if self.index == 0 {
-                    self.index += 1;
-                    return Some(Ok(*correlation));
-                }
-
-                let index = self.index - 1;
-                if index >= properties.len() {
-                    return None;
-                }
-
-                Some(Ok(properties[index]))
-            }
-
-            Properties::DataBlock(data) => {
-                if self.index >= data.len() {
-                    return None;
-                }
-
-                // Progressively deserialize properties and yield them.
-                let mut deserializer = MqttDeserializer::new(&data[self.index..]);
-                let property = Property::deserialize(&mut deserializer)
-                    .map_err(ProtocolError::Deserialization);
-                self.index += deserializer.deserialized_bytes();
-                Some(property)
-            }
+        if self.index >= self.props.len() {
+            return None;
         }
+
+        // Progressively deserialize properties and yield them.
+        let mut deserializer = MqttDeserializer::new(&self.props[self.index..]);
+        let property =
+            Property::deserialize(&mut deserializer).map_err(ProtocolError::Deserialization);
+        self.index += deserializer.deserialized_bytes();
+        Some(property)
     }
 }
 
@@ -82,10 +52,16 @@ impl<'a> core::iter::IntoIterator for &'a Properties<'a> {
     type Item = Result<Property<'a>, ProtocolError>;
     type IntoIter = PropertiesIter<'a>;
 
-    fn into_iter(self) -> Self::IntoIter {
-        PropertiesIter {
-            props: self,
-            index: 0,
+    fn into_iter(self) -> PropertiesIter<'a> {
+        if let Properties::DataBlock(data) = self {
+            PropertiesIter {
+                props: data,
+                index: 0,
+            }
+        } else {
+            // Iterating over other property types is not implemented. The user may instead iterate
+            // through slices directly.
+            unimplemented!()
         }
     }
 }
