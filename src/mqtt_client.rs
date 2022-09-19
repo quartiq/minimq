@@ -74,7 +74,7 @@ where
         };
 
         for &code in subscribe_acknowledge.codes.iter() {
-            ReasonCode::from(x).as_result()?;
+            ReasonCode::from(code).as_result()?;
         }
 
         Ok(())
