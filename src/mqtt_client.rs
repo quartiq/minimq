@@ -73,12 +73,8 @@ where
             Some(index) => self.session_state.pending_subscriptions.swap_remove(index),
         };
 
-        for code in subscribe_acknowledge
-            .codes
-            .iter()
-            .map(|&x| ReasonCode::from(x))
-        {
-            code.as_result()?;
+        for &code in subscribe_acknowledge.codes.iter() {
+            ReasonCode::from(x).as_result()?;
         }
 
         Ok(())
