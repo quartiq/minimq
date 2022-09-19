@@ -1,7 +1,6 @@
 use crate::{
     message_types::MessageType,
     packets::{ConnAck, Disconnect, Pub, PubAck, PubComp, PubRec, SubAck},
-    reason_codes::ReasonCode,
     varint::Varint,
     ProtocolError, QoS, Retain,
 };
@@ -38,12 +37,7 @@ impl<'a> ReceivedPacket<'a> {
                     publish.payload = remaining_payload;
                 }
                 ReceivedPacket::SubAck(suback) => {
-                    for code in remaining_payload.iter().map(|&x| ReasonCode::from(x)) {
-                        suback
-                            .codes
-                            .push(code)
-                            .map_err(|_| ProtocolError::BufferSize)?;
-                    }
+                    suback.codes = remaining_payload;
                 }
                 _ => return Err(ProtocolError::MalformedPacket),
             }
@@ -222,7 +216,7 @@ mod test {
         match packet {
             ReceivedPacket::SubAck(sub_ack) => {
                 assert_eq!(sub_ack.codes.len(), 1);
-                assert_eq!(sub_ack.codes[0], ReasonCode::GrantedQos2);
+                assert_eq!(ReasonCode::from(sub_ack.codes[0]), ReasonCode::GrantedQos2);
                 assert_eq!(sub_ack.packet_identifier, 5);
             }
             _ => panic!("Invalid message"),

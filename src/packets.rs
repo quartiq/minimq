@@ -5,7 +5,6 @@ use crate::{
     QoS, Retain,
 };
 use bit_field::BitField;
-use heapless::Vec;
 use serde::{Deserialize, Serialize};
 
 use serde::ser::SerializeStruct;
@@ -142,7 +141,7 @@ pub struct SubAck<'a> {
 
     /// The response status code of the subscription request.
     #[serde(skip)]
-    pub codes: Vec<ReasonCode, { crate::MAX_TOPICS_PER_SUBSCRIPTION }>,
+    pub codes: &'a [u8],
 }
 
 /// An MQTT PUBREC control packet
