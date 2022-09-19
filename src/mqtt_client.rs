@@ -73,7 +73,11 @@ where
             Some(index) => self.session_state.pending_subscriptions.swap_remove(index),
         };
 
-        for code in subscribe_acknowledge.codes.iter() {
+        for code in subscribe_acknowledge
+            .codes
+            .iter()
+            .map(|&x| ReasonCode::from(x))
+        {
             code.as_result()?;
         }
 
@@ -264,12 +268,6 @@ impl<
     ) -> Result<(), Error<TcpStack::Error>> {
         if !self.is_connected() {
             return Err(Error::NotReady);
-        }
-
-        // We can only support so many received response codes. As such, make sure that we don't
-        // allow too many concurrent topics.
-        if topics.len() > crate::MAX_TOPICS_PER_SUBSCRIPTION {
-            return Err(Error::TooManyTopics);
         }
 
         // We can't subscribe if there's a pending write in the network.

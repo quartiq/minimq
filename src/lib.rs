@@ -97,9 +97,6 @@ pub const MQTT_INSECURE_DEFAULT_PORT: u16 = 1883;
 /// See [IANA Port Numbers](https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.txt)
 pub const MQTT_SECURE_DEFAULT_PORT: u16 = 8883;
 
-/// The maximum number of subscriptions supported in a single request.
-pub const MAX_TOPICS_PER_SUBSCRIPTION: usize = 8;
-
 /// The quality-of-service for an MQTT message.
 #[derive(Debug, Copy, Clone, PartialEq, TryFromPrimitive, PartialOrd)]
 #[repr(u8)]
@@ -184,7 +181,6 @@ pub enum Error<E> {
     Protocol(ProtocolError),
     SessionReset,
     Clock(embedded_time::clock::Error),
-    TooManyTopics,
 }
 
 impl<E> From<embedded_time::clock::Error> for Error<E> {
