@@ -203,6 +203,25 @@ mod test {
     }
 
     #[test]
+    fn deserialize_good_puback_without_properties() {
+        let serialized_puback: [u8; 5] = [
+            0x40, // PubAck
+            0x03, // Remaining length
+            0x00, 0x06, // Identifier
+            0x10, // ReasonCode
+        ];
+
+        let packet = ReceivedPacket::from_buffer(&serialized_puback).unwrap();
+        match packet {
+            ReceivedPacket::PubAck(pub_ack) => {
+                assert_eq!(pub_ack.packet_identifier, 6);
+                assert_eq!(pub_ack.reason.code(), ReasonCode::NoMatchingSubscribers);
+            }
+            _ => panic!("Invalid message"),
+        }
+    }
+
+    #[test]
     fn deserialize_good_suback() {
         let serialized_suback: [u8; 6] = [
             0x90, // SubAck

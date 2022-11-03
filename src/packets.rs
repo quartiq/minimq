@@ -202,7 +202,7 @@ impl<'a> From<ReasonCode> for Reason<'a> {
         Self {
             reason: Some(ReasonData {
                 code,
-                _properties: Properties::Slice(&[]),
+                _properties: None,
             }),
         }
     }
@@ -225,7 +225,7 @@ struct ReasonData<'a> {
 
     /// The properties transmitted with the publish data.
     #[serde(borrow)]
-    pub _properties: Properties<'a>,
+    pub _properties: Option<Properties<'a>>,
 }
 
 #[cfg(test)]
@@ -448,13 +448,12 @@ mod tests {
 
     #[test]
     fn serialize_puback() {
-        let good_puback: [u8; 6] = [
+        let good_puback: [u8; 5] = [
             4 << 4, // PubAck
-            0x04,   // Remaining length
+            0x03,   // Remaining length
             0x00,
             0x15, // Identifier
             0x00, // Response Code
-            0x00, // Properties length
         ];
 
         let pubrel = crate::packets::PubAck {
@@ -462,7 +461,7 @@ mod tests {
             reason: crate::packets::Reason {
                 reason: Some(crate::packets::ReasonData {
                     code: ReasonCode::Success,
-                    _properties: crate::types::Properties::Slice(&[]),
+                    _properties: None,
                 }),
             },
         };

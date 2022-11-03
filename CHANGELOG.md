@@ -2,6 +2,11 @@
 
 This document describes the changes to Minimq between releases.
 
+# [Unreleased]
+
+## Fixed
+* `PubAck` can now be deserialized when no properties are present, but a reason code is specified.
+
 # [0.6.0] - 2022-11-03
 
 ## Added
