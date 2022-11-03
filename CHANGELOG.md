@@ -2,7 +2,7 @@
 
 This document describes the changes to Minimq between releases.
 
-# [Unreleased]
+# [0.6.1] - 2022-11-03
 
 ## Fixed
 * `PubAck` can now be deserialized when no properties are present, but a reason code is specified.
@@ -105,7 +105,8 @@ keep-alive interval
 
 * Initial library release and publish to crates.io
 
-[Unreleased]: https://github.com/quartiq/minimq/compare/0.6.0...HEAD
+[Unreleased]: https://github.com/quartiq/minimq/compare/0.6.1...HEAD
+[0.6.1]: https://github.com/quartiq/minimq/releases/tag/0.6.1
 [0.6.0]: https://github.com/quartiq/minimq/releases/tag/0.6.0
 [0.5.3]: https://github.com/quartiq/minimq/releases/tag/0.5.3
 [0.5.2]: https://github.com/quartiq/minimq/releases/tag/0.5.2
