@@ -14,17 +14,22 @@ subscribe to topics.
 ## Features
 
 Minimq supports all of the fundamental operations of MQTT, such as message subscription and
-publication. Below is a detailed list of features, indicating what aspects are supported and what
-aren't:
-* Will messages are fully supported.
-* Message publication is supported for all quality-of-service (QoS) levels
-* Message subscription is only supported for the following QoS levels:
-    1. At Most once (Level 0)
-    2. At Least Once (Level 1)
-* Topic aliasing is not yet supported
+publication. Below is a detailed list of features, indicating what aspects are supported:
+* Publication at all quality-of-service levels (at-most-once, at-least-once, and exactly-once)
+* Retained messages
+* Connection will messages
+* Session state reconnection and republication
+* Topic subscriptions at quality-of-service at-most-once and at-least-once
+    * exactly-once subscription support is not yet implemented
+* Subscription option flags
+* Zero-copy message deserialization
+* Serde-compatible MQTT message serialization and deserialization
 
 If there are features that you would like to have that are not yet supported, we are always
 accepting pull requests to extend Minimq's capabilities.
+
+Minimq also provides convenient APIs to implement request-response interfaces over MQTT leveraging
+the `ResponseTopic` and `CorrelationData` properties for in-bound and out-bound messages.
 
 ### Smoltcp Support
 If using `smoltcp`, check out the [`smoltcp-nal`](https://github.com/quartiq/smoltcp-nal) to quickly

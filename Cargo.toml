@@ -1,6 +1,6 @@
 [package]
 name = "minimq"
-version = "0.5.3"
+version = "0.6.0"
 authors = ["Ryan Summers <ryan.summers@vertigo-designs.com>", "Max Rottenkolber <max@mr.gy>"]
 edition = "2018"
 
@@ -22,10 +22,7 @@ log = {version = "0.4", optional = true}
 embedded-time = "0.12"
 varint-rs = {version = "2.2", default-features = false }
 serde = { version = "1", features = ["derive"], default-features = false }
-
-[dependencies.smlang]
-git = "https://github.com/ryan-summers/smlang-rs"
-branch = "feature/versatile-guard-errors"
+smlang = "0.6.0"
 
 [dependencies.embedded-nal]
 version = "0.6"

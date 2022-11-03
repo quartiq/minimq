@@ -2,7 +2,7 @@
 
 This document describes the changes to Minimq between releases.
 
-# [Unreleased]
+# [0.6.0] - 2022-11-03
 
 ## Added
 * Allow configuration of non-default broker port numbers
@@ -100,8 +100,9 @@ keep-alive interval
 
 * Initial library release and publish to crates.io
 
-[Unreleased]: https://github.com/quartiq/minimq/compare/0.5.3...HEAD
-[0.5.2]: https://github.com/quartiq/minimq/releases/tag/0.5.3
+[Unreleased]: https://github.com/quartiq/minimq/compare/0.6.0...HEAD
+[0.6.0]: https://github.com/quartiq/minimq/releases/tag/0.6.0
+[0.5.3]: https://github.com/quartiq/minimq/releases/tag/0.5.3
 [0.5.2]: https://github.com/quartiq/minimq/releases/tag/0.5.2
 [0.5.1]: https://github.com/quartiq/minimq/releases/tag/0.5.1
 [0.5.0]: https://github.com/quartiq/minimq/releases/tag/0.5.0
