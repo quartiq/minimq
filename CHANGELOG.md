@@ -2,12 +2,6 @@
 
 This document describes the changes to Minimq between releases.
 
-# [Unreleased]
-
-## Added
-
-## Fixed
-
 # [0.6.0] - 2022-11-03
 
 ## Added
