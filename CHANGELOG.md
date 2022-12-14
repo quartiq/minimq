@@ -2,6 +2,12 @@
 
 This document describes the changes to Minimq between releases.
 
+# [Unreleased]
+
+## Fixed
+* `UserProperty` now properly serializes key-then-value. Serialization order was previously
+  unintentionally inverted.
+
 # [0.6.1] - 2022-11-03
 
 ## Fixed
