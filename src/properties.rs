@@ -274,8 +274,8 @@ impl<'a> serde::Serialize for Property<'a> {
             Property::MaximumQoS(data) => serializer.serialize_element(data)?,
             Property::RetainAvailable(data) => serializer.serialize_element(data)?,
             Property::UserProperty(key, value) => {
-                serializer.serialize_element(value)?;
                 serializer.serialize_element(key)?;
+                serializer.serialize_element(value)?;
             }
             Property::MaximumPacketSize(data) => serializer.serialize_element(data)?,
             Property::WildcardSubscriptionAvailable(data) => serializer.serialize_element(data)?,

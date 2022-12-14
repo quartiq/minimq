@@ -339,6 +339,38 @@ mod tests {
     }
 
     #[test]
+    pub fn serialize_publish_with_user_prop() {
+        let good_publish: [u8; 17] = [
+            0x30, // Publish message
+            0x0f, // Remaining length (15)
+            0x00, 0x03, 0x41, 0x42, 0x43, // Topic: ABC
+            0x07, // Properties length - 1 property encoding a string pair, each of length 1
+            0x26, 0x00, 0x01, 0x41, 0x00, 0x01, 0x42, // UserProperty("A", "B")
+            0xAB, 0xCD, // Payload
+        ];
+
+        let publish = crate::packets::Pub {
+            qos: crate::QoS::AtMostOnce,
+            topic: crate::types::Utf8String("ABC"),
+            packet_id: None,
+            dup: false,
+            properties: crate::types::Properties::Slice(&[
+                crate::properties::Property::UserProperty(
+                    crate::types::Utf8String("A"),
+                    crate::types::Utf8String("B"),
+                ),
+            ]),
+            retain: crate::Retain::NotRetained,
+            payload: &[0xAB, 0xCD],
+        };
+
+        let mut buffer: [u8; 900] = [0; 900];
+        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
+
+        assert_eq!(message, good_publish);
+    }
+
+    #[test]
     fn serialize_connect() {
         let good_serialized_connect: [u8; 18] = [
             0x10, // Connect
