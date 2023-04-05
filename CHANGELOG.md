@@ -4,6 +4,8 @@ This document describes the changes to Minimq between releases.
 
 # [Unreleased]
 
+# [0.6.2] - 2023-04-05
+
 ## Fixed
 * `UserProperty` now properly serializes key-then-value. Serialization order was previously
   unintentionally inverted.
@@ -111,7 +113,8 @@ keep-alive interval
 
 * Initial library release and publish to crates.io
 
-[Unreleased]: https://github.com/quartiq/minimq/compare/0.6.1...HEAD
+[Unreleased]: https://github.com/quartiq/minimq/compare/0.6.2...HEAD
+[0.6.2]: https://github.com/quartiq/minimq/releases/tag/0.6.2
 [0.6.1]: https://github.com/quartiq/minimq/releases/tag/0.6.1
 [0.6.0]: https://github.com/quartiq/minimq/releases/tag/0.6.0
 [0.5.3]: https://github.com/quartiq/minimq/releases/tag/0.5.3
