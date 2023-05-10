@@ -32,8 +32,7 @@ mod sm {
             Active + ControlPacket(ReceivedPacket<'a>) [handle_packet] = Active,
             Active + SentSubscribe(u16) [handle_subscription] = Active,
 
-            Establishing + TcpDisconnect = Disconnected,
-            Active + TcpDisconnect = Disconnected,
+            _ + TcpDisconnect = Disconnected
         },
         custom_guard_error: true,
     }
@@ -378,7 +377,7 @@ impl<
     }
 
     fn handle_restart(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        if !self.network.tcp_connected()? {
+        if !self.network.tcp_may_send()? {
             return Ok(());
         }
 
@@ -438,10 +437,7 @@ impl<
     }
 
     fn update(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        // Potentially update the state machine depending on the current socket connection status.
-        let tcp_connected = self.network.tcp_connected()?;
-
-        if !tcp_connected {
+        if !self.network.tcp_is_open()? {
             self.sm.process_event(Events::TcpDisconnect).ok();
         }
 

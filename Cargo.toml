@@ -36,3 +36,7 @@ log = "0.4"
 env_logger = "0.7"
 std-embedded-nal = "0.1"
 std-embedded-time = "0.1"
+
+[patch.crates-io.embedded-nal]
+git = "https://github.com/quartiq/embedded-nal"
+branch = "feature/tcp-updates"

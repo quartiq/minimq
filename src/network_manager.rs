@@ -38,14 +38,23 @@ where
     }
 
     /// Determine if an TCP connection exists and is connected.
-    pub fn tcp_connected(&mut self) -> Result<bool, Error<TcpStack::Error>> {
-        if self.socket.is_none() {
+    pub fn tcp_is_open(&mut self) -> Result<bool, Error<TcpStack::Error>> {
+        let Some(ref socket) = self.socket else {
             return Ok(false);
-        }
+        };
 
-        let socket = self.socket.as_ref().unwrap();
         self.network_stack
-            .is_connected(socket)
+            .is_open(socket)
+            .map_err(Error::Network)
+    }
+
+    pub fn tcp_may_send(&mut self) -> Result<bool, Error<TcpStack::Error>> {
+        let Some(ref socket) = self.socket else {
+            return Ok(false);
+        };
+
+        self.network_stack
+            .may_send(socket)
             .map_err(Error::Network)
     }
 
