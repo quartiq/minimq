@@ -17,7 +17,7 @@ pub(crate) struct InterfaceHolder<TcpStack: TcpClientStack, const MSG_SIZE: usiz
     socket: Option<TcpStack::TcpSocket>,
     network_stack: TcpStack,
     pending_write: Option<Vec<u8, MSG_SIZE>>,
-    pipe_closed: bool,
+    connection_died: bool,
 }
 
 impl<TcpStack, const MSG_SIZE: usize> InterfaceHolder<TcpStack, MSG_SIZE>
@@ -30,16 +30,16 @@ where
             socket: None,
             network_stack: stack,
             pending_write: None,
-            pipe_closed: false,
+            connection_died: false,
         }
     }
 
     pub fn socket_was_closed(&mut self) -> bool {
-        let was_closed = self.pipe_closed;
+        let was_closed = self.connection_died;
         if was_closed {
             self.pending_write.take();
         }
-        self.pipe_closed = false;
+        self.connection_died = false;
         was_closed
     }
 
@@ -100,7 +100,7 @@ where
             .or_else(|err| match err {
                 nb::Error::WouldBlock => Ok(0),
                 nb::Error::Other(err) if err.kind() == embedded_nal::TcpErrorKind::PipeClosed => {
-                    self.pipe_closed = true;
+                    self.connection_died = true;
                     Ok(0)
                 }
                 nb::Error::Other(err) => Err(Error::Network(err)),
@@ -163,7 +163,7 @@ where
         result.or_else(|err| match err {
             nb::Error::WouldBlock => Ok(0),
             nb::Error::Other(err) if err.kind() == embedded_nal::TcpErrorKind::PipeClosed => {
-                self.pipe_closed = true;
+                self.connection_died = true;
                 Ok(0)
             }
             nb::Error::Other(err) => Err(Error::Network(err)),
