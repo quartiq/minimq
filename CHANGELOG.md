@@ -4,6 +4,10 @@ This document describes the changes to Minimq between releases.
 
 # [Unreleased]
 
+## Fixed
+* Fixed an issue where the MQTT client would become permanently inoperable when the broker
+  disconnected under certain conditions.
+
 # [0.6.2] - 2023-04-05
 
 ## Fixed

@@ -22,7 +22,7 @@ mod sm {
 
     statemachine! {
         transitions: {
-            *Disconnected + Reallocated = Restart,
+            *Disconnected + TcpConnected = Restart,
             Restart + SentConnect = Establishing,
             Establishing + Connected(ConnAck<'a>) [ handle_connack ] = Active,
 
@@ -377,10 +377,6 @@ impl<
     }
 
     fn handle_restart(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        if !self.network.tcp_may_send()? {
-            return Ok(());
-        }
-
         let properties = [
             // Tell the broker our maximum packet size.
             Property::MaximumPacketSize(MSG_SIZE as u32),
@@ -404,6 +400,7 @@ impl<
 
     fn handle_active(&mut self) -> Result<(), Error<TcpStack::Error>> {
         if self.sm.context_mut().session_state.ping_is_overdue()? {
+            log::warn!("Ping overdue. Trigging send timeout reset");
             self.sm.process_event(Events::SendTimeout).unwrap();
         }
 
@@ -437,8 +434,10 @@ impl<
     }
 
     fn update(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        if !self.network.tcp_is_open()? {
-            self.sm.process_event(Events::TcpDisconnect).ok();
+        if self.network.socket_was_closed() {
+            log::warn!("Handling closed socket");
+            self.sm.process_event(Events::TcpDisconnect).unwrap();
+            self.network.allocate_socket()?;
         }
 
         // Attempt to finish any pending packets.
@@ -446,9 +445,10 @@ impl<
 
         match *self.sm.state() {
             States::Disconnected => {
-                self.network.allocate_socket()?;
-                self.network.connect(self.broker)?;
-                self.sm.process_event(Events::Reallocated)?;
+                if self.network.connect(self.broker)? {
+                    log::info!("TCP socket connected");
+                    self.sm.process_event(Events::TcpConnected)?;
+                }
             }
             States::Restart => self.handle_restart()?,
             States::Active => self.handle_active()?,
@@ -659,6 +659,7 @@ impl<
                 let buffer = match self.packet_reader.receive_buffer() {
                     Ok(buffer) => buffer,
                     Err(e) => {
+                        log::warn!("Protocol Error reset: {e:?}");
                         self.client.sm.process_event(Events::ProtocolError).unwrap();
                         self.packet_reader.reset();
                         return Err(Error::Protocol(e));
