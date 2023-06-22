@@ -6,7 +6,8 @@ use crate::{
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
     will::Will,
-    Error, Property, ProtocolError, QoS, Retain, MQTT_INSECURE_DEFAULT_PORT, {debug, error, info},
+    Error, Property, ProtocolError, QoS, Retain, MQTT_INSECURE_DEFAULT_PORT,
+    {debug, error, info, warn},
 };
 
 use embedded_nal::{IpAddr, SocketAddr, TcpClientStack};
@@ -400,7 +401,7 @@ impl<
 
     fn handle_active(&mut self) -> Result<(), Error<TcpStack::Error>> {
         if self.sm.context_mut().session_state.ping_is_overdue()? {
-            log::warn!("Ping overdue. Trigging send timeout reset");
+            warn!("Ping overdue. Trigging send timeout reset");
             self.sm.process_event(Events::SendTimeout).unwrap();
         }
 
@@ -435,7 +436,7 @@ impl<
 
     fn update(&mut self) -> Result<(), Error<TcpStack::Error>> {
         if self.network.socket_was_closed() {
-            log::warn!("Handling closed socket");
+            warn!("Handling closed socket");
             self.sm.process_event(Events::TcpDisconnect).unwrap();
             self.network.allocate_socket()?;
         }
@@ -446,7 +447,7 @@ impl<
         match *self.sm.state() {
             States::Disconnected => {
                 if self.network.connect(self.broker)? {
-                    log::info!("TCP socket connected");
+                    info!("TCP socket connected");
                     self.sm.process_event(Events::TcpConnected)?;
                 }
             }
@@ -659,7 +660,7 @@ impl<
                 let buffer = match self.packet_reader.receive_buffer() {
                     Ok(buffer) => buffer,
                     Err(e) => {
-                        log::warn!("Protocol Error reset: {e:?}");
+                        warn!("Protocol Error reset: {e:?}");
                         self.client.sm.process_event(Events::ProtocolError).unwrap();
                         self.packet_reader.reset();
                         return Err(Error::Protocol(e));

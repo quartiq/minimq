@@ -23,10 +23,7 @@ embedded-time = "0.12"
 varint-rs = {version = "2.2", default-features = false }
 serde = { version = "1", features = ["derive"], default-features = false }
 smlang = "0.6.0"
-
-[dependencies.embedded-nal]
-git = "https://github.com/quartiq/embedded-nal"
-branch = "feature/tcp-updates"
+embedded-nal = "0.7"
 
 [features]
 default = []
@@ -37,3 +34,7 @@ log = "0.4"
 env_logger = "0.7"
 std-embedded-nal = "0.1"
 std-embedded-time = "0.1"
+
+[patch.crates-io.std-embedded-nal]
+git = "https://gitlab.com/ryan-summers/std-embedded-nal"
+branch = "feature/0.7"
