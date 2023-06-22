@@ -436,7 +436,7 @@ impl<
 
     fn update(&mut self) -> Result<(), Error<TcpStack::Error>> {
         if self.network.socket_was_closed() {
-            warn!("Handling closed socket");
+            info!("Handling closed socket");
             self.sm.process_event(Events::TcpDisconnect).unwrap();
             self.network.allocate_socket()?;
         }
