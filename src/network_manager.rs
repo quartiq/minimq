@@ -6,7 +6,7 @@
 //! stack to be used to transmit buffers that may be stored internally in other structs without
 //! violating Rust's borrow rules.
 use crate::message_types::ControlPacket;
-use embedded_nal::{nb, SocketAddr, TcpClientStack};
+use embedded_nal::{nb, SocketAddr, TcpClientStack, TcpError};
 use heapless::Vec;
 use serde::Serialize;
 
@@ -17,6 +17,7 @@ pub(crate) struct InterfaceHolder<TcpStack: TcpClientStack, const MSG_SIZE: usiz
     socket: Option<TcpStack::TcpSocket>,
     network_stack: TcpStack,
     pending_write: Option<Vec<u8, MSG_SIZE>>,
+    connection_died: bool,
 }
 
 impl<TcpStack, const MSG_SIZE: usize> InterfaceHolder<TcpStack, MSG_SIZE>
@@ -29,24 +30,22 @@ where
             socket: None,
             network_stack: stack,
             pending_write: None,
+            connection_died: false,
         }
+    }
+
+    pub fn socket_was_closed(&mut self) -> bool {
+        let was_closed = self.connection_died;
+        if was_closed {
+            self.pending_write.take();
+        }
+        self.connection_died = false;
+        was_closed
     }
 
     /// Determine if there is a pending packet write that needs to be completed.
     pub fn has_pending_write(&self) -> bool {
         self.pending_write.is_some()
-    }
-
-    /// Determine if an TCP connection exists and is connected.
-    pub fn tcp_connected(&mut self) -> Result<bool, Error<TcpStack::Error>> {
-        if self.socket.is_none() {
-            return Ok(false);
-        }
-
-        let socket = self.socket.as_ref().unwrap();
-        self.network_stack
-            .is_connected(socket)
-            .map_err(Error::Network)
     }
 
     /// Allocate a new TCP socket.
@@ -69,18 +68,21 @@ where
     ///
     /// # Args
     /// * `remote` - The address of the remote to connect to.
-    pub fn connect(&mut self, remote: SocketAddr) -> Result<(), Error<TcpStack::Error>> {
-        let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
+    pub fn connect(&mut self, remote: SocketAddr) -> Result<bool, Error<TcpStack::Error>> {
+        if self.socket.is_none() {
+            self.allocate_socket()?;
+        }
+
+        let socket = self.socket.as_mut().unwrap();
 
         // Drop any pending unfinished packets, as we're establishing a new connection.
         self.pending_write.take();
 
-        self.network_stack
-            .connect(socket, remote)
-            .map_err(|err| match err {
-                nb::Error::WouldBlock => Error::WriteFail,
-                nb::Error::Other(err) => Error::Network(err),
-            })
+        match self.network_stack.connect(socket, remote) {
+            Ok(_) => Ok(true),
+            Err(nb::Error::WouldBlock) => Ok(false),
+            Err(nb::Error::Other(err)) => Err(Error::Network(err)),
+        }
     }
 
     /// Write data to the interface.
@@ -97,6 +99,10 @@ where
             .send(socket, data)
             .or_else(|err| match err {
                 nb::Error::WouldBlock => Ok(0),
+                nb::Error::Other(err) if err.kind() == embedded_nal::TcpErrorKind::PipeClosed => {
+                    self.connection_died = true;
+                    Ok(0)
+                }
                 nb::Error::Other(err) => Err(Error::Network(err)),
             })
             .map(|written| {
@@ -156,6 +162,10 @@ where
 
         result.or_else(|err| match err {
             nb::Error::WouldBlock => Ok(0),
+            nb::Error::Other(err) if err.kind() == embedded_nal::TcpErrorKind::PipeClosed => {
+                self.connection_died = true;
+                Ok(0)
+            }
             nb::Error::Other(err) => Err(Error::Network(err)),
         })
     }

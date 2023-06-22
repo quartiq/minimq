@@ -6,7 +6,8 @@ use crate::{
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
     will::Will,
-    Error, Property, ProtocolError, QoS, Retain, MQTT_INSECURE_DEFAULT_PORT, {debug, error, info},
+    Error, Property, ProtocolError, QoS, Retain, MQTT_INSECURE_DEFAULT_PORT,
+    {debug, error, info, warn},
 };
 
 use embedded_nal::{IpAddr, SocketAddr, TcpClientStack};
@@ -22,7 +23,7 @@ mod sm {
 
     statemachine! {
         transitions: {
-            *Disconnected + Reallocated = Restart,
+            *Disconnected + TcpConnected = Restart,
             Restart + SentConnect = Establishing,
             Establishing + Connected(ConnAck<'a>) [ handle_connack ] = Active,
 
@@ -32,8 +33,7 @@ mod sm {
             Active + ControlPacket(ReceivedPacket<'a>) [handle_packet] = Active,
             Active + SentSubscribe(u16) [handle_subscription] = Active,
 
-            Establishing + TcpDisconnect = Disconnected,
-            Active + TcpDisconnect = Disconnected,
+            _ + TcpDisconnect = Disconnected
         },
         custom_guard_error: true,
     }
@@ -378,10 +378,6 @@ impl<
     }
 
     fn handle_restart(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        if !self.network.tcp_connected()? {
-            return Ok(());
-        }
-
         let properties = [
             // Tell the broker our maximum packet size.
             Property::MaximumPacketSize(MSG_SIZE as u32),
@@ -405,6 +401,7 @@ impl<
 
     fn handle_active(&mut self) -> Result<(), Error<TcpStack::Error>> {
         if self.sm.context_mut().session_state.ping_is_overdue()? {
+            warn!("Ping overdue. Trigging send timeout reset");
             self.sm.process_event(Events::SendTimeout).unwrap();
         }
 
@@ -438,11 +435,10 @@ impl<
     }
 
     fn update(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        // Potentially update the state machine depending on the current socket connection status.
-        let tcp_connected = self.network.tcp_connected()?;
-
-        if !tcp_connected {
-            self.sm.process_event(Events::TcpDisconnect).ok();
+        if self.network.socket_was_closed() {
+            info!("Handling closed socket");
+            self.sm.process_event(Events::TcpDisconnect).unwrap();
+            self.network.allocate_socket()?;
         }
 
         // Attempt to finish any pending packets.
@@ -450,9 +446,10 @@ impl<
 
         match *self.sm.state() {
             States::Disconnected => {
-                self.network.allocate_socket()?;
-                self.network.connect(self.broker)?;
-                self.sm.process_event(Events::Reallocated)?;
+                if self.network.connect(self.broker)? {
+                    info!("TCP socket connected");
+                    self.sm.process_event(Events::TcpConnected)?;
+                }
             }
             States::Restart => self.handle_restart()?,
             States::Active => self.handle_active()?,
@@ -663,6 +660,7 @@ impl<
                 let buffer = match self.packet_reader.receive_buffer() {
                     Ok(buffer) => buffer,
                     Err(e) => {
+                        warn!("Protocol Error reset: {e:?}");
                         self.client.sm.process_event(Events::ProtocolError).unwrap();
                         self.packet_reader.reset();
                         return Err(Error::Protocol(e));
