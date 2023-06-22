@@ -5,6 +5,7 @@ This document describes the changes to Minimq between releases.
 # [Unreleased]
 
 ## Fixed
+* [breaking] Embedded-nal version updated to 0.7
 * Fixed an issue where the MQTT client would become permanently inoperable when the broker
   disconnected under certain conditions.
 
