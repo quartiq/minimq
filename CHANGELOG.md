@@ -2,7 +2,7 @@
 
 This document describes the changes to Minimq between releases.
 
-# [Unreleased]
+# [0.7.0] - 2023-06-22
 
 ## Fixed
 * [breaking] Embedded-nal version updated to 0.7
