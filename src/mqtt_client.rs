@@ -731,7 +731,7 @@ impl<
     }
 
     /// Directly access the MQTT client.
-    pub fn client(&mut self) -> &'buf mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
+    pub fn client(&mut self) -> &mut MqttClient<'buf, TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
         &mut self.client
     }
 }

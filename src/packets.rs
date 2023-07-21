@@ -385,7 +385,7 @@ mod tests {
         ];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let connect: crate::packets::Connect<'_, 1> = crate::packets::Connect {
+        let connect: crate::packets::Connect<'_> = crate::packets::Connect {
             client_id: crate::types::Utf8String("ABC"),
             will: None,
             keep_alive: 10,
@@ -427,7 +427,7 @@ mod tests {
         ];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let mut will = crate::will::Will::<100>::new("EFG", &[0xAB, 0xCD], &[]).unwrap();
+        let mut will = crate::will::Will::new("EFG", &[0xAB, 0xCD], &[]).unwrap();
         will.qos(crate::QoS::AtMostOnce);
         will.retained(crate::Retain::NotRetained);
 

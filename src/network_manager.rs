@@ -109,6 +109,7 @@ where
             .map(|written| {
                 crate::trace!("Wrote: {:0x?}", &self.tx_buffer[..written]);
                 if written != len {
+                    crate::warn!("Saving pending data. Wrote {written} of {len}");
                     self.pending_write.replace((written, len));
                 }
             })
@@ -132,10 +133,11 @@ where
         assert!(self.pending_write.is_none());
 
         crate::info!("Sending: {:?}", packet);
-        let len = crate::ser::MqttSerializer::to_buffer(self.tx_buffer, packet)?.len();
+        let (offset, packet) = crate::ser::MqttSerializer::to_buffer_meta(self.tx_buffer, packet)?;
+        let len = packet.len();
 
-        self.commit_write(0, len)?;
-        Ok(&self.tx_buffer[..len])
+        self.commit_write(offset, len)?;
+        Ok(&self.tx_buffer[offset..len])
     }
 
     /// Finish writing an MQTT control packet to the interface if one exists.

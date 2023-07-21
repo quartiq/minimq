@@ -30,11 +30,15 @@
 //! // Messages are "in flight" if QoS::AtLeastOnce has not yet been acknowledged (PUBACK)
 //! // or QoS::ExactlyOnce has not been completed (PUBCOMP).
 //! // Connect to a broker at localhost - Use a client ID of "test".
+//! let mut rx_buffer = [0; 256];
+//! let mut tx_buffer = [0; 256];
 //! let mut mqtt: Minimq<_, _, 256, 16> = Minimq::new(
 //!         "127.0.0.1".parse().unwrap(),
 //!         "test",
 //!         std_embedded_nal::Stack::default(),
-//!         std_embedded_time::StandardClock::default()).unwrap();
+//!         std_embedded_time::StandardClock::default(),
+//!         &mut rx_buffer,
+//!         &mut tx_buffer).unwrap();
 //!
 //! let mut subscribed = false;
 //!
@@ -76,6 +80,7 @@ mod will;
 pub use properties::Property;
 pub use publication::Publication;
 pub use reason_codes::ReasonCode;
+pub use will::Will;
 
 pub use embedded_nal;
 pub use embedded_time;
