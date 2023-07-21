@@ -558,41 +558,44 @@ impl<
                 match info.qos {
                     QoS::AtMostOnce => {}
                     QoS::AtLeastOnce => {
-                        let puback = PubAck {
-                            // Note(uwnrap): There should always be a packet ID for QoS >
-                            // AtMostOnce.
-                            packet_identifier: info.packet_id.unwrap(),
+                        // Note(uwnrap): There should always be a packet ID for QoS > AtMostOnce.
+                        let packet_id = info.packet_id.unwrap();
 
-                            // Note: Because we do not support ExactlyOnce, it's not possible for
-                            // us to receive two packets with the same ID.
-                            reason: ReasonCode::Success.into(),
+                        // Reject the packet ID if it's currently in use for another publication.
+                        let reason = if self
+                            .sm
+                            .context_mut()
+                            .session_state
+                            .pending_packets
+                            .iter()
+                            .any(|&id| id == packet_id)
+                        {
+                            ReasonCode::PacketIdInUse
+                        } else {
+                            ReasonCode::Success
+                        };
+
+                        let puback = PubAck {
+                            packet_identifier: info.packet_id.unwrap(),
+                            reason: reason.into(),
                         };
 
                         self.network.send_packet(&puback)?;
                     }
 
                     QoS::ExactlyOnce => {
+                        let session_state = &mut self.sm.context_mut().session_state;
                         // Note(uwnrap): There should always be a packet ID for QoS >
                         // AtMostOnce.
                         let packet_id = info.packet_id.unwrap();
 
                         // Check if the packet ID already exists before forwarding to app
-                        let duplicate = self
-                            .sm
-                            .context_mut()
-                            .session_state
+                        let duplicate = session_state
                             .pending_packets
                             .iter()
                             .any(|&x| x == packet_id);
 
-                        let reason = if self
-                            .sm
-                            .context_mut()
-                            .session_state
-                            .pending_packets
-                            .push(packet_id)
-                            .is_err()
-                        {
+                        let reason = if session_state.pending_packets.push(packet_id).is_err() {
                             ReasonCode::ReceiveMaxExceeded
                         } else {
                             ReasonCode::Success
@@ -600,9 +603,6 @@ impl<
 
                         let pubrec = PubRec {
                             packet_id,
-
-                            // Note: Because we do not support ExactlyOnce, it's not possible for
-                            // us to receive two packets with the same ID.
                             reason: reason.into(),
                         };
 
