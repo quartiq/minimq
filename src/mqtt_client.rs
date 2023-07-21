@@ -313,15 +313,15 @@ impl<
     /// # Returns
     /// Number of pending messages with the specified QoS.
     pub fn pending_messages(&self, qos: QoS) -> usize {
-        let pending_tx = self.sm.context().session_state.pending_messages(qos);
+        self.sm.context().session_state.pending_messages(qos)
+    }
 
-        let pending_rx = if qos == QoS::ExactlyOnce {
-            self.sm.context().session_state.pending_packets.len()
-        } else {
-            0
-        };
-
-        pending_tx + pending_rx
+    /// Get the number of total message transactions that are in-progress.
+    pub fn inflight_messages(&self) -> usize {
+        let session_state = &self.sm.context().session_state;
+        session_state.server_packet_ids().len()
+            + session_state.pending_messages(QoS::AtLeastOnce)
+            + session_state.pending_messages(QoS::ExactlyOnce)
     }
 
     /// Determine if the client is able to process publish requests.
@@ -525,17 +525,7 @@ impl<
             ReceivedPacket::PubRel(rel) => {
                 let session_state = &mut self.sm.context_mut().session_state;
 
-                let reason = if let Some(position) = session_state
-                    .pending_packets
-                    .iter()
-                    .position(|&id| id == rel.packet_id)
-                {
-                    session_state.pending_packets.swap_remove(position);
-                    info!("Remaining: {}", session_state.pending_packets.len());
-                    ReasonCode::Success
-                } else {
-                    ReasonCode::PacketIdNotFound
-                };
+                let reason = session_state.remove_server_packet_id(rel.packet_id);
 
                 // Send a PubComp
                 let pubcomp = PubComp {
@@ -566,9 +556,7 @@ impl<
                             .sm
                             .context_mut()
                             .session_state
-                            .pending_packets
-                            .iter()
-                            .any(|&id| id == packet_id)
+                            .server_packet_id_in_use(packet_id)
                         {
                             ReasonCode::PacketIdInUse
                         } else {
@@ -590,16 +578,9 @@ impl<
                         let packet_id = info.packet_id.unwrap();
 
                         // Check if the packet ID already exists before forwarding to app
-                        let duplicate = session_state
-                            .pending_packets
-                            .iter()
-                            .any(|&x| x == packet_id);
+                        let duplicate = session_state.server_packet_id_in_use(packet_id);
 
-                        let reason = if session_state.pending_packets.push(packet_id).is_err() {
-                            ReasonCode::ReceiveMaxExceeded
-                        } else {
-                            ReasonCode::Success
-                        };
+                        let reason = session_state.push_server_packet_id(packet_id);
 
                         let pubrec = PubRec {
                             packet_id,

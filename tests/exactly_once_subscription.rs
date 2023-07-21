@@ -61,7 +61,7 @@ fn main() -> std::io::Result<()> {
             published = true;
         }
 
-        if received_messages > 0 && mqtt.client().pending_messages(QoS::ExactlyOnce) == 0 {
+        if received_messages > 0 && mqtt.client().inflight_messages() == 0 {
             assert!(published);
             log::info!("Reception Complete");
             std::process::exit(0);
