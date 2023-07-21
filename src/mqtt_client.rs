@@ -48,6 +48,7 @@ struct ClientContext<
     const MSG_COUNT: usize,
 > {
     session_state: SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+    send_quota: u16,
 }
 
 impl<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
@@ -108,6 +109,7 @@ where
             ReceivedPacket::PubAck(ack) => {
                 // No matter the status code the message is considered acknowledged at this point
                 self.session_state.handle_puback(ack.packet_identifier)?;
+                self.send_quota.saturating_add(1);
             }
             _ => return Err(Error::Protocol(ProtocolError::UnsupportedPacket)),
         }
@@ -127,6 +129,9 @@ where
             self.session_state.reset();
         }
 
+        // If the server doesn't specify a send quota, assume it's 65535 as required by the spec.
+        self.send_quota = u16::MAX;
+
         for property in acknowledge.properties.into_iter() {
             match property? {
                 Property::MaximumPacketSize(size) => {
@@ -138,6 +143,9 @@ where
                 }
                 Property::ServerKeepAlive(keep_alive) => {
                     self.session_state.set_keepalive(keep_alive);
+                }
+                Property::ReceiveMaximum(max) => {
+                    self.send_quota = max;
                 }
                 _prop => info!("Ignoring property: {:?}", _prop),
             };
@@ -330,6 +338,14 @@ impl<
             return false;
         }
 
+        // If the server cannot handle another message with this quality of service, we can't send
+        // one.
+        if qos != QoS::AtMostOnce && self.sm.context().send_quota == 0 {
+            return false;
+        }
+
+        // Otherwise, we can only send the message if we have the space for it in the session
+        // state.
         self.sm.context().session_state.can_publish(qos)
     }
 
@@ -368,10 +384,9 @@ impl<
 
         // TODO: Generate event.
         if let Some(id) = publish.packet_id {
-            self.sm
-                .context_mut()
-                .session_state
-                .handle_publish(publish.qos, id, packet)?;
+            let context = self.sm.context_mut();
+            context.session_state.handle_publish(publish.qos, id, packet)?;
+            context.send_quota = context.send_quota.saturating_sub(1);
         }
 
         Ok(())
