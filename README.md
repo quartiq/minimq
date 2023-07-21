@@ -19,8 +19,7 @@ publication. Below is a detailed list of features, indicating what aspects are s
 * Retained messages
 * Connection will messages
 * Session state reconnection and republication
-* Topic subscriptions at quality-of-service at-most-once and at-least-once
-    * exactly-once subscription support is not yet implemented
+* Topic subscriptions at all quality-of-service levels
 * Subscription option flags
 * Zero-copy message deserialization
 * Serde-compatible MQTT message serialization and deserialization
