@@ -2,6 +2,16 @@
 
 This document describes the changes to Minimq between releases.
 
+# [Unreleased]
+
+## Added
+* Support for subscribing at `QoS::ExactlyOnce`
+
+## Fixed
+* Fixed an issue where PubComp was serialized with an incorrect control code
+* Fixed an issue where some response control packets would be improperly serialized
+
+
 # [0.7.0] - 2023-06-22
 
 ## Fixed
@@ -118,7 +128,8 @@ keep-alive interval
 
 * Initial library release and publish to crates.io
 
-[Unreleased]: https://github.com/quartiq/minimq/compare/0.6.2...HEAD
+[Unreleased]: https://github.com/quartiq/minimq/compare/0.7.0...HEAD
+[0.7.0]: https://github.com/quartiq/minimq/releases/tag/0.7.0
 [0.6.2]: https://github.com/quartiq/minimq/releases/tag/0.6.2
 [0.6.1]: https://github.com/quartiq/minimq/releases/tag/0.6.1
 [0.6.0]: https://github.com/quartiq/minimq/releases/tag/0.6.0

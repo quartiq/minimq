@@ -145,7 +145,7 @@ pub struct SubAck<'a> {
 }
 
 /// An MQTT PUBREC control packet
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PubRec<'a> {
     /// The ID of the packet that publication reception occurred on.
     pub packet_id: u16,
@@ -156,20 +156,18 @@ pub struct PubRec<'a> {
 }
 
 /// An MQTT PUBREL control packet
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PubRel<'a> {
     /// The ID of the publication that this packet is associated with.
     pub packet_id: u16,
 
-    /// The response code of the publish release message.
-    pub code: ReasonCode,
-
-    /// Properties associated wtih the packet
-    pub properties: Properties<'a>,
+    /// The properties and success status of associated with the publication.
+    #[serde(borrow)]
+    pub reason: Reason<'a>,
 }
 
 /// An MQTT PUBCOMP control packet
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PubComp<'a> {
     /// Packet identifier of the publication that this packet is associated with.
     pub packet_id: u16,
@@ -202,7 +200,7 @@ impl<'a> From<ReasonCode> for Reason<'a> {
         Self {
             reason: Some(ReasonData {
                 code,
-                _properties: None,
+                _properties: Some(Properties::Slice(&[])),
             }),
         }
     }
@@ -457,7 +455,7 @@ mod tests {
     #[test]
     fn serialize_pubrel() {
         let good_pubrel: [u8; 6] = [
-            6 << 4 | 0b10, // PubRec
+            6 << 4 | 0b10, // PubRel
             0x04,          // Remaining length
             0x00,
             0x05, // Identifier
@@ -467,8 +465,7 @@ mod tests {
 
         let pubrel = crate::packets::PubRel {
             packet_id: 5,
-            code: ReasonCode::NoMatchingSubscribers,
-            properties: crate::types::Properties::Slice(&[]),
+            reason: ReasonCode::NoMatchingSubscribers.into(),
         };
 
         let mut buffer: [u8; 1024] = [0; 1024];
@@ -502,6 +499,33 @@ mod tests {
         assert_eq!(
             MqttSerializer::to_buffer(&mut buffer, &pubrel).unwrap(),
             good_puback
+        );
+    }
+
+    #[test]
+    fn serialize_pubcomp() {
+        let good_pubcomp: [u8; 5] = [
+            7 << 4, // PubComp
+            0x03,   // Remaining length
+            0x00,
+            0x15, // Identifier
+            0x00, // Response Code
+        ];
+
+        let pubrel = crate::packets::PubComp {
+            packet_id: 0x15,
+            reason: crate::packets::Reason {
+                reason: Some(crate::packets::ReasonData {
+                    code: ReasonCode::Success,
+                    _properties: None,
+                }),
+            },
+        };
+
+        let mut buffer: [u8; 1024] = [0; 1024];
+        assert_eq!(
+            MqttSerializer::to_buffer(&mut buffer, &pubrel).unwrap(),
+            good_pubcomp
         );
     }
 }

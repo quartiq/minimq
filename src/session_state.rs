@@ -31,6 +31,11 @@ pub struct SessionState<
     pub maximum_packet_size: Option<u32>,
     pub client_id: String<64>,
     pub pending_subscriptions: Vec<u16, 32>,
+
+    /// Represents a list of packet_ids current in use by the server for Publish packets with
+    /// QoS::ExactlyOnce
+    pending_pubrel: Vec<u16, MSG_COUNT>,
+
     pending_publish: LinearMap<u16, MessageRecord<MSG_SIZE>, MSG_COUNT>,
     pending_publish_ordering: Vec<u16, MSG_COUNT>,
     clock: Clock,
@@ -59,6 +64,7 @@ impl<
             pending_subscriptions: Vec::new(),
             pending_publish: LinearMap::new(),
             pending_publish_ordering: Vec::new(),
+            pending_pubrel: Vec::new(),
             maximum_packet_size: None,
             was_reset: false,
             _stack: PhantomData::default(),
@@ -74,6 +80,7 @@ impl<
         self.pending_subscriptions.clear();
         self.pending_publish.clear();
         self.pending_publish_ordering.clear();
+        self.pending_pubrel.clear();
     }
 
     /// Check if the session state has been reset.
@@ -222,7 +229,7 @@ impl<
         }
     }
 
-    pub fn pending_messages(&self, qos: QoS) -> usize {
+    pub fn pending_client_publications(&self, qos: QoS) -> usize {
         match qos {
             QoS::AtMostOnce => 0,
             _ => self
@@ -337,5 +344,40 @@ impl<
         } else {
             None
         }
+    }
+
+    /// Check if a server packet ID is in use.
+    pub fn server_packet_id_in_use(&self, id: u16) -> bool {
+        self.pending_pubrel
+            .iter()
+            .any(|&inflight_id| inflight_id == id)
+    }
+
+    /// Register a server packet ID as being in use.
+    pub fn push_server_packet_id(&mut self, id: u16) -> ReasonCode {
+        if self.pending_pubrel.push(id).is_err() {
+            ReasonCode::ReceiveMaxExceeded
+        } else {
+            ReasonCode::Success
+        }
+    }
+
+    /// Mark a server packet ID as no longer in use.
+    pub fn remove_server_packet_id(&mut self, id: u16) -> ReasonCode {
+        if let Some(position) = self
+            .pending_pubrel
+            .iter()
+            .position(|&inflight_id| inflight_id == id)
+        {
+            self.pending_pubrel.swap_remove(position);
+            ReasonCode::Success
+        } else {
+            ReasonCode::PacketIdNotFound
+        }
+    }
+
+    /// Get a list of all inflight server packet IDs.
+    pub fn server_packet_ids(&self) -> &[u16] {
+        &self.pending_pubrel
     }
 }
