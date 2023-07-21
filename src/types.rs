@@ -257,8 +257,6 @@ impl Default for SubscriptionOptions {
 impl SubscriptionOptions {
     /// Specify the maximum QoS supported on this subscription.
     pub fn maximum_qos(mut self, qos: QoS) -> Self {
-        // TODO: Support for higher QoS levels.
-        assert!(qos != QoS::ExactlyOnce);
         self.maximum_qos = qos;
         self
     }

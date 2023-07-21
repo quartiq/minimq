@@ -1,7 +1,7 @@
 use crate::{
     de::{received_packet::ReceivedPacket, PacketReader},
     network_manager::InterfaceHolder,
-    packets::{ConnAck, Connect, PingReq, Pub, PubAck, PubRel, SubAck, Subscribe},
+    packets::{ConnAck, Connect, PingReq, Pub, PubAck, PubComp, PubRec, PubRel, SubAck, Subscribe},
     reason_codes::ReasonCode,
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
@@ -313,7 +313,15 @@ impl<
     /// # Returns
     /// Number of pending messages with the specified QoS.
     pub fn pending_messages(&self, qos: QoS) -> usize {
-        self.sm.context().session_state.pending_messages(qos)
+        let pending_tx = self.sm.context().session_state.pending_messages(qos);
+
+        let pending_rx = if qos == QoS::ExactlyOnce {
+            self.sm.context().session_state.pending_packets.len()
+        } else {
+            0
+        };
+
+        pending_tx + pending_rx
     }
 
     /// Determine if the client is able to process publish requests.
@@ -494,13 +502,13 @@ impl<
 
                 let pubrel = PubRel {
                     packet_id: rec.packet_id,
-                    code: self
-                        .sm
-                        .context_mut()
-                        .session_state
-                        .find_packet(rec.packet_id, QoS::ExactlyOnce)
-                        .into(),
-                    properties: Properties::Slice(&[]),
+                    reason: Into::<ReasonCode>::into(
+                        self.sm
+                            .context_mut()
+                            .session_state
+                            .find_packet(rec.packet_id, QoS::ExactlyOnce),
+                    )
+                    .into(),
                 };
 
                 crate::info!("Sending: {:?}", pubrel);
@@ -512,6 +520,33 @@ impl<
                     .context_mut()
                     .session_state
                     .handle_pubrec(rec.packet_id, packet)?;
+            }
+
+            ReceivedPacket::PubRel(rel) => {
+                let session_state = &mut self.sm.context_mut().session_state;
+
+                let reason = if let Some(position) = session_state
+                    .pending_packets
+                    .iter()
+                    .position(|&id| id == rel.packet_id)
+                {
+                    session_state.pending_packets.swap_remove(position);
+                    info!("Remaining: {}", session_state.pending_packets.len());
+                    ReasonCode::Success
+                } else {
+                    ReasonCode::PacketIdNotFound
+                };
+
+                // Send a PubComp
+                let pubcomp = PubComp {
+                    packet_id: rel.packet_id,
+
+                    // Note: Because we do not support ExactlyOnce, it's not possible for
+                    // us to receive two packets with the same ID.
+                    reason: reason.into(),
+                };
+
+                self.network.send_packet(&pubcomp)?;
             }
 
             ReceivedPacket::Publish(info) => {
@@ -536,8 +571,47 @@ impl<
                         self.network.send_packet(&puback)?;
                     }
 
-                    // TODO: Add support.
-                    QoS::ExactlyOnce => unimplemented!(),
+                    QoS::ExactlyOnce => {
+                        // Note(uwnrap): There should always be a packet ID for QoS >
+                        // AtMostOnce.
+                        let packet_id = info.packet_id.unwrap();
+
+                        // Check if the packet ID already exists before forwarding to app
+                        let duplicate = self
+                            .sm
+                            .context_mut()
+                            .session_state
+                            .pending_packets
+                            .iter()
+                            .any(|&x| x == packet_id);
+
+                        let reason = if self
+                            .sm
+                            .context_mut()
+                            .session_state
+                            .pending_packets
+                            .push(packet_id)
+                            .is_err()
+                        {
+                            ReasonCode::ReceiveMaxExceeded
+                        } else {
+                            ReasonCode::Success
+                        };
+
+                        let pubrec = PubRec {
+                            packet_id,
+
+                            // Note: Because we do not support ExactlyOnce, it's not possible for
+                            // us to receive two packets with the same ID.
+                            reason: reason.into(),
+                        };
+
+                        self.network.send_packet(&pubrec)?;
+
+                        if duplicate || !pubrec.reason.code().success() {
+                            return Ok(None);
+                        }
+                    }
                 }
 
                 // Provide the packet to the application for further processing.

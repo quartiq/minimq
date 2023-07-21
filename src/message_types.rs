@@ -67,7 +67,7 @@ impl<'a> ControlPacket for PubRel<'a> {
 }
 
 impl<'a> ControlPacket for PubComp<'a> {
-    const MESSAGE_TYPE: MessageType = MessageType::PubRec;
+    const MESSAGE_TYPE: MessageType = MessageType::PubComp;
 }
 
 impl<'a> ControlPacket for Subscribe<'a> {

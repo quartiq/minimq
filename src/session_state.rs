@@ -31,6 +31,7 @@ pub struct SessionState<
     pub maximum_packet_size: Option<u32>,
     pub client_id: String<64>,
     pub pending_subscriptions: Vec<u16, 32>,
+    pub pending_packets: Vec<u16, MSG_COUNT>,
     pending_publish: LinearMap<u16, MessageRecord<MSG_SIZE>, MSG_COUNT>,
     pending_publish_ordering: Vec<u16, MSG_COUNT>,
     clock: Clock,
@@ -59,6 +60,7 @@ impl<
             pending_subscriptions: Vec::new(),
             pending_publish: LinearMap::new(),
             pending_publish_ordering: Vec::new(),
+            pending_packets: Vec::new(),
             maximum_packet_size: None,
             was_reset: false,
             _stack: PhantomData::default(),
@@ -74,6 +76,7 @@ impl<
         self.pending_subscriptions.clear();
         self.pending_publish.clear();
         self.pending_publish_ordering.clear();
+        self.pending_packets.clear();
     }
 
     /// Check if the session state has been reset.
