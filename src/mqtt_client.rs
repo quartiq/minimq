@@ -116,13 +116,13 @@ where
             ReceivedPacket::PingResp => self.session_state.register_ping_response(),
             ReceivedPacket::PubComp(comp) => {
                 self.send_quota =
-                    core::cmp::max(self.send_quota.saturating_add(1), self.max_send_quota);
+                    core::cmp::min(self.send_quota.saturating_add(1), self.max_send_quota);
                 self.session_state.handle_pubcomp(comp.packet_id)?;
             }
             ReceivedPacket::PubAck(ack) => {
                 // No matter the status code the message is considered acknowledged at this point
                 self.send_quota =
-                    core::cmp::max(self.send_quota.saturating_add(1), self.max_send_quota);
+                    core::cmp::min(self.send_quota.saturating_add(1), self.max_send_quota);
                 self.session_state.handle_puback(ack.packet_identifier)?;
             }
             _ => return Err(Error::Protocol(ProtocolError::UnsupportedPacket)),
@@ -531,7 +531,7 @@ impl<
             ReceivedPacket::PubRec(rec) => {
                 rec.reason.code().as_result().or_else(|e| {
                     let context = self.sm.context_mut();
-                    context.send_quota = core::cmp::max(
+                    context.send_quota = core::cmp::min(
                         context.send_quota.saturating_add(1),
                         context.max_send_quota,
                     );
