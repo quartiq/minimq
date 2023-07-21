@@ -129,7 +129,9 @@ where
             self.session_state.reset();
         }
 
-        // If the server doesn't specify a send quota, assume it's 65535 as required by the spec.
+        // If the server doesn't specify a send quota, assume it's 65535 as required by the spec
+        // section 3.1.2.11.3 - this value is not part of the session state and is reset for each
+        // connection.
         self.send_quota = u16::MAX;
 
         for property in acknowledge.properties.into_iter() {
