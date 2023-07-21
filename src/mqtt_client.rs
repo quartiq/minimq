@@ -1,7 +1,7 @@
 use crate::{
     de::{received_packet::ReceivedPacket, PacketReader},
     network_manager::InterfaceHolder,
-    packets::{ConnAck, Connect, PingReq, Pub, PubAck, PubRel, SubAck, Subscribe},
+    packets::{ConnAck, Connect, PingReq, Pub, PubAck, PubComp, PubRec, PubRel, SubAck, Subscribe},
     reason_codes::ReasonCode,
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
@@ -313,7 +313,18 @@ impl<
     /// # Returns
     /// Number of pending messages with the specified QoS.
     pub fn pending_messages(&self, qos: QoS) -> usize {
-        self.sm.context().session_state.pending_messages(qos)
+        self.sm
+            .context()
+            .session_state
+            .pending_client_publications(qos)
+    }
+
+    /// Get the number of total message transactions that are in-progress.
+    pub fn inflight_messages(&self) -> usize {
+        let session_state = &self.sm.context().session_state;
+        session_state.server_packet_ids().len()
+            + session_state.pending_client_publications(QoS::AtLeastOnce)
+            + session_state.pending_client_publications(QoS::ExactlyOnce)
     }
 
     /// Determine if the client is able to process publish requests.
@@ -494,13 +505,13 @@ impl<
 
                 let pubrel = PubRel {
                     packet_id: rec.packet_id,
-                    code: self
-                        .sm
-                        .context_mut()
-                        .session_state
-                        .find_packet(rec.packet_id, QoS::ExactlyOnce)
-                        .into(),
-                    properties: Properties::Slice(&[]),
+                    reason: Into::<ReasonCode>::into(
+                        self.sm
+                            .context_mut()
+                            .session_state
+                            .find_packet(rec.packet_id, QoS::ExactlyOnce),
+                    )
+                    .into(),
                 };
 
                 crate::info!("Sending: {:?}", pubrel);
@@ -514,6 +525,23 @@ impl<
                     .handle_pubrec(rec.packet_id, packet)?;
             }
 
+            ReceivedPacket::PubRel(rel) => {
+                let session_state = &mut self.sm.context_mut().session_state;
+
+                let reason = session_state.remove_server_packet_id(rel.packet_id);
+
+                // Send a PubComp
+                let pubcomp = PubComp {
+                    packet_id: rel.packet_id,
+
+                    // Note: Because we do not support ExactlyOnce, it's not possible for
+                    // us to receive two packets with the same ID.
+                    reason: reason.into(),
+                };
+
+                self.network.send_packet(&pubcomp)?;
+            }
+
             ReceivedPacket::Publish(info) => {
                 if &States::Active != self.sm.state() {
                     return Err(Error::NotReady);
@@ -523,21 +551,52 @@ impl<
                 match info.qos {
                     QoS::AtMostOnce => {}
                     QoS::AtLeastOnce => {
-                        let puback = PubAck {
-                            // Note(uwnrap): There should always be a packet ID for QoS >
-                            // AtMostOnce.
-                            packet_identifier: info.packet_id.unwrap(),
+                        // Note(uwnrap): There should always be a packet ID for QoS > AtMostOnce.
+                        let packet_id = info.packet_id.unwrap();
 
-                            // Note: Because we do not support ExactlyOnce, it's not possible for
-                            // us to receive two packets with the same ID.
-                            reason: ReasonCode::Success.into(),
+                        // Reject the packet ID if it's currently in use for another publication.
+                        let reason = if self
+                            .sm
+                            .context_mut()
+                            .session_state
+                            .server_packet_id_in_use(packet_id)
+                        {
+                            ReasonCode::PacketIdInUse
+                        } else {
+                            ReasonCode::Success
+                        };
+
+                        let puback = PubAck {
+                            packet_identifier: info.packet_id.unwrap(),
+                            reason: reason.into(),
                         };
 
                         self.network.send_packet(&puback)?;
                     }
 
-                    // TODO: Add support.
-                    QoS::ExactlyOnce => unimplemented!(),
+                    QoS::ExactlyOnce => {
+                        let session_state = &mut self.sm.context_mut().session_state;
+                        // Note(uwnrap): There should always be a packet ID for QoS >
+                        // AtMostOnce.
+                        let packet_id = info.packet_id.unwrap();
+
+                        // Check if the packet ID already exists before forwarding to app
+                        // This procedure follows the MQTTv5 spec section 4.3.3 and 4.4
+                        let duplicate = session_state.server_packet_id_in_use(packet_id);
+
+                        let reason = session_state.push_server_packet_id(packet_id);
+
+                        let pubrec = PubRec {
+                            packet_id,
+                            reason: reason.into(),
+                        };
+
+                        self.network.send_packet(&pubrec)?;
+
+                        if duplicate || !pubrec.reason.code().success() {
+                            return Ok(None);
+                        }
+                    }
                 }
 
                 // Provide the packet to the application for further processing.
