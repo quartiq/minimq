@@ -10,6 +10,7 @@ This document describes the changes to Minimq between releases.
 ## Fixed
 * Fixed an issue where PubComp was serialized with an incorrect control code
 * Fixed an issue where some response control packets would be improperly serialized
+* The client now respects the server max packet reception
 
 
 # [0.7.0] - 2023-06-22
