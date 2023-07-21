@@ -229,7 +229,7 @@ impl<
         }
     }
 
-    pub fn pending_messages(&self, qos: QoS) -> usize {
+    pub fn pending_client_publications(&self, qos: QoS) -> usize {
         match qos {
             QoS::AtMostOnce => 0,
             _ => self

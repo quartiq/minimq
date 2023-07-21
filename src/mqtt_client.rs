@@ -313,15 +313,18 @@ impl<
     /// # Returns
     /// Number of pending messages with the specified QoS.
     pub fn pending_messages(&self, qos: QoS) -> usize {
-        self.sm.context().session_state.pending_messages(qos)
+        self.sm
+            .context()
+            .session_state
+            .pending_client_publications(qos)
     }
 
     /// Get the number of total message transactions that are in-progress.
     pub fn inflight_messages(&self) -> usize {
         let session_state = &self.sm.context().session_state;
         session_state.server_packet_ids().len()
-            + session_state.pending_messages(QoS::AtLeastOnce)
-            + session_state.pending_messages(QoS::ExactlyOnce)
+            + session_state.pending_client_publications(QoS::AtLeastOnce)
+            + session_state.pending_client_publications(QoS::ExactlyOnce)
     }
 
     /// Determine if the client is able to process publish requests.
@@ -578,6 +581,7 @@ impl<
                         let packet_id = info.packet_id.unwrap();
 
                         // Check if the packet ID already exists before forwarding to app
+                        // This procedure follows the MQTTv5 spec section 4.3.3 and 4.4
                         let duplicate = session_state.server_packet_id_in_use(packet_id);
 
                         let reason = session_state.push_server_packet_id(packet_id);
