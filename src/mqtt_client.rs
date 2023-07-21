@@ -49,6 +49,7 @@ struct ClientContext<
 > {
     session_state: SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
     send_quota: u16,
+    max_send_quota: u16,
 }
 
 impl<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
@@ -57,6 +58,14 @@ where
     TcpStack: TcpClientStack,
     Clock: embedded_time::Clock,
 {
+    pub fn new(session_state: SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT>) -> Self {
+        Self {
+            session_state,
+            send_quota: u16::MAX,
+            max_send_quota: u16::MAX,
+        }
+    }
+
     pub fn handle_suback<'a>(
         &mut self,
         subscribe_acknowledge: &SubAck<'a>,
@@ -105,11 +114,16 @@ where
         match &packet {
             ReceivedPacket::SubAck(ack) => self.handle_suback(ack)?,
             ReceivedPacket::PingResp => self.session_state.register_ping_response(),
-            ReceivedPacket::PubComp(comp) => self.session_state.handle_pubcomp(comp.packet_id)?,
+            ReceivedPacket::PubComp(comp) => {
+                self.send_quota =
+                    core::cmp::max(self.send_quota.saturating_add(1), self.max_send_quota);
+                self.session_state.handle_pubcomp(comp.packet_id)?;
+            }
             ReceivedPacket::PubAck(ack) => {
                 // No matter the status code the message is considered acknowledged at this point
+                self.send_quota =
+                    core::cmp::max(self.send_quota.saturating_add(1), self.max_send_quota);
                 self.session_state.handle_puback(ack.packet_identifier)?;
-                self.send_quota.saturating_add(1);
             }
             _ => return Err(Error::Protocol(ProtocolError::UnsupportedPacket)),
         }
@@ -130,9 +144,10 @@ where
         }
 
         // If the server doesn't specify a send quota, assume it's 65535 as required by the spec
-        // section 3.1.2.11.3 - this value is not part of the session state and is reset for each
+        // section 3.2.2.3.3 - this value is not part of the session state and is reset for each
         // connection.
         self.send_quota = u16::MAX;
+        self.max_send_quota = u16::MAX;
 
         for property in acknowledge.properties.into_iter() {
             match property? {
@@ -148,6 +163,7 @@ where
                 }
                 Property::ReceiveMaximum(max) => {
                     self.send_quota = max;
+                    self.max_send_quota = max;
                 }
                 _prop => info!("Ignoring property: {:?}", _prop),
             };
@@ -395,11 +411,12 @@ impl<
         let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, &publish)?;
         self.network.write(packet)?;
 
-        // TODO: Generate event.
         if let Some(id) = publish.packet_id {
             let context = self.sm.context_mut();
-            context.session_state.handle_publish(publish.qos, id, packet)?;
-            context.send_quota = context.send_quota.saturating_sub(1);
+            context
+                .session_state
+                .handle_publish(publish.qos, id, packet)?;
+            context.send_quota = context.send_quota.checked_sub(1).unwrap();
         }
 
         Ok(())
@@ -513,10 +530,12 @@ impl<
 
             ReceivedPacket::PubRec(rec) => {
                 rec.reason.code().as_result().or_else(|e| {
-                    self.sm
-                        .context_mut()
-                        .session_state
-                        .remove_packet(rec.packet_id)?;
+                    let context = self.sm.context_mut();
+                    context.send_quota = core::cmp::max(
+                        context.send_quota.saturating_add(1),
+                        context.max_send_quota,
+                    );
+                    context.session_state.remove_packet(rec.packet_id)?;
                     Err(e)
                 })?;
 
@@ -676,7 +695,7 @@ impl<
 
         let minimq = Minimq {
             client: MqttClient {
-                sm: StateMachine::new(ClientContext { session_state }),
+                sm: StateMachine::new(ClientContext::new(session_state)),
                 broker: SocketAddr::new(broker, MQTT_INSECURE_DEFAULT_PORT),
                 will: None,
                 network: InterfaceHolder::new(network_stack),
