@@ -52,6 +52,8 @@ pub enum Error {
     InsufficientData,
 }
 
+impl serde::ser::StdError for Error {}
+
 impl serde::de::Error for Error {
     fn custom<T: core::fmt::Display>(_msg: T) -> Self {
         crate::error!("{}", _msg);

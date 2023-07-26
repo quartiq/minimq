@@ -46,6 +46,8 @@ pub enum Error {
     Custom,
 }
 
+impl serde::ser::StdError for Error {}
+
 impl serde::ser::Error for Error {
     fn custom<T: core::fmt::Display>(_msg: T) -> Self {
         crate::error!("{}", _msg);
