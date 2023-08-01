@@ -6,8 +6,7 @@ use crate::{
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
     will::Will,
-    Error, Property, ProtocolError, QoS, Retain, MQTT_INSECURE_DEFAULT_PORT,
-    {debug, error, info, warn},
+    Error, Property, ProtocolError, QoS, MQTT_INSECURE_DEFAULT_PORT, {debug, error, info, warn},
 };
 
 use embedded_nal::{IpAddr, SocketAddr, TcpClientStack};
@@ -184,44 +183,32 @@ impl<T> From<sm::Error<Error<T>>> for Error<T> {
 
 /// The client that can be used for interacting with the MQTT broker.
 pub struct MqttClient<
+    'buf,
     TcpStack: TcpClientStack,
     Clock: embedded_time::Clock,
     const MSG_SIZE: usize,
     const MSG_COUNT: usize,
 > {
     sm: sm::StateMachine<ClientContext<TcpStack, Clock, MSG_SIZE, MSG_COUNT>>,
-    network: InterfaceHolder<TcpStack, MSG_SIZE>,
-    will: Option<Will<MSG_SIZE>>,
+    network: InterfaceHolder<'buf, TcpStack>,
+    will: Option<Will<'buf>>,
     broker: SocketAddr,
+    max_packet_size: usize,
 }
 
 impl<
+        'buf,
         TcpStack: TcpClientStack,
         Clock: embedded_time::Clock,
         const MSG_SIZE: usize,
         const MSG_COUNT: usize,
-    > MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
+    > MqttClient<'buf, TcpStack, Clock, MSG_SIZE, MSG_COUNT>
 {
     /// Specify the Will message to be sent if the client disconnects.
     ///
     /// # Args
-    /// * `topic` - The topic to send the message on
-    /// * `data` - The message to transmit
-    /// * `qos` - The quality of service at which to send the message.
-    /// * `retained` - Specifies whether the will message should be retained by the broker.
-    /// * `properties` - Any properties to send with the will message.
-    pub fn set_will(
-        &mut self,
-        topic: &str,
-        data: &[u8],
-        qos: QoS,
-        retained: Retain,
-        properties: &[Property],
-    ) -> Result<(), Error<TcpStack::Error>> {
-        let mut will = Will::new(topic, data, properties)?;
-        will.retained(retained);
-        will.qos(qos);
-
+    /// * `will` - The will to use.
+    pub fn set_will(&mut self, will: Will<'buf>) -> Result<(), Error<TcpStack::Error>> {
         self.will.replace(will);
         Ok(())
     }
@@ -404,10 +391,7 @@ impl<
                 .replace(self.sm.context_mut().session_state.get_packet_identifier());
         }
 
-        crate::info!("Sending: {:?}", publish);
-        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, &publish)?;
-        self.network.write(packet)?;
+        let packet = self.network.send_packet(&publish)?;
 
         if let Some(id) = publish.packet_id {
             let context = self.sm.context_mut();
@@ -423,7 +407,7 @@ impl<
     fn handle_restart(&mut self) -> Result<(), Error<TcpStack::Error>> {
         let properties = [
             // Tell the broker our maximum packet size.
-            Property::MaximumPacketSize(MSG_SIZE as u32),
+            Property::MaximumPacketSize(self.max_packet_size as u32),
             // The session does not expire.
             Property::SessionExpiryInterval(u32::MAX),
             Property::ReceiveMaximum(MSG_COUNT as u16),
@@ -509,7 +493,7 @@ impl<
     ) -> Result<Option<T>, Error<TcpStack::Error>>
     where
         F: FnMut(
-            &mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+            &mut MqttClient<'buf, TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
             &'a str,
             &[u8],
             &Properties<'a>,
@@ -549,9 +533,7 @@ impl<
                 };
 
                 crate::info!("Sending: {:?}", pubrel);
-                let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-                let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, &pubrel)?;
-                self.network.write(packet)?;
+                let packet = self.network.send_packet(&pubrel)?;
 
                 self.sm
                     .context_mut()
@@ -652,21 +634,22 @@ impl<
 /// # Note
 /// To connect and maintain an MQTT connection, the `Minimq::poll()` method must be called
 /// regularly.
-pub struct Minimq<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
+pub struct Minimq<'buf, TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
 where
     TcpStack: TcpClientStack,
     Clock: embedded_time::Clock,
 {
-    client: MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
-    packet_reader: PacketReader<MSG_SIZE>,
+    client: MqttClient<'buf, TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+    packet_reader: PacketReader<'buf>,
 }
 
 impl<
+        'buf,
         TcpStack: TcpClientStack,
         Clock: embedded_time::Clock,
         const MSG_SIZE: usize,
         const MSG_COUNT: usize,
-    > Minimq<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
+    > Minimq<'buf, TcpStack, Clock, MSG_SIZE, MSG_COUNT>
 {
     /// Construct a new MQTT interface.
     ///
@@ -685,6 +668,8 @@ impl<
         client_id: &str,
         network_stack: TcpStack,
         clock: Clock,
+        rx_buffer: &'buf mut [u8],
+        tx_buffer: &'buf mut [u8],
     ) -> Result<Self, Error<TcpStack::Error>> {
         let session_state = SessionState::new(
             clock,
@@ -696,9 +681,10 @@ impl<
                 sm: StateMachine::new(ClientContext::new(session_state)),
                 broker: SocketAddr::new(broker, MQTT_INSECURE_DEFAULT_PORT),
                 will: None,
-                network: InterfaceHolder::new(network_stack),
+                network: InterfaceHolder::new(network_stack, tx_buffer),
+                max_packet_size: rx_buffer.len(),
             },
-            packet_reader: PacketReader::new(),
+            packet_reader: PacketReader::new(rx_buffer),
         };
 
         Ok(minimq)
@@ -727,7 +713,7 @@ impl<
     pub fn poll<F, T>(&mut self, mut f: F) -> Result<Option<T>, Error<TcpStack::Error>>
     where
         for<'a> F: FnMut(
-            &mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+            &mut MqttClient<'buf, TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
             &'a str,
             &[u8],
             &Properties<'a>,
@@ -779,7 +765,7 @@ impl<
     }
 
     /// Directly access the MQTT client.
-    pub fn client(&mut self) -> &mut MqttClient<TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
+    pub fn client(&mut self) -> &mut MqttClient<'buf, TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
         &mut self.client
     }
 }

@@ -1,4 +1,4 @@
-use minimq::{types::Utf8String, Minimq, Property, Publication, QoS, Retain};
+use minimq::{types::Utf8String, Minimq, Property, Publication, QoS, Will};
 
 use embedded_nal::{self, IpAddr, Ipv4Addr};
 use std_embedded_time::StandardClock;
@@ -7,10 +7,19 @@ use std_embedded_time::StandardClock;
 fn main() -> std::io::Result<()> {
     env_logger::init();
 
+    let mut rx_buffer = [0u8; 256];
+    let mut tx_buffer = [0u8; 256];
     let stack = std_embedded_nal::Stack::default();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let mut mqtt =
-        Minimq::<_, _, 256, 16>::new(localhost, "", stack, StandardClock::default()).unwrap();
+    let mut mqtt = Minimq::<_, _, 256, 16>::new(
+        localhost,
+        "",
+        stack,
+        StandardClock::default(),
+        &mut rx_buffer,
+        &mut tx_buffer,
+    )
+    .unwrap();
 
     // Use a keepalive interval for the client.
     mqtt.client().set_keepalive_interval(60).unwrap();
@@ -19,15 +28,8 @@ fn main() -> std::io::Result<()> {
     let mut subscribed = false;
     let mut responses = 0;
 
-    mqtt.client()
-        .set_will(
-            "exit",
-            "Test complete".as_bytes(),
-            QoS::AtMostOnce,
-            Retain::NotRetained,
-            &[],
-        )
-        .unwrap();
+    let will = Will::new("exit", "Test complete".as_bytes(), &[]).unwrap();
+    mqtt.client().set_will(will).unwrap();
 
     loop {
         // Continually poll the client until there is no more data.

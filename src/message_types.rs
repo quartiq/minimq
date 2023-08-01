@@ -35,7 +35,7 @@ pub trait ControlPacket {
     }
 }
 
-impl<'a, const T: usize> ControlPacket for Connect<'a, T> {
+impl<'a> ControlPacket for Connect<'a> {
     const MESSAGE_TYPE: MessageType = MessageType::Connect;
 }
 

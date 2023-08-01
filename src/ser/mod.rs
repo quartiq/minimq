@@ -91,22 +91,27 @@ impl<'a> MqttSerializer<'a> {
     /// # Args
     /// * `buf` - The buffer to encode data into.
     /// * `packet` - The packet to encode.
+    pub fn to_buffer_meta<T: Serialize + ControlPacket>(
+        buf: &'a mut [u8],
+        packet: &T,
+    ) -> Result<(usize, &'a [u8]), Error> {
+        let mut serializer = Self::new(buf);
+        packet.serialize(&mut serializer)?;
+        let (offset, packet) = serializer.finalize(T::MESSAGE_TYPE, packet.fixed_header_flags())?;
+        Ok((offset, packet))
+    }
+
+    /// Encode an MQTT control packet into a buffer.
+    ///
+    /// # Args
+    /// * `buf` - The buffer to encode data into.
+    /// * `packet` - The packet to encode.
     pub fn to_buffer<T: Serialize + ControlPacket>(
         buf: &'a mut [u8],
         packet: &T,
     ) -> Result<&'a [u8], Error> {
-        let mut serializer = Self::new(buf);
-        packet.serialize(&mut serializer)?;
-        let packet = serializer.finalize(T::MESSAGE_TYPE, packet.fixed_header_flags())?;
+        let (_, packet) = Self::to_buffer_meta(buf, packet)?;
         Ok(packet)
-    }
-
-    /// Finish the packet without prepending the MQTT fixed header.
-    ///
-    /// # Returns
-    /// A slice representing the serialized packet without a fixed header.
-    pub fn finish_without_fixed_header(self) -> &'a [u8] {
-        &self.buf[MAX_FIXED_HEADER_SIZE..self.index]
     }
 
     /// Finalize the packet, prepending the MQTT fixed header.
@@ -117,7 +122,7 @@ impl<'a> MqttSerializer<'a> {
     ///
     /// # Returns
     /// A slice representing the serialized packet.
-    pub fn finalize(self, typ: MessageType, flags: u8) -> Result<&'a [u8], Error> {
+    pub fn finalize(self, typ: MessageType, flags: u8) -> Result<(usize, &'a [u8]), Error> {
         let len = self.index - MAX_FIXED_HEADER_SIZE;
 
         let mut buffer = VarintBuffer::new();
@@ -133,7 +138,8 @@ impl<'a> MqttSerializer<'a> {
         let header: u8 = *0u8.set_bits(4..8, typ as u8).set_bits(0..4, flags);
         self.buf[MAX_FIXED_HEADER_SIZE - buffer.data.len() - 1] = header;
 
-        Ok(&self.buf[MAX_FIXED_HEADER_SIZE - buffer.data.len() - 1..self.index])
+        let offset = MAX_FIXED_HEADER_SIZE - buffer.data.len() - 1;
+        Ok((offset, &self.buf[offset..self.index]))
     }
 
     /// Write data into the packet.

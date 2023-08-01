@@ -11,7 +11,7 @@ use serde::ser::SerializeStruct;
 
 /// An MQTT CONNECT packet.
 #[derive(Debug)]
-pub struct Connect<'a, const T: usize> {
+pub struct Connect<'a> {
     /// Specifies the keep-alive interval of the connection in seconds.
     pub keep_alive: u16,
 
@@ -23,13 +23,13 @@ pub struct Connect<'a, const T: usize> {
     pub client_id: Utf8String<'a>,
 
     /// An optional will message to be transmitted whenever the connection is lost.
-    pub will: Option<&'a Will<T>>,
+    pub will: Option<&'a Will<'a>>,
 
     /// Specified true there is no session state being taken in to the MQTT connection.
     pub clean_start: bool,
 }
 
-impl<'a, const T: usize> serde::Serialize for Connect<'a, T> {
+impl<'a> serde::Serialize for Connect<'a> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut flags: u8 = 0;
         flags.set_bit(1, self.clean_start);
@@ -39,7 +39,7 @@ impl<'a, const T: usize> serde::Serialize for Connect<'a, T> {
             // the will message, and whether or not the will message should be retained.
             flags.set_bit(2, true);
             flags.set_bits(3..=4, will.qos as u8);
-            flags.set_bit(5, will.retain == Retain::Retained);
+            flags.set_bit(5, will.retained == Retain::Retained);
         }
 
         let mut item = serializer.serialize_struct("Connect", 0)?;
@@ -49,7 +49,11 @@ impl<'a, const T: usize> serde::Serialize for Connect<'a, T> {
         item.serialize_field("keep_alive", &self.keep_alive)?;
         item.serialize_field("properties", &self.properties)?;
         item.serialize_field("client_id", &self.client_id)?;
-        item.serialize_field("will", &self.will)?;
+
+        if let Some(will) = &self.will {
+            let flattened = will.flatten();
+            item.serialize_field("will", &flattened)?;
+        }
 
         item.end()
     }
@@ -381,7 +385,7 @@ mod tests {
         ];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let connect: crate::packets::Connect<'_, 1> = crate::packets::Connect {
+        let connect: crate::packets::Connect<'_> = crate::packets::Connect {
             client_id: crate::types::Utf8String("ABC"),
             will: None,
             keep_alive: 10,
@@ -423,7 +427,7 @@ mod tests {
         ];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let mut will = crate::will::Will::<100>::new("EFG", &[0xAB, 0xCD], &[]).unwrap();
+        let mut will = crate::will::Will::new("EFG", &[0xAB, 0xCD], &[]).unwrap();
         will.qos(crate::QoS::AtMostOnce);
         will.retained(crate::Retain::NotRetained);
 

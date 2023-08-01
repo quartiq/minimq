@@ -1,16 +1,16 @@
 use super::received_packet::ReceivedPacket;
 use crate::ProtocolError as Error;
 
-pub(crate) struct PacketReader<const T: usize> {
-    pub buffer: [u8; T],
+pub(crate) struct PacketReader<'a> {
+    pub buffer: &'a mut [u8],
     read_bytes: usize,
     packet_length: Option<usize>,
 }
 
-impl<const T: usize> PacketReader<T> {
-    pub fn new() -> PacketReader<T> {
+impl<'a> PacketReader<'a> {
+    pub fn new(buffer: &'a mut [u8]) -> PacketReader<'a> {
         PacketReader {
-            buffer: [0; T],
+            buffer,
             read_bytes: 0,
             packet_length: None,
         }
