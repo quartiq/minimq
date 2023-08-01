@@ -108,9 +108,7 @@ impl<'a> MqttSerializer<'a> {
         buf: &'a mut [u8],
         packet: &T,
     ) -> Result<&'a [u8], Error> {
-        let mut serializer = Self::new(buf);
-        packet.serialize(&mut serializer)?;
-        let (_, packet) = serializer.finalize(T::MESSAGE_TYPE, packet.fixed_header_flags())?;
+        let (_, packet) = Self::to_buffer_meta(buf, packet)?;
         Ok(packet)
     }
 
