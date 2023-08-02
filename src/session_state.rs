@@ -1,71 +1,37 @@
 /// This module represents the session state of an MQTT communication session.
-use crate::{reason_codes::ReasonCode, warn, Error, ProtocolError, QoS};
+use crate::{reason_codes::ReasonCode, warn, Error, ProtocolError, QoS, ring_buffer::RingBuffer};
 use core::marker::PhantomData;
 use embedded_nal::TcpClientStack;
-use heapless::{LinearMap, String, Vec};
+use heapless::{String, Vec};
 
-use embedded_time::{
-    duration::{Extensions, Milliseconds, Seconds},
-    Instant,
-};
 
-/// The default duration to wait for a ping response from the broker.
-const PING_TIMEOUT: Seconds = Seconds(5);
 
-pub struct MessageRecord<const N: usize> {
-    pub msg: Vec<u8, N>,
-    transmitted: bool,
-    acknowledged: bool,
-    qos: QoS,
-}
-
-pub struct SessionState<
-    TcpStack: TcpClientStack,
-    Clock: embedded_time::Clock,
-    const MSG_SIZE: usize,
-    const MSG_COUNT: usize,
-> {
-    keep_alive_interval: Option<Milliseconds<u32>>,
-    ping_timeout: Option<Instant<Clock>>,
-    next_ping: Option<Instant<Clock>>,
-    pub maximum_packet_size: Option<u32>,
+pub struct SessionState<'a, TcpStack: TcpClientStack> {
     pub client_id: String<64>,
     pub pending_subscriptions: Vec<u16, 32>,
+    pending_publications: RingBuffer<'a>,
 
     /// Represents a list of packet_ids current in use by the server for Publish packets with
     /// QoS::ExactlyOnce
-    pending_pubrel: Vec<u16, MSG_COUNT>,
+    pub pending_server_packet_ids: Vec<u16, 10>,
+    pub pending_client_pubrel: Vec<u16, 10>,
 
-    pending_publish: LinearMap<u16, MessageRecord<MSG_SIZE>, MSG_COUNT>,
-    pending_publish_ordering: Vec<u16, MSG_COUNT>,
-    clock: Clock,
     packet_id: u16,
     active: bool,
     was_reset: bool,
     _stack: PhantomData<TcpStack>,
 }
 
-impl<
-        TcpStack: TcpClientStack,
-        Clock: embedded_time::Clock,
-        const MSG_SIZE: usize,
-        const MSG_COUNT: usize,
-    > SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
+impl<'a, TcpStack: TcpClientStack> SessionState<'a, TcpStack>
 {
-    pub fn new(clock: Clock, id: String<64>) -> SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
+    pub fn new(id: String<64>, buffer: &'a mut [u8]) -> SessionState<'a, TcpStack> {
         SessionState {
-            clock,
             active: false,
-            ping_timeout: None,
-            next_ping: None,
             client_id: id,
             packet_id: 1,
-            keep_alive_interval: Some(59_000.milliseconds()),
             pending_subscriptions: Vec::new(),
-            pending_publish: LinearMap::new(),
-            pending_publish_ordering: Vec::new(),
-            pending_pubrel: Vec::new(),
-            maximum_packet_size: None,
+            pending_publications: RingBuffer::new(buffer),
+            pending_server_packet_ids: Vec::new(),
             was_reset: false,
             _stack: PhantomData::default(),
         }
@@ -76,11 +42,10 @@ impl<
         self.was_reset = self.active;
         self.active = false;
         self.packet_id = 1;
-        self.maximum_packet_size = None;
+        self.pending_publications.reset();
         self.pending_subscriptions.clear();
-        self.pending_publish.clear();
-        self.pending_publish_ordering.clear();
-        self.pending_pubrel.clear();
+        self.pending_client_pubrel.clear();
+        self.pending_server_pubrel.clear();
     }
 
     /// Check if the session state has been reset.
@@ -90,78 +55,34 @@ impl<
         reset
     }
 
-    /// Get the keep-alive interval as an integer number of seconds.
-    ///
-    /// # Note
-    /// If no keep-alive interval is specified, zero is returned.
-    pub fn keepalive_interval(&self) -> u16 {
-        (self
-            .keep_alive_interval
-            .unwrap_or_else(|| 0.milliseconds())
-            .0
-            / 1000) as u16
-    }
-
-    /// Update the keep-alive interval.
-    ///
-    /// # Args
-    /// * `seconds` - The number of seconds in the keep-alive interval.
-    pub fn set_keepalive(&mut self, seconds: u16) {
-        self.keep_alive_interval
-            .replace(Milliseconds(seconds as u32 * 1000));
-    }
-
     /// Called when publish with QoS > 0 is called so that we can keep track of acknowledgement.
     pub fn handle_publish(
         &mut self,
         qos: QoS,
         id: u16,
-        packet: &[u8],
+        packet: &mut [u8],
     ) -> Result<(), Error<TcpStack::Error>> {
-        // Increment the current packet ID.
-
         // QoS::AtMostOnce requires no additional state tracking.
         if qos == QoS::AtMostOnce {
             return Ok(());
         }
 
-        let mut msg: Vec<u8, MSG_SIZE> = Vec::from_slice(packet).unwrap();
         // Set DUP = 1 (bit 3). If this packet is ever read it's just because we want to resend it
-        msg[0] |= 1 << 3;
+        packet[0] |= 1 << 3;
 
-        let record = MessageRecord {
-            qos,
-            msg,
-            transmitted: true,
-            acknowledged: false,
-        };
-
-        self.pending_publish
-            .insert(id, record)
-            .map_err(|_| Error::Unsupported)?;
-        self.pending_publish_ordering
-            .push(id)
-            .map_err(|_| Error::Unsupported)?;
+        self.pending_publish.push_slice(packet).map_err(|_| Error::BufferSize)?;
 
         Ok(())
     }
 
     pub fn remove_packet(&mut self, id: u16) -> Result<(), ProtocolError> {
-        // Remove the ID from our publication tracking. Note that we intentionally remove from both
-        // the ordering and state management without checking success to ensure that state remains
-        // valid.
-        let item = self.pending_publish.remove(&id);
-        let ordering = self
-            .pending_publish_ordering
-            .iter()
-            .position(|&i| i == id)
-            .map(|index| Some(self.pending_publish_ordering.remove(index)));
-
-        // If the ID didn't exist in our state tracking, indicate the error to the user.
-        if item.is_none() || ordering.is_none() {
+        let header = self.pending_publish.probe_header()?;
+        if header.packet_id != id {
             return Err(ProtocolError::BadIdentifier);
         }
 
+        // TODO: Length should be fully packet length, including all headers.
+        self.pending_publish.pop(header.len)?;
         Ok(())
     }
 
@@ -177,47 +98,21 @@ impl<
         Ok(())
     }
 
-    pub fn find_packet(
-        &mut self,
-        packet_id: u16,
-        expected_qos: QoS,
-    ) -> Result<&mut MessageRecord<MSG_SIZE>, ReasonCode> {
-        let item = self
-            .pending_publish
-            .get_mut(&packet_id)
-            .ok_or(ReasonCode::PacketIdNotFound)?;
-
-        if item.qos != expected_qos {
-            return Err(ReasonCode::ProtocolError);
-        }
-
-        Ok(item)
-    }
-
     pub fn handle_pubrec(
         &mut self,
         packet_id: u16,
         pubrel: &[u8],
     ) -> Result<(), Error<TcpStack::Error>> {
-        let item = self.find_packet(packet_id, QoS::ExactlyOnce)?;
-        // Replace the message with the new acknowledgement.
-        item.msg.clear();
-        item.msg.extend_from_slice(pubrel).unwrap();
-
-        item.transmitted = true;
-        item.acknowledged = true;
+        self.remove_packet(packet_id)?;
+        self.pending_client_pubrel.push(pubrel).map_err(|_| Error::BufferSize)?;
 
         Ok(())
     }
 
     pub fn handle_pubcomp(&mut self, id: u16) -> Result<(), Error<TcpStack::Error>> {
-        let item = self.find_packet(id, QoS::ExactlyOnce)?;
+        let position = self.pending_client_pubrel.iter().position(|packet_id| id == packet_id).or_else(|| ProtocolError::Unackwnoledged.into())?;
+        self.pending_client_pubrel.remove(position);
 
-        if !item.acknowledged {
-            return Err(ProtocolError::Unacknowledged.into());
-        }
-
-        self.remove_packet(id)?;
         Ok(())
     }
 
@@ -225,6 +120,8 @@ impl<
     pub fn can_publish(&self, qos: QoS) -> bool {
         match qos {
             QoS::AtMostOnce => true,
+
+            // TODO: Should only publish if we have remaining space in our buffers
             QoS::AtLeastOnce | QoS::ExactlyOnce => self.pending_publish.len() < MSG_COUNT,
         }
     }
@@ -238,25 +135,6 @@ impl<
                 .filter(|&item| item.qos == qos)
                 .count(),
         }
-    }
-
-    /// Called whenever an active connection has been made with a broker.
-    pub fn register_connection(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        self.active = true;
-        self.ping_timeout = None;
-
-        // The next ping should be sent out in half the keep-alive interval from now.
-        if let Some(interval) = self.keep_alive_interval {
-            self.next_ping.replace(self.clock.try_now()? + interval / 2);
-        }
-
-        // We just reconnected to the broker. Any of our pending publications will need to be
-        // republished.
-        for (_key, value) in self.pending_publish.iter_mut() {
-            value.transmitted = false;
-        }
-
-        Ok(())
     }
 
     /// Indicates if there is present session state available.
@@ -277,51 +155,6 @@ impl<
         }
 
         packet_id
-    }
-
-    /// Callback function to register a PingResp packet reception.
-    pub fn register_ping_response(&mut self) {
-        // Take the current timeout to remove it.
-        let timeout = self.ping_timeout.take();
-
-        // If there was no timeout to begin with, log the spurious ping response.
-        if timeout.is_none() {
-            warn!("Got unexpected ping response");
-        }
-    }
-
-    /// Check if a pending ping is currently overdue.
-    pub fn ping_is_overdue(&mut self) -> Result<bool, Error<TcpStack::Error>> {
-        let now = self.clock.try_now()?;
-        Ok(self
-            .ping_timeout
-            .map(|timeout| now > timeout)
-            .unwrap_or(false))
-    }
-
-    /// Check if a ping is currently due for transmission.
-    pub fn ping_is_due(&mut self) -> Result<bool, Error<TcpStack::Error>> {
-        // If there's already a ping being transmitted, another can't be due.
-        if self.ping_timeout.is_some() {
-            return Ok(false);
-        }
-
-        let now = self.clock.try_now()?;
-
-        Ok(self
-            .keep_alive_interval
-            .zip(self.next_ping)
-            .map(|(keep_alive_interval, ping_deadline)| {
-                // Update the next ping deadline if the ping is due.
-                if now > ping_deadline {
-                    // The next ping should be sent out in half the keep-alive interval from now.
-                    self.next_ping.replace(now + keep_alive_interval / 2);
-                    self.ping_timeout.replace(now + PING_TIMEOUT);
-                }
-
-                now > ping_deadline
-            })
-            .unwrap_or(false))
     }
 
     /// Get the next message that needs to be republished.
@@ -348,14 +181,14 @@ impl<
 
     /// Check if a server packet ID is in use.
     pub fn server_packet_id_in_use(&self, id: u16) -> bool {
-        self.pending_pubrel
+        self.pending_server_packet_ids
             .iter()
             .any(|&inflight_id| inflight_id == id)
     }
 
     /// Register a server packet ID as being in use.
     pub fn push_server_packet_id(&mut self, id: u16) -> ReasonCode {
-        if self.pending_pubrel.push(id).is_err() {
+        if self.pending_server_packet_ids.push(id).is_err() {
             ReasonCode::ReceiveMaxExceeded
         } else {
             ReasonCode::Success
@@ -365,11 +198,11 @@ impl<
     /// Mark a server packet ID as no longer in use.
     pub fn remove_server_packet_id(&mut self, id: u16) -> ReasonCode {
         if let Some(position) = self
-            .pending_pubrel
+            .pending_server_packet_ids
             .iter()
             .position(|&inflight_id| inflight_id == id)
         {
-            self.pending_pubrel.swap_remove(position);
+            self.pending_server_packet_ids.swap_remove(position);
             ReasonCode::Success
         } else {
             ReasonCode::PacketIdNotFound
@@ -378,6 +211,6 @@ impl<
 
     /// Get a list of all inflight server packet IDs.
     pub fn server_packet_ids(&self) -> &[u16] {
-        &self.pending_pubrel
+        &self.pending_server_packet_ids
     }
 }

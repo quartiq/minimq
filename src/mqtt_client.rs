@@ -9,6 +9,11 @@ use crate::{
     Error, Property, ProtocolError, QoS, MQTT_INSECURE_DEFAULT_PORT, {debug, error, info, warn},
 };
 
+use embedded_time::{
+    duration::{Extensions, Milliseconds, Seconds},
+    Instant,
+};
+
 use embedded_nal::{IpAddr, SocketAddr, TcpClientStack};
 
 use heapless::String;
@@ -40,34 +45,46 @@ mod sm {
 
 use sm::{Events, StateMachine, States};
 
+/// The default duration to wait for a ping response from the broker.
+const PING_TIMEOUT: Seconds = Seconds(5);
+
 struct ClientContext<
+    'a,
     TcpStack: TcpClientStack,
     Clock: embedded_time::Clock,
-    const MSG_SIZE: usize,
-    const MSG_COUNT: usize,
 > {
-    session_state: SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+    session_state: SessionState<'a, TcpStack>,
     send_quota: u16,
     max_send_quota: u16,
+    maximum_packet_size: Option<u32>,
+    keep_alive_interval: Option<Milliseconds<u32>>,
+
+    ping_timeout: Option<Instant<Clock>>,
+    next_ping: Option<Instant<Clock>>,
+    clock: Clock,
 }
 
-impl<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
-    ClientContext<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
+impl<'a, TcpStack, Clock> ClientContext<'a, TcpStack, Clock>
 where
     TcpStack: TcpClientStack,
     Clock: embedded_time::Clock,
 {
-    pub fn new(session_state: SessionState<TcpStack, Clock, MSG_SIZE, MSG_COUNT>) -> Self {
+    pub fn new(clock: Clock, session_state: SessionState<'a, TcpStack>) {
         Self {
             session_state,
             send_quota: u16::MAX,
             max_send_quota: u16::MAX,
+            clock,
+            ping_timeout: None,
+            next_ping: None,
+            keep_alive_interval: Some(59_000.milliseconds()),
+            maximum_packet_size: None,
         }
     }
 
-    pub fn handle_suback<'a>(
+    pub fn handle_suback(
         &mut self,
-        subscribe_acknowledge: &SubAck<'a>,
+        subscribe_acknowledge: &SubAck<'_>,
     ) -> Result<(), Error<TcpStack::Error>> {
         match self
             .session_state
@@ -88,10 +105,95 @@ where
 
         Ok(())
     }
+
+    /// Called whenever an active connection has been made with a broker.
+    pub fn register_connection(&mut self) -> Result<(), Error<TcpStack::Error>> {
+        self.active = true;
+        self.ping_timeout = None;
+
+        // The next ping should be sent out in half the keep-alive interval from now.
+        if let Some(interval) = self.keep_alive_interval {
+            self.next_ping.replace(self.clock.try_now()? + interval / 2);
+        }
+
+        // We just reconnected to the broker. Any of our pending publications will need to be
+        // republished.
+        for (_key, value) in self.pending_publish.iter_mut() {
+            value.transmitted = false;
+        }
+
+        Ok(())
+    }
+
+    /// Callback function to register a PingResp packet reception.
+    pub fn register_ping_response(&mut self) {
+        // Take the current timeout to remove it.
+        let timeout = self.ping_timeout.take();
+
+        // If there was no timeout to begin with, log the spurious ping response.
+        if timeout.is_none() {
+            warn!("Got unexpected ping response");
+        }
+    }
+
+    /// Check if a pending ping is currently overdue.
+    pub fn ping_is_overdue(&mut self) -> Result<bool, Error<TcpStack::Error>> {
+        let now = self.clock.try_now()?;
+        Ok(self
+            .ping_timeout
+            .map(|timeout| now > timeout)
+            .unwrap_or(false))
+    }
+
+    /// Check if a ping is currently due for transmission.
+    pub fn ping_is_due(&mut self) -> Result<bool, Error<TcpStack::Error>> {
+        // If there's already a ping being transmitted, another can't be due.
+        if self.ping_timeout.is_some() {
+            return Ok(false);
+        }
+
+        let now = self.clock.try_now()?;
+
+        Ok(self
+            .keep_alive_interval
+            .zip(self.next_ping)
+            .map(|(keep_alive_interval, ping_deadline)| {
+                // Update the next ping deadline if the ping is due.
+                if now > ping_deadline {
+                    // The next ping should be sent out in half the keep-alive interval from now.
+                    self.next_ping.replace(now + keep_alive_interval / 2);
+                    self.ping_timeout.replace(now + PING_TIMEOUT);
+                }
+
+                now > ping_deadline
+            })
+            .unwrap_or(false))
+    }
+
+    /// Get the keep-alive interval as an integer number of seconds.
+    ///
+    /// # Note
+    /// If no keep-alive interval is specified, zero is returned.
+    pub fn keepalive_interval(&self) -> u16 {
+        (self
+            .keep_alive_interval
+            .unwrap_or_else(|| 0.milliseconds())
+            .0
+            / 1000) as u16
+    }
+
+    /// Update the keep-alive interval.
+    ///
+    /// # Args
+    /// * `seconds` - The number of seconds in the keep-alive interval.
+    pub fn set_keepalive(&mut self, seconds: u16) {
+        self.keep_alive_interval
+            .replace(Milliseconds(seconds as u32 * 1000));
+    }
 }
 
-impl<TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize> sm::StateMachineContext
-    for ClientContext<TcpStack, Clock, MSG_SIZE, MSG_COUNT>
+impl<'a, TcpStack, Clock> sm::StateMachineContext
+    for ClientContext<'a, TcpStack, Clock>
 where
     TcpStack: TcpClientStack,
     Clock: embedded_time::Clock,
@@ -106,13 +208,13 @@ where
         Ok(())
     }
 
-    fn handle_packet<'a>(
+    fn handle_packet(
         &mut self,
-        packet: &ReceivedPacket<'a>,
+        packet: &ReceivedPacket<'_>,
     ) -> Result<(), Error<TcpStack::Error>> {
         match &packet {
             ReceivedPacket::SubAck(ack) => self.handle_suback(ack)?,
-            ReceivedPacket::PingResp => self.session_state.register_ping_response(),
+            ReceivedPacket::PingResp => self.register_ping_response(),
             ReceivedPacket::PubComp(comp) => {
                 self.send_quota = self.send_quota.saturating_add(1).min(self.max_send_quota);
                 self.session_state.handle_pubcomp(comp.packet_id)?;
@@ -128,9 +230,9 @@ where
         Ok(())
     }
 
-    fn handle_connack<'a>(
+    fn handle_connack(
         &mut self,
-        acknowledge: &ConnAck<'a>,
+        acknowledge: &ConnAck<'_>,
     ) -> Result<(), Error<TcpStack::Error>> {
         acknowledge.reason_code.as_result()?;
 
@@ -149,14 +251,14 @@ where
         for property in acknowledge.properties.into_iter() {
             match property? {
                 Property::MaximumPacketSize(size) => {
-                    self.session_state.maximum_packet_size.replace(size);
+                    self.maximum_packet_size.replace(size);
                 }
                 Property::AssignedClientIdentifier(id) => {
                     self.session_state.client_id =
                         String::from_str(id.0).or(Err(Error::ProvidedClientIdTooLong))?;
                 }
                 Property::ServerKeepAlive(keep_alive) => {
-                    self.session_state.set_keepalive(keep_alive);
+                    self.set_keepalive(keep_alive);
                 }
                 Property::ReceiveMaximum(max) => {
                     self.send_quota = max;
@@ -166,7 +268,7 @@ where
             };
         }
 
-        self.session_state.register_connection()?;
+        self.register_connection()?;
 
         Ok(())
     }
@@ -186,10 +288,8 @@ pub struct MqttClient<
     'buf,
     TcpStack: TcpClientStack,
     Clock: embedded_time::Clock,
-    const MSG_SIZE: usize,
-    const MSG_COUNT: usize,
 > {
-    sm: sm::StateMachine<ClientContext<TcpStack, Clock, MSG_SIZE, MSG_COUNT>>,
+    sm: sm::StateMachine<ClientContext<'buf, TcpStack, Clock>>,
     network: InterfaceHolder<'buf, TcpStack>,
     will: Option<Will<'buf>>,
     broker: SocketAddr,
@@ -200,9 +300,7 @@ impl<
         'buf,
         TcpStack: TcpClientStack,
         Clock: embedded_time::Clock,
-        const MSG_SIZE: usize,
-        const MSG_COUNT: usize,
-    > MqttClient<'buf, TcpStack, Clock, MSG_SIZE, MSG_COUNT>
+    > MqttClient<'buf, TcpStack, Clock>
 {
     /// Specify the Will message to be sent if the client disconnects.
     ///
@@ -235,7 +333,6 @@ impl<
 
         self.sm
             .context_mut()
-            .session_state
             .set_keepalive(interval_seconds);
         Ok(())
     }
@@ -410,7 +507,7 @@ impl<
             Property::MaximumPacketSize(self.max_packet_size as u32),
             // The session does not expire.
             Property::SessionExpiryInterval(u32::MAX),
-            Property::ReceiveMaximum(MSG_COUNT as u16),
+            Property::ReceiveMaximum(self.pending_pubrel.capacity()),
         ];
 
         self.network.send_packet(&Connect {
@@ -427,7 +524,7 @@ impl<
     }
 
     fn handle_active(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        if self.sm.context_mut().session_state.ping_is_overdue()? {
+        if self.sm.context_mut().ping_is_overdue()? {
             warn!("Ping overdue. Trigging send timeout reset");
             self.sm.process_event(Events::SendTimeout).unwrap();
         }
@@ -452,7 +549,7 @@ impl<
             return Ok(());
         }
 
-        if self.sm.context_mut().session_state.ping_is_due()? {
+        if self.sm.context_mut().ping_is_due()? {
             // Note: If we fail to serialize or write the packet, the ping timeout timer is still
             // running, so we will recover the TCP connection in the future.
             self.network.send_packet(&PingReq {})?;
@@ -493,7 +590,7 @@ impl<
     ) -> Result<Option<T>, Error<TcpStack::Error>>
     where
         F: FnMut(
-            &mut MqttClient<'buf, TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+            &mut MqttClient<'buf, TcpStack, Clock>,
             &'a str,
             &[u8],
             &Properties<'a>,
@@ -634,12 +731,12 @@ impl<
 /// # Note
 /// To connect and maintain an MQTT connection, the `Minimq::poll()` method must be called
 /// regularly.
-pub struct Minimq<'buf, TcpStack, Clock, const MSG_SIZE: usize, const MSG_COUNT: usize>
+pub struct Minimq<'buf, TcpStack, Clock>
 where
     TcpStack: TcpClientStack,
     Clock: embedded_time::Clock,
 {
-    client: MqttClient<'buf, TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+    client: MqttClient<'buf, TcpStack, Clock>,
     packet_reader: PacketReader<'buf>,
 }
 
@@ -647,9 +744,7 @@ impl<
         'buf,
         TcpStack: TcpClientStack,
         Clock: embedded_time::Clock,
-        const MSG_SIZE: usize,
-        const MSG_COUNT: usize,
-    > Minimq<'buf, TcpStack, Clock, MSG_SIZE, MSG_COUNT>
+    > Minimq<'buf, TcpStack, Clock>
 {
     /// Construct a new MQTT interface.
     ///
@@ -670,15 +765,16 @@ impl<
         clock: Clock,
         rx_buffer: &'buf mut [u8],
         tx_buffer: &'buf mut [u8],
+        state_buffer: &'buf mut [u8],
     ) -> Result<Self, Error<TcpStack::Error>> {
         let session_state = SessionState::new(
-            clock,
             String::from_str(client_id).or(Err(Error::ProvidedClientIdTooLong))?,
+            state_buffer,
         );
 
         let minimq = Minimq {
             client: MqttClient {
-                sm: StateMachine::new(ClientContext::new(session_state)),
+                sm: StateMachine::new(ClientContext::new(clock, session_state)),
                 broker: SocketAddr::new(broker, MQTT_INSECURE_DEFAULT_PORT),
                 will: None,
                 network: InterfaceHolder::new(network_stack, tx_buffer),
@@ -713,7 +809,7 @@ impl<
     pub fn poll<F, T>(&mut self, mut f: F) -> Result<Option<T>, Error<TcpStack::Error>>
     where
         for<'a> F: FnMut(
-            &mut MqttClient<'buf, TcpStack, Clock, MSG_SIZE, MSG_COUNT>,
+            &mut MqttClient<'buf, TcpStack, Clock>,
             &'a str,
             &[u8],
             &Properties<'a>,
@@ -765,7 +861,7 @@ impl<
     }
 
     /// Directly access the MQTT client.
-    pub fn client(&mut self) -> &mut MqttClient<'buf, TcpStack, Clock, MSG_SIZE, MSG_COUNT> {
+    pub fn client(&mut self) -> &mut MqttClient<'buf, TcpStack, Clock> {
         &mut self.client
     }
 }

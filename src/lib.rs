@@ -76,6 +76,7 @@ mod session_state;
 pub mod types;
 mod varint;
 mod will;
+mod ring_buffer;
 
 pub use properties::Property;
 pub use publication::Publication;
