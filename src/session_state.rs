@@ -1,14 +1,11 @@
 /// This module represents the session state of an MQTT communication session.
-use crate::{reason_codes::ReasonCode, warn, Error, ProtocolError, QoS, ring_buffer::RingBuffer};
+use crate::{reason_codes::ReasonCode, ring_buffer::RingBuffer, Error, ProtocolError, QoS};
 use core::marker::PhantomData;
 use embedded_nal::TcpClientStack;
 use heapless::{String, Vec};
 
-
-
 pub struct SessionState<'a, TcpStack: TcpClientStack> {
     pub client_id: String<64>,
-    pub pending_subscriptions: Vec<u16, 32>,
     pending_publications: RingBuffer<'a>,
 
     /// Represents a list of packet_ids current in use by the server for Publish packets with
@@ -22,15 +19,14 @@ pub struct SessionState<'a, TcpStack: TcpClientStack> {
     _stack: PhantomData<TcpStack>,
 }
 
-impl<'a, TcpStack: TcpClientStack> SessionState<'a, TcpStack>
-{
+impl<'a, TcpStack: TcpClientStack> SessionState<'a, TcpStack> {
     pub fn new(id: String<64>, buffer: &'a mut [u8]) -> SessionState<'a, TcpStack> {
         SessionState {
             active: false,
             client_id: id,
             packet_id: 1,
-            pending_subscriptions: Vec::new(),
             pending_publications: RingBuffer::new(buffer),
+            pending_client_pubrel: Vec::new(),
             pending_server_packet_ids: Vec::new(),
             was_reset: false,
             _stack: PhantomData::default(),
@@ -43,7 +39,6 @@ impl<'a, TcpStack: TcpClientStack> SessionState<'a, TcpStack>
         self.active = false;
         self.packet_id = 1;
         self.pending_publications.reset();
-        self.pending_subscriptions.clear();
         self.pending_client_pubrel.clear();
         self.pending_server_pubrel.clear();
     }
@@ -70,7 +65,9 @@ impl<'a, TcpStack: TcpClientStack> SessionState<'a, TcpStack>
         // Set DUP = 1 (bit 3). If this packet is ever read it's just because we want to resend it
         packet[0] |= 1 << 3;
 
-        self.pending_publish.push_slice(packet).map_err(|_| Error::BufferSize)?;
+        self.pending_publish
+            .push_slice(packet)
+            .map_err(|_| Error::BufferSize)?;
 
         Ok(())
     }
@@ -104,13 +101,19 @@ impl<'a, TcpStack: TcpClientStack> SessionState<'a, TcpStack>
         pubrel: &[u8],
     ) -> Result<(), Error<TcpStack::Error>> {
         self.remove_packet(packet_id)?;
-        self.pending_client_pubrel.push(pubrel).map_err(|_| Error::BufferSize)?;
+        self.pending_client_pubrel
+            .push(pubrel)
+            .map_err(|_| Error::BufferSize)?;
 
         Ok(())
     }
 
     pub fn handle_pubcomp(&mut self, id: u16) -> Result<(), Error<TcpStack::Error>> {
-        let position = self.pending_client_pubrel.iter().position(|packet_id| id == packet_id).or_else(|| ProtocolError::Unackwnoledged.into())?;
+        let position = self
+            .pending_client_pubrel
+            .iter()
+            .position(|packet_id| id == packet_id)
+            .or_else(|| ProtocolError::Unackwnoledged.into())?;
         self.pending_client_pubrel.remove(position);
 
         Ok(())

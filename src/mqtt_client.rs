@@ -48,16 +48,13 @@ use sm::{Events, StateMachine, States};
 /// The default duration to wait for a ping response from the broker.
 const PING_TIMEOUT: Seconds = Seconds(5);
 
-struct ClientContext<
-    'a,
-    TcpStack: TcpClientStack,
-    Clock: embedded_time::Clock,
-> {
+struct ClientContext<'a, TcpStack: TcpClientStack, Clock: embedded_time::Clock> {
     session_state: SessionState<'a, TcpStack>,
     send_quota: u16,
     max_send_quota: u16,
     maximum_packet_size: Option<u32>,
     keep_alive_interval: Option<Milliseconds<u32>>,
+    pending_subscriptions: heapless::Vec<u16, 32>,
 
     ping_timeout: Option<Instant<Clock>>,
     next_ping: Option<Instant<Clock>>,
@@ -74,6 +71,7 @@ where
             session_state,
             send_quota: u16::MAX,
             max_send_quota: u16::MAX,
+            pending_subscriptions: heapless::Vec::new(),
             clock,
             ping_timeout: None,
             next_ping: None,
@@ -87,7 +85,6 @@ where
         subscribe_acknowledge: &SubAck<'_>,
     ) -> Result<(), Error<TcpStack::Error>> {
         match self
-            .session_state
             .pending_subscriptions
             .iter()
             .position(|v| *v == subscribe_acknowledge.packet_identifier)
@@ -96,7 +93,7 @@ where
                 error!("Got bad suback: {:?}", subscribe_acknowledge);
                 return Err(Error::Protocol(ProtocolError::BadIdentifier));
             }
-            Some(index) => self.session_state.pending_subscriptions.swap_remove(index),
+            Some(index) => self.pending_subscriptions.swap_remove(index),
         };
 
         for &code in subscribe_acknowledge.codes.iter() {
@@ -192,8 +189,7 @@ where
     }
 }
 
-impl<'a, TcpStack, Clock> sm::StateMachineContext
-    for ClientContext<'a, TcpStack, Clock>
+impl<'a, TcpStack, Clock> sm::StateMachineContext for ClientContext<'a, TcpStack, Clock>
 where
     TcpStack: TcpClientStack,
     Clock: embedded_time::Clock,
@@ -201,17 +197,13 @@ where
     type GuardError = crate::Error<TcpStack::Error>;
 
     fn handle_subscription(&mut self, id: &u16) -> Result<(), Error<TcpStack::Error>> {
-        self.session_state
-            .pending_subscriptions
+        self.pending_subscriptions
             .push(*id)
             .map_err(|_| Error::Unsupported)?;
         Ok(())
     }
 
-    fn handle_packet(
-        &mut self,
-        packet: &ReceivedPacket<'_>,
-    ) -> Result<(), Error<TcpStack::Error>> {
+    fn handle_packet(&mut self, packet: &ReceivedPacket<'_>) -> Result<(), Error<TcpStack::Error>> {
         match &packet {
             ReceivedPacket::SubAck(ack) => self.handle_suback(ack)?,
             ReceivedPacket::PingResp => self.register_ping_response(),
@@ -230,16 +222,14 @@ where
         Ok(())
     }
 
-    fn handle_connack(
-        &mut self,
-        acknowledge: &ConnAck<'_>,
-    ) -> Result<(), Error<TcpStack::Error>> {
+    fn handle_connack(&mut self, acknowledge: &ConnAck<'_>) -> Result<(), Error<TcpStack::Error>> {
         acknowledge.reason_code.as_result()?;
 
         // Reset the session state upon connection with a broker that doesn't have a session state
         // saved for us.
         if !acknowledge.session_present {
             self.session_state.reset();
+            self.pending_subscriptions.clear();
         }
 
         // If the server doesn't specify a send quota, assume it's 65535 as required by the spec
@@ -284,11 +274,7 @@ impl<T> From<sm::Error<Error<T>>> for Error<T> {
 }
 
 /// The client that can be used for interacting with the MQTT broker.
-pub struct MqttClient<
-    'buf,
-    TcpStack: TcpClientStack,
-    Clock: embedded_time::Clock,
-> {
+pub struct MqttClient<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock> {
     sm: sm::StateMachine<ClientContext<'buf, TcpStack, Clock>>,
     network: InterfaceHolder<'buf, TcpStack>,
     will: Option<Will<'buf>>,
@@ -296,11 +282,8 @@ pub struct MqttClient<
     max_packet_size: usize,
 }
 
-impl<
-        'buf,
-        TcpStack: TcpClientStack,
-        Clock: embedded_time::Clock,
-    > MqttClient<'buf, TcpStack, Clock>
+impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock>
+    MqttClient<'buf, TcpStack, Clock>
 {
     /// Specify the Will message to be sent if the client disconnects.
     ///
@@ -331,9 +314,7 @@ impl<
             return Err(Error::NotReady);
         }
 
-        self.sm
-            .context_mut()
-            .set_keepalive(interval_seconds);
+        self.sm.context_mut().set_keepalive(interval_seconds);
         Ok(())
     }
 
@@ -397,12 +378,7 @@ impl<
     /// # Returns
     /// True if any subscriptions are waiting for confirmation from the broker.
     pub fn subscriptions_pending(&self) -> bool {
-        !self
-            .sm
-            .context()
-            .session_state
-            .pending_subscriptions
-            .is_empty()
+        !self.sm.context().pending_subscriptions.is_empty()
     }
 
     /// Determine if the client has established a connection with the broker.
@@ -589,12 +565,7 @@ impl<
         f: &mut F,
     ) -> Result<Option<T>, Error<TcpStack::Error>>
     where
-        F: FnMut(
-            &mut MqttClient<'buf, TcpStack, Clock>,
-            &'a str,
-            &[u8],
-            &Properties<'a>,
-        ) -> T,
+        F: FnMut(&mut MqttClient<'buf, TcpStack, Clock>, &'a str, &[u8], &Properties<'a>) -> T,
     {
         match control_packet {
             ReceivedPacket::ConnAck(ack) => {
@@ -740,12 +711,7 @@ where
     packet_reader: PacketReader<'buf>,
 }
 
-impl<
-        'buf,
-        TcpStack: TcpClientStack,
-        Clock: embedded_time::Clock,
-    > Minimq<'buf, TcpStack, Clock>
-{
+impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock> Minimq<'buf, TcpStack, Clock> {
     /// Construct a new MQTT interface.
     ///
     /// # Args
@@ -808,12 +774,8 @@ impl<
     /// subscriptions or session state.
     pub fn poll<F, T>(&mut self, mut f: F) -> Result<Option<T>, Error<TcpStack::Error>>
     where
-        for<'a> F: FnMut(
-            &mut MqttClient<'buf, TcpStack, Clock>,
-            &'a str,
-            &[u8],
-            &Properties<'a>,
-        ) -> T,
+        for<'a> F:
+            FnMut(&mut MqttClient<'buf, TcpStack, Clock>, &'a str, &[u8], &Properties<'a>) -> T,
     {
         self.client.update()?;
 

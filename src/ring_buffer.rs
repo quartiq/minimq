@@ -10,7 +10,6 @@ pub(crate) struct RingBuffer<'a> {
 }
 
 impl<'a> RingBuffer<'a> {
-
     pub fn new(buffer: &'a mut [u8]) -> Self {
         Self {
             data: buffer,

@@ -72,11 +72,11 @@ mod packets;
 mod properties;
 pub mod publication;
 mod reason_codes;
+mod ring_buffer;
 mod session_state;
 pub mod types;
 mod varint;
 mod will;
-mod ring_buffer;
 
 pub use properties::Property;
 pub use publication::Publication;
