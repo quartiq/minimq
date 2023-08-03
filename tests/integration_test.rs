@@ -9,15 +9,17 @@ fn main() -> std::io::Result<()> {
 
     let mut rx_buffer = [0u8; 256];
     let mut tx_buffer = [0u8; 256];
+    let mut session = [0u8; 256];
     let stack = std_embedded_nal::Stack::default();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let mut mqtt = Minimq::<_, _, 256, 16>::new(
+    let mut mqtt = Minimq::new(
         localhost,
         "",
         stack,
         StandardClock::default(),
         &mut rx_buffer,
         &mut tx_buffer,
+        &mut session,
     )
     .unwrap();
 
@@ -51,7 +53,7 @@ fn main() -> std::io::Result<()> {
             if was_response {
                 responses += 1;
                 if responses == 2 {
-                    assert_eq!(0, mqtt.client().pending_messages(QoS::AtLeastOnce));
+                    assert!(!mqtt.client().pending_messages());
                     std::process::exit(0);
                 }
             }
@@ -86,7 +88,7 @@ fn main() -> std::io::Result<()> {
             client.publish(publication).unwrap();
 
             // The message cannot be ack'd until the next poll call
-            assert_eq!(1, client.pending_messages(QoS::AtLeastOnce));
+            assert!(client.pending_messages());
 
             published = true;
         }

@@ -9,15 +9,17 @@ fn main() -> std::io::Result<()> {
 
     let mut rx_buffer = [0u8; 256];
     let mut tx_buffer = [0u8; 256];
+    let mut session = [0u8; 256];
     let stack = std_embedded_nal::Stack::default();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let mut mqtt = Minimq::<_, _, 256, 16>::new(
+    let mut mqtt = Minimq::new(
         localhost,
         "",
         stack,
         StandardClock::default(),
         &mut rx_buffer,
         &mut tx_buffer,
+        &mut session,
     )
     .unwrap();
 

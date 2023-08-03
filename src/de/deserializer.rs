@@ -42,6 +42,9 @@ pub enum Error {
     /// A custom deserialization error occurred.
     Custom,
 
+    /// The buffer was discontinuous when requesting a byte sequence.
+    BufferDiscontinuity,
+
     /// An invalid string was encountered, where UTF-8 decoding failed.
     BadString,
 
@@ -68,6 +71,7 @@ impl core::fmt::Display for Error {
             "{}",
             match self {
                 Error::Custom => "Custom deserialization error",
+                Error::BufferDiscontinuity => "Discontinuous byte sequence encountered",
                 Error::BadString => "Improper UTF-8 string encountered",
                 Error::BadBool => "Bad boolean encountered",
                 Error::InsufficientData => "Not enough data in the packet",
@@ -79,15 +83,17 @@ impl core::fmt::Display for Error {
 /// Deserializes a byte buffer into an MQTT control packet.
 pub struct MqttDeserializer<'a> {
     buf: &'a [u8],
+    tail: &'a [u8],
     index: usize,
     next_pending_length: Option<usize>,
 }
 
 impl<'a> MqttDeserializer<'a> {
     /// Construct a deserializer from a provided data buffer.
-    pub fn new(buf: &'a [u8]) -> Self {
+    pub fn new(buf: &'a [u8], tail: &'a [u8]) -> Self {
         Self {
             buf,
+            tail,
             index: 0,
             next_pending_length: None,
         }
@@ -107,7 +113,17 @@ impl<'a> MqttDeserializer<'a> {
             return Err(Error::InsufficientData);
         }
 
-        let data = &self.buf[self.index..self.index + n];
+        let data = if self.index < self.buf.len() {
+            if self.index + n > self.buf.len() {
+                return Err(Error::BufferDiscontinuity);
+            }
+
+            &self.buf[self.index..self.index + n]
+        } else {
+            let index = self.index - self.buf.len();
+            &self.tail[index..index + n]
+        };
+
         self.index += n;
         Ok(data)
     }
@@ -118,9 +134,8 @@ impl<'a> MqttDeserializer<'a> {
             return Err(Error::InsufficientData);
         }
 
-        let byte = self.buf[self.index];
-        self.index += 1;
-        Ok(byte)
+        let byte = self.try_take_n(1)?;
+        Ok(byte[0])
     }
 
     /// Read a 16-bit integer from the data buffer.
@@ -130,7 +145,7 @@ impl<'a> MqttDeserializer<'a> {
 
     /// Read the number of remaining bytes in the data buffer.
     pub fn len(&self) -> usize {
-        self.buf.len() - self.index
+        (self.buf.len() + self.tail.len()) - self.index
     }
 
     /// Read a variable-length integer from the data buffer.
@@ -147,8 +162,16 @@ impl<'a> MqttDeserializer<'a> {
     ///
     /// # Note
     /// This is intended to be used after deserialization has completed.
-    pub fn remainder(&self) -> &'a [u8] {
-        &self.buf[self.index..]
+    pub fn remainder(&self) -> Result<&'a [u8], Error> {
+        if self.index < self.buf.len() {
+            if !self.tail.is_empty() {
+                return Err(Error::BufferDiscontinuity);
+            }
+            Ok(&self.buf[self.index..])
+        } else {
+            let index = self.index - self.buf.len();
+            Ok(&self.tail[index..])
+        }
     }
 }
 

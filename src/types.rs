@@ -40,7 +40,7 @@ impl<'a> core::iter::Iterator for PropertiesIter<'a> {
         }
 
         // Progressively deserialize properties and yield them.
-        let mut deserializer = MqttDeserializer::new(&self.props[self.index..]);
+        let mut deserializer = MqttDeserializer::new(&self.props[self.index..], &[]);
         let property =
             Property::deserialize(&mut deserializer).map_err(ProtocolError::Deserialization);
         self.index += deserializer.deserialized_bytes();

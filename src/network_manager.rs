@@ -9,7 +9,7 @@ use crate::message_types::ControlPacket;
 use embedded_nal::{nb, SocketAddr, TcpClientStack, TcpError};
 use serde::Serialize;
 
-use crate::Error;
+use crate::{Error, ProtocolError};
 
 /// Simple structure for maintaining state of the network connection.
 pub(crate) struct InterfaceHolder<'a, TcpStack: TcpClientStack> {
@@ -115,9 +115,14 @@ where
             })
     }
 
-    pub fn write(&mut self, packet: &[u8]) -> Result<(), Error<TcpStack::Error>> {
-        self.tx_buffer.copy_from_slice(packet);
-        self.commit_write(0, packet.len())
+    pub fn write_multipart(
+        &mut self,
+        head: &[u8],
+        tail: &[u8],
+    ) -> Result<(), Error<TcpStack::Error>> {
+        self.tx_buffer[..head.len()].copy_from_slice(head);
+        self.tx_buffer[head.len()..][..tail.len()].copy_from_slice(tail);
+        self.commit_write(0, head.len() + tail.len())
     }
 
     /// Send an MQTT control packet over the interface.
@@ -133,11 +138,12 @@ where
         assert!(self.pending_write.is_none());
 
         crate::info!("Sending: {:?}", packet);
-        let (offset, packet) = crate::ser::MqttSerializer::to_buffer_meta(self.tx_buffer, packet)?;
+        let (offset, packet) = crate::ser::MqttSerializer::to_buffer_meta(self.tx_buffer, packet)
+            .map_err(ProtocolError::from)?;
         let len = packet.len();
 
         self.commit_write(offset, len)?;
-        Ok(&self.tx_buffer[offset..len])
+        Ok(&self.tx_buffer[offset..][..len])
     }
 
     /// Finish writing an MQTT control packet to the interface if one exists.

@@ -11,6 +11,29 @@ use bit_field::BitField;
 use core::convert::TryFrom;
 use serde::Deserialize;
 
+pub struct Packet<'a> {
+    length: Varint,
+    packet: ReceivedPacket<'a>,
+}
+
+impl<'a> Packet<'a> {
+    pub fn len(&self) -> usize {
+        self.length.len() + 1 + self.length.0 as usize
+    }
+
+    pub fn id(&self) -> Option<u16> {
+        match &self.packet {
+            ReceivedPacket::Publish(info) => info.packet_id,
+            ReceivedPacket::PubAck(ack) => Some(ack.packet_identifier),
+            ReceivedPacket::SubAck(ack) => Some(ack.packet_identifier),
+            ReceivedPacket::PubRel(rel) => Some(rel.packet_id),
+            ReceivedPacket::PubRec(rec) => Some(rec.packet_id),
+            ReceivedPacket::PubComp(comp) => Some(comp.packet_id),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ReceivedPacket<'a> {
     ConnAck(ConnAck<'a>),
@@ -26,14 +49,15 @@ pub enum ReceivedPacket<'a> {
 
 impl<'a> ReceivedPacket<'a> {
     pub fn from_buffer(buf: &'a [u8]) -> Result<Self, ProtocolError> {
-        let mut deserializer = MqttDeserializer::new(buf);
-        let mut packet = ReceivedPacket::deserialize(&mut deserializer)?;
+        let mut deserializer = MqttDeserializer::new(buf, &[]);
+        let mut packet = Packet::deserialize(&mut deserializer)?;
 
-        let remaining_payload = deserializer.remainder();
+        // Remainder should never error because there is no tail data.
+        let remaining_payload = deserializer.remainder().unwrap();
 
         // We should only have remaining payload for publish messages.
         if !remaining_payload.is_empty() {
-            match &mut packet {
+            match &mut packet.packet {
                 ReceivedPacket::Publish(publish) => {
                     publish.payload = remaining_payload;
                 }
@@ -44,6 +68,12 @@ impl<'a> ReceivedPacket<'a> {
             }
         }
 
+        Ok(packet.packet)
+    }
+
+    pub fn from_split_buffer(buf: &'a [u8], tail: &'a [u8]) -> Result<Packet<'a>, ProtocolError> {
+        let mut deserializer = MqttDeserializer::new(buf, tail);
+        let packet = Packet::deserialize(&mut deserializer)?;
         Ok(packet)
     }
 }
@@ -51,7 +81,7 @@ impl<'a> ReceivedPacket<'a> {
 struct ControlPacketVisitor;
 
 impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
-    type Value = ReceivedPacket<'de>;
+    type Value = Packet<'de>;
 
     fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(formatter, "MQTT Control Packet")
@@ -64,7 +94,7 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
         // always providing us some new element or an error that we return based on our
         // deserialization implementation.
         let fixed_header: u8 = seq.next_element()?.unwrap();
-        let _length: Varint = seq.next_element()?.unwrap();
+        let length: Varint = seq.next_element()?.unwrap();
         let packet_type = MessageType::try_from(fixed_header.get_bits(4..=7))
             .map_err(|_| A::Error::custom("Invalid MQTT control packet type"))?;
 
@@ -109,11 +139,11 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
             _ => return Err(A::Error::custom("Unsupported message type")),
         };
 
-        Ok(packet)
+        Ok(Packet { packet, length })
     }
 }
 
-impl<'de> Deserialize<'de> for ReceivedPacket<'de> {
+impl<'de> Deserialize<'de> for Packet<'de> {
     fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Deserialize the (fixed_header, length, control_packet | (topic, packet_id, properties)),
         // which corresponds to a maximum of 5 elements.
@@ -130,7 +160,8 @@ mod test {
     fn deserialize_good_connack() {
         env_logger::init();
         let serialized_connack: [u8; 5] = [
-            0x20, 0x03, // Remaining length = 3 bytes
+            0x20, // ConnAck
+            0x03, // Remaining length = 3 bytes
             0x00, // Connect acknowledge flags - bit 0 clear.
             0x00, // Connect reason code - 0 (Success)
             0x00, // Property length = 0
