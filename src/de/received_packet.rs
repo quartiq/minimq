@@ -49,7 +49,7 @@ pub enum ReceivedPacket<'a> {
 
 impl<'a> ReceivedPacket<'a> {
     pub fn from_buffer(buf: &'a [u8]) -> Result<Self, ProtocolError> {
-        let mut deserializer = MqttDeserializer::new(buf, &[]);
+        let mut deserializer = MqttDeserializer::new(buf);
         let mut packet = Packet::deserialize(&mut deserializer)?;
 
         // Remainder should never error because there is no tail data.
@@ -72,7 +72,7 @@ impl<'a> ReceivedPacket<'a> {
     }
 
     pub fn from_split_buffer(buf: &'a [u8], tail: &'a [u8]) -> Result<Packet<'a>, ProtocolError> {
-        let mut deserializer = MqttDeserializer::new(buf, tail);
+        let mut deserializer = MqttDeserializer::new_split(buf, tail);
         let packet = Packet::deserialize(&mut deserializer)?;
         Ok(packet)
     }

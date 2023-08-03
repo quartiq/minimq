@@ -82,18 +82,28 @@ impl core::fmt::Display for Error {
 
 /// Deserializes a byte buffer into an MQTT control packet.
 pub struct MqttDeserializer<'a> {
-    buf: &'a [u8],
+    head: &'a [u8],
     tail: &'a [u8],
     index: usize,
     next_pending_length: Option<usize>,
 }
 
 impl<'a> MqttDeserializer<'a> {
-    /// Construct a deserializer from a provided data buffer.
-    pub fn new(buf: &'a [u8], tail: &'a [u8]) -> Self {
+    /// Construct a deserializer from a split (non-contiguous) data buffer
+    pub fn new_split(head: &'a [u8], tail: &'a [u8]) -> Self {
         Self {
-            buf,
+            head,
             tail,
+            index: 0,
+            next_pending_length: None,
+        }
+    }
+
+    /// Construct a deserializer from a data buffer
+    pub fn new(buf: &'a [u8]) -> Self {
+        Self {
+            head: buf,
+            tail: &[],
             index: 0,
             next_pending_length: None,
         }
@@ -113,14 +123,14 @@ impl<'a> MqttDeserializer<'a> {
             return Err(Error::InsufficientData);
         }
 
-        let data = if self.index < self.buf.len() {
-            if self.index + n > self.buf.len() {
+        let data = if self.index < self.head.len() {
+            if self.index + n > self.head.len() {
                 return Err(Error::BufferDiscontinuity);
             }
 
-            &self.buf[self.index..self.index + n]
+            &self.head[self.index..self.index + n]
         } else {
-            let index = self.index - self.buf.len();
+            let index = self.index - self.head.len();
             &self.tail[index..index + n]
         };
 
@@ -145,7 +155,7 @@ impl<'a> MqttDeserializer<'a> {
 
     /// Read the number of remaining bytes in the data buffer.
     pub fn len(&self) -> usize {
-        (self.buf.len() + self.tail.len()) - self.index
+        (self.head.len() + self.tail.len()) - self.index
     }
 
     /// Read a variable-length integer from the data buffer.
@@ -163,13 +173,13 @@ impl<'a> MqttDeserializer<'a> {
     /// # Note
     /// This is intended to be used after deserialization has completed.
     pub fn remainder(&self) -> Result<&'a [u8], Error> {
-        if self.index < self.buf.len() {
+        if self.index < self.head.len() {
             if !self.tail.is_empty() {
                 return Err(Error::BufferDiscontinuity);
             }
-            Ok(&self.buf[self.index..])
+            Ok(&self.head[self.index..])
         } else {
-            let index = self.index - self.buf.len();
+            let index = self.index - self.head.len();
             Ok(&self.tail[index..])
         }
     }
