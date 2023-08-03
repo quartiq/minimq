@@ -76,16 +76,18 @@ impl<'a> RepublicationBuffer<'a> {
     }
 
     pub fn pop_pubrel(&mut self, id: u16) -> Result<(), ProtocolError> {
-        // TODO: Enforce that this is at the front of the vector
-        let position = self
-            .pending_pubrel
-            .iter()
-            .position(|(packet_id, _)| id == *packet_id)
-            .ok_or(ProtocolError::Unacknowledged)?;
+        // We always have to pop from the front of the vector to enforce FIFO characteristics.
+        let Some((pending_id, _)) = self.pending_pubrel.get(0) else {
+            return Err(ProtocolError::UnexpectedPacket);
+        };
+
+        if *pending_id != id {
+            return Err(ProtocolError::BadIdentifier);
+        }
 
         // Now that we received the PubComp for this PubRel, we can remove it from our session
         // state. We will not need to retransmit this upon reconnection.
-        self.pending_pubrel.remove(position);
+        self.pending_pubrel.remove(0);
 
         if let Some(index) = self.pubrel_republish_index.take() {
             if index > 1 {
@@ -154,5 +156,9 @@ impl<'a> RepublicationBuffer<'a> {
         }
 
         Ok(false)
+    }
+
+    pub fn is_republishing(&self) -> bool {
+        self.republish_index.is_some() || self.pubrel_republish_index.is_some()
     }
 }

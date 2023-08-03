@@ -390,7 +390,6 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock>
     /// in-bound messages from the server at [QoS::ExactlyOnce] and out-bound messages at
     /// [QoS::AtLeastOnce] or [QoS::ExactlyOnce].
     pub fn pending_messages(&self) -> bool {
-        // TODO: What about pending publications in the network manager?
         self.sm.context().session_state.handshakes_pending()
     }
 
@@ -408,7 +407,10 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock>
             return false;
         }
 
-        // TODO: If we are still republishing, indicate that we cannot publish.
+        // If we are still republishing, indicate that we cannot publish.
+        if self.sm.context().session_state.repub.is_republishing() {
+            return false;
+        }
 
         // If the server cannot handle another message with this quality of service, we can't send
         // one.
@@ -435,7 +437,6 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock>
             return Ok(());
         }
 
-        // TODO: If we're still republishing after reconnection, reject the publication.
         if !self.can_publish(publish.qos) {
             return Err(Error::NotReady);
         }

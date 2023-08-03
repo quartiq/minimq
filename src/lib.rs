@@ -135,6 +135,7 @@ pub enum Retain {
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ProtocolError {
     ProvidedClientIdTooLong,
+    UnexpectedPacket,
     InvalidProperty,
     MalformedPacket,
     BufferSize,

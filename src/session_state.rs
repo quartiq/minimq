@@ -9,7 +9,7 @@ use heapless::{String, Vec};
 
 pub(crate) struct SessionState<'a> {
     pub(crate) client_id: String<64>,
-    repub: RepublicationBuffer<'a>,
+    pub(crate) repub: RepublicationBuffer<'a>,
 
     /// Represents a list of packet_ids current in use by the server for Publish packets with
     /// QoS::ExactlyOnce
