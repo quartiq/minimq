@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 //! # MiniMQ
 //! Provides a minimal MQTTv5 client and message parsing for the MQTT version 5 protocol.
 //!

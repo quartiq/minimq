@@ -1,13 +1,18 @@
 use crate::packets::PubRel;
 use crate::Error;
 use crate::{
-    network_manager::InterfaceHolder, reason_codes::ReasonCode, ring_buffer::RingBuffer,
-    ProtocolError,
+    de::received_packet::ReceivedPacket, network_manager::InterfaceHolder,
+    reason_codes::ReasonCode, ring_buffer::RingBuffer, ProtocolError,
 };
 use core::convert::TryInto;
 use heapless::Deque;
 
 use embedded_nal::TcpClientStack;
+
+pub(crate) struct MqttHeader {
+    pub len: usize,
+    pub packet_id: u16,
+}
 
 pub(crate) struct RepublicationBuffer<'a> {
     publish_buffer: RingBuffer<'a>,
@@ -21,7 +26,7 @@ impl<'a> RepublicationBuffer<'a> {
     pub fn new(buf: &'a mut [u8], max_tx_size: usize) -> Self {
         Self {
             publish_buffer: RingBuffer::new(buf),
-            pending_pubrel: Vec::new(),
+            pending_pubrel: Deque::new(),
             republish_index: None,
             pubrel_republish_index: None,
             max_tx_size,
@@ -49,11 +54,40 @@ impl<'a> RepublicationBuffer<'a> {
         }
     }
 
-    pub fn pop_publish(&mut self, id: u16) -> Result<(), ProtocolError> {
-        let (_, header) = self
+    fn probe_header(&mut self, index: usize) -> Option<(usize, MqttHeader)> {
+        let mut offset = 0;
+
+        if index > 0 {
+            for _ in 0..index - 1 {
+                let (head, tail) = self
+                    .publish_buffer
+                    .slices_mut(offset, self.publish_buffer.len() - offset);
+                let Ok(packet) = ReceivedPacket::from_split_buffer(head, tail) else {
+                    return None;
+                };
+
+                offset += packet.len();
+            }
+        }
+
+        let (head, tail) = self
             .publish_buffer
-            .probe_header(0)
-            .ok_or(ProtocolError::BadIdentifier)?;
+            .slices_mut(offset, self.publish_buffer.len() - offset);
+        let Ok(packet) = ReceivedPacket::from_split_buffer(head, tail) else {
+            return None;
+        };
+
+        Some((
+            offset,
+            MqttHeader {
+                len: packet.len(),
+                packet_id: packet.id().unwrap(),
+            },
+        ))
+    }
+
+    pub fn pop_publish(&mut self, id: u16) -> Result<(), ProtocolError> {
+        let (_, header) = self.probe_header(0).ok_or(ProtocolError::BadIdentifier)?;
         if header.packet_id != id {
             return Err(ProtocolError::BadIdentifier);
         }
@@ -78,7 +112,7 @@ impl<'a> RepublicationBuffer<'a> {
 
     pub fn pop_pubrel(&mut self, id: u16) -> Result<(), ProtocolError> {
         // We always have to pop from the front of the vector to enforce FIFO characteristics.
-        let Some((pending_id, _)) = self.pending_pubrel.get(0) else {
+        let Some((pending_id, _)) = self.pending_pubrel.front() else {
             return Err(ProtocolError::UnexpectedPacket);
         };
 
@@ -122,8 +156,8 @@ impl<'a> RepublicationBuffer<'a> {
         net: &mut InterfaceHolder<'_, T>,
     ) -> Result<bool, Error<T::Error>> {
         // Finish off any pending pubrels
-        if let Some(index) = &self.pubrel_republish_index {
-            let (packet_id, code) = self.pending_pubrel.iter().nth(*index).unwrap();
+        if let Some(index) = self.pubrel_republish_index {
+            let (packet_id, code) = self.pending_pubrel.iter().nth(index).unwrap();
             let pubrel = PubRel {
                 packet_id: *packet_id,
                 reason: (*code).into(),
@@ -140,10 +174,13 @@ impl<'a> RepublicationBuffer<'a> {
             return Ok(true);
         }
 
-        if let Some(index) = &self.republish_index {
-            let (offset, header) = self.publish_buffer.probe_header(*index).unwrap();
+        if let Some(index) = self.republish_index {
+            let (offset, header) = self.probe_header(index).unwrap();
 
-            let (head, tail) = self.publish_buffer.slices(offset, header.len);
+            let (head, tail) = self.publish_buffer.slices_mut(offset, header.len);
+
+            // Set the dup flag on the republication
+            head[0] |= 1 << 3;
 
             net.write_multipart(head, tail)?;
 
