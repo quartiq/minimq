@@ -57,33 +57,29 @@ impl<'a> RepublicationBuffer<'a> {
     fn probe_header(&mut self, index: usize) -> Option<(usize, MqttHeader)> {
         let mut offset = 0;
 
-        if index > 0 {
-            for _ in 0..index - 1 {
-                let (head, tail) = self
-                    .publish_buffer
-                    .slices_mut(offset, self.publish_buffer.len() - offset);
-                let Ok(packet) = ReceivedPacket::from_split_buffer(head, tail) else {
-                    return None;
-                };
+        for i in 0..index + 1 {
+            let (head, tail) = self
+                .publish_buffer
+                .slices_mut(offset, self.publish_buffer.len() - offset);
 
-                offset += packet.len();
+            let Ok(packet) = ReceivedPacket::from_split_buffer(head, tail) else {
+                return None;
+            };
+
+            if i == index {
+                return Some((
+                    offset,
+                    MqttHeader {
+                        len: packet.len(),
+                        packet_id: packet.id().unwrap(),
+                    },
+                ));
             }
+
+            offset += packet.len();
         }
 
-        let (head, tail) = self
-            .publish_buffer
-            .slices_mut(offset, self.publish_buffer.len() - offset);
-        let Ok(packet) = ReceivedPacket::from_split_buffer(head, tail) else {
-            return None;
-        };
-
-        Some((
-            offset,
-            MqttHeader {
-                len: packet.len(),
-                packet_id: packet.id().unwrap(),
-            },
-        ))
+        unreachable!();
     }
 
     pub fn pop_publish(&mut self, id: u16) -> Result<(), ProtocolError> {
