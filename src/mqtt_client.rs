@@ -245,8 +245,8 @@ where
                     self.set_keepalive(keep_alive);
                 }
                 Property::ReceiveMaximum(max) => {
-                    self.send_quota = max;
-                    self.max_send_quota = max;
+                    self.send_quota = max.max(self.session_state.max_send_quota());
+                    self.max_send_quota = max.max(self.session_state.max_send_quota());
                 }
                 _prop => info!("Ignoring property: {:?}", _prop),
             };

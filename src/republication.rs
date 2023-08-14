@@ -4,6 +4,7 @@ use crate::{
     network_manager::InterfaceHolder, reason_codes::ReasonCode, ring_buffer::RingBuffer,
     ProtocolError,
 };
+use core::convert::TryInto;
 use heapless::Vec;
 
 use embedded_nal::TcpClientStack;
@@ -160,5 +161,12 @@ impl<'a> RepublicationBuffer<'a> {
 
     pub fn is_republishing(&self) -> bool {
         self.republish_index.is_some() || self.pubrel_republish_index.is_some()
+    }
+
+    pub fn max_send_quota(&self) -> u16 {
+        self.pending_pubrel
+            .capacity()
+            .try_into()
+            .unwrap_or(u16::MAX)
     }
 }

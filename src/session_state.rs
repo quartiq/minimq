@@ -165,4 +165,8 @@ impl<'a> SessionState<'a> {
     pub fn receive_maximum(&self) -> usize {
         self.pending_server_packet_ids.capacity()
     }
+
+    pub fn max_send_quota(&self) -> u16 {
+        self.repub.max_send_quota()
+    }
 }
