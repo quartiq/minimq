@@ -33,7 +33,6 @@
 //! appropriate.
 //!
 //! Other types are explicitly not implemented and there is no plan to implement them.
-use core::convert::TryInto;
 use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 use varint_rs::VarintReader;
 
@@ -164,6 +163,21 @@ impl<'a> MqttDeserializer<'a> {
         Ok(u16::from_be_bytes([self.pop()?, self.pop()?]))
     }
 
+    /// Read a 16-bit signed integer from the data buffer.
+    pub fn read_i16(&mut self) -> Result<i16, Error> {
+        Ok(i16::from_be_bytes([self.pop()?, self.pop()?]))
+    }
+
+    /// Read a 32-bit integer from the data buffer.
+    pub fn read_u32(&mut self) -> Result<u32, Error> {
+        Ok(u32::from_be_bytes([self.pop()?, self.pop()?, self.pop()?, self.pop()?]))
+    }
+
+    /// Read a 32-bit signed integer from the data buffer.
+    pub fn read_i32(&mut self) -> Result<i32, Error> {
+        Ok(i32::from_be_bytes([self.pop()?, self.pop()?, self.pop()?, self.pop()?]))
+    }
+
     /// Read the number of remaining bytes in the data buffer.
     pub fn len(&self) -> usize {
         (self.head.len() + self.tail.len()) - self.index
@@ -221,11 +235,11 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 
     fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_i16(i16::from_be_bytes(self.try_take_n(2)?.try_into().unwrap()))
+        visitor.visit_i16(self.read_i16()?)
     }
 
     fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_i32(i32::from_be_bytes(self.try_take_n(4)?.try_into().unwrap()))
+        visitor.visit_i32(self.read_i32()?)
     }
 
     fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
@@ -237,7 +251,7 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 
     fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_u32(u32::from_be_bytes(self.try_take_n(4)?.try_into().unwrap()))
+        visitor.visit_u32(self.read_u32()?)
     }
 
     fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
