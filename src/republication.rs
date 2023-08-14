@@ -5,13 +5,13 @@ use crate::{
     ProtocolError,
 };
 use core::convert::TryInto;
-use heapless::Vec;
+use heapless::Deque;
 
 use embedded_nal::TcpClientStack;
 
 pub(crate) struct RepublicationBuffer<'a> {
     publish_buffer: RingBuffer<'a>,
-    pending_pubrel: Vec<(u16, ReasonCode), 10>,
+    pending_pubrel: Deque<(u16, ReasonCode), 10>,
     republish_index: Option<usize>,
     pubrel_republish_index: Option<usize>,
     max_tx_size: usize,
@@ -88,7 +88,7 @@ impl<'a> RepublicationBuffer<'a> {
 
         // Now that we received the PubComp for this PubRel, we can remove it from our session
         // state. We will not need to retransmit this upon reconnection.
-        self.pending_pubrel.remove(0);
+        self.pending_pubrel.pop_front();
 
         if let Some(index) = self.pubrel_republish_index.take() {
             if index > 1 {
@@ -101,7 +101,7 @@ impl<'a> RepublicationBuffer<'a> {
 
     pub fn push_pubrel(&mut self, pubrel: &PubRel) -> Result<(), ProtocolError> {
         self.pending_pubrel
-            .push((pubrel.packet_id, pubrel.reason.code()))
+            .push_back((pubrel.packet_id, pubrel.reason.code()))
             .map_err(|_| ProtocolError::BufferSize)?;
 
         Ok(())
@@ -110,7 +110,7 @@ impl<'a> RepublicationBuffer<'a> {
     pub fn pending_transactions(&self) -> bool {
         // If we have publications or pubrels pending, there's message transactions
         // underway
-        self.publish_buffer.len() > 0 || self.pending_pubrel.len() > 0
+        self.publish_buffer.len() > 0 || !self.pending_pubrel.is_empty()
     }
 
     pub fn can_publish(&self) -> bool {
@@ -123,10 +123,10 @@ impl<'a> RepublicationBuffer<'a> {
     ) -> Result<bool, Error<T::Error>> {
         // Finish off any pending pubrels
         if let Some(index) = &self.pubrel_republish_index {
-            let (packet_id, code) = self.pending_pubrel[*index];
+            let (packet_id, code) = self.pending_pubrel.iter().nth(*index).unwrap();
             let pubrel = PubRel {
-                packet_id,
-                reason: code.into(),
+                packet_id: *packet_id,
+                reason: (*code).into(),
             };
 
             net.send_packet(&pubrel)?;
