@@ -79,7 +79,7 @@ fn main() -> std::io::Result<()> {
 
     // 5. Verify that we finish transmission of our pending message.
     let mut rx_messages = 0;
-    while mqtt.client().pending_messages() && rx_messages == 0 {
+    while mqtt.client().pending_messages() || rx_messages == 0 {
         mqtt.poll(|_client, _topic, _payload, _properties| {
             rx_messages += 1;
         })
