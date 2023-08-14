@@ -170,12 +170,22 @@ impl<'a> MqttDeserializer<'a> {
 
     /// Read a 32-bit integer from the data buffer.
     pub fn read_u32(&mut self) -> Result<u32, Error> {
-        Ok(u32::from_be_bytes([self.pop()?, self.pop()?, self.pop()?, self.pop()?]))
+        Ok(u32::from_be_bytes([
+            self.pop()?,
+            self.pop()?,
+            self.pop()?,
+            self.pop()?,
+        ]))
     }
 
     /// Read a 32-bit signed integer from the data buffer.
     pub fn read_i32(&mut self) -> Result<i32, Error> {
-        Ok(i32::from_be_bytes([self.pop()?, self.pop()?, self.pop()?, self.pop()?]))
+        Ok(i32::from_be_bytes([
+            self.pop()?,
+            self.pop()?,
+            self.pop()?,
+            self.pop()?,
+        ]))
     }
 
     /// Read the number of remaining bytes in the data buffer.
