@@ -86,6 +86,7 @@ pub struct MqttDeserializer<'a> {
     tail: &'a [u8],
     index: usize,
     next_pending_length: Option<usize>,
+    truncate_on_discontinuity: bool,
 }
 
 impl<'a> MqttDeserializer<'a> {
@@ -96,6 +97,7 @@ impl<'a> MqttDeserializer<'a> {
             tail,
             index: 0,
             next_pending_length: None,
+            truncate_on_discontinuity: false,
         }
     }
 
@@ -106,7 +108,12 @@ impl<'a> MqttDeserializer<'a> {
             tail: &[],
             index: 0,
             next_pending_length: None,
+            truncate_on_discontinuity: false,
         }
+    }
+
+    pub fn truncate_on_discontinuity(&mut self) {
+        self.truncate_on_discontinuity = true;
     }
 
     /// Override the next binary bytes read with some pre-determined size.
@@ -125,10 +132,14 @@ impl<'a> MqttDeserializer<'a> {
 
         let data = if self.index < self.head.len() {
             if self.index + n > self.head.len() {
-                return Err(Error::BufferDiscontinuity);
-            }
+                if !self.truncate_on_discontinuity {
+                    return Err(Error::BufferDiscontinuity);
+                }
 
-            &self.head[self.index..self.index + n]
+                &self.head[self.index..]
+            } else {
+                &self.head[self.index..self.index + n]
+            }
         } else {
             let index = self.index - self.head.len();
             &self.tail[index..index + n]
@@ -174,7 +185,7 @@ impl<'a> MqttDeserializer<'a> {
     /// This is intended to be used after deserialization has completed.
     pub fn remainder(&self) -> Result<&'a [u8], Error> {
         if self.index < self.head.len() {
-            if !self.tail.is_empty() {
+            if !self.tail.is_empty() && !self.truncate_on_discontinuity {
                 return Err(Error::BufferDiscontinuity);
             }
             Ok(&self.head[self.index..])

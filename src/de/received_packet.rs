@@ -13,6 +13,9 @@ use serde::Deserialize;
 
 pub struct Packet<'a> {
     length: Varint,
+
+    // Note: If deserialized from a split buffer, the contents of this packet may not be correct.
+    // As such, we do not expose it in the public API.
     packet: ReceivedPacket<'a>,
 }
 
@@ -71,8 +74,16 @@ impl<'a> ReceivedPacket<'a> {
         Ok(packet.packet)
     }
 
+    /// Get a received packet from a split buffer
+    ///
+    /// # Note
+    /// Packets deserialized in this manner may not have valid binary slices. This occurs because
+    /// the binary slice may span the discontinuity, and thus it's impossible to zero-copy it.
+    /// Instead, the resulting binary slice will only contain the maximum amount of continuous
+    /// data.
     pub fn from_split_buffer(buf: &'a [u8], tail: &'a [u8]) -> Result<Packet<'a>, ProtocolError> {
         let mut deserializer = MqttDeserializer::new_split(buf, tail);
+        deserializer.truncate_on_discontinuity();
         let packet = Packet::deserialize(&mut deserializer)?;
         Ok(packet)
     }
@@ -398,6 +409,30 @@ mod test {
             ReceivedPacket::PubRel(rec) => {
                 assert_eq!(rec.packet_id, 5);
                 assert_eq!(rec.reason.code(), ReasonCode::Success);
+            }
+            _ => panic!("Invalid message"),
+        }
+    }
+
+    #[test]
+    fn deserialize_split_pub() {
+        let serialized_publish: [u8; 9] = [
+            0x30, // Publish, no QoS
+            0x05, // Remaining length
+            0x00, 0x03, // Topic length (3)
+            0x41, 0x42, 0x43, // Topic name: 'ABC'
+            0x00, // Properties length (0)
+            0x05, // Payload (0x05)
+        ];
+
+        // Split buffer
+        let packet =
+            ReceivedPacket::from_split_buffer(&serialized_publish[..5], &serialized_publish[5..])
+                .unwrap();
+        match packet.packet {
+            ReceivedPacket::Publish(pub_info) => {
+                // Check that the topic "ABC" was split and truncated.
+                assert_eq!(pub_info.topic.0, "A");
             }
             _ => panic!("Invalid message"),
         }
