@@ -16,6 +16,7 @@ pub(crate) struct MqttHeader {
 
 pub(crate) struct RepublicationBuffer<'a> {
     publish_buffer: RingBuffer<'a>,
+    packet_lengths: Deque<usize, 10>,
     pending_pubrel: Deque<(u16, ReasonCode), 10>,
     republish_index: Option<usize>,
     pubrel_republish_index: Option<usize>,
@@ -27,6 +28,7 @@ impl<'a> RepublicationBuffer<'a> {
         Self {
             publish_buffer: RingBuffer::new(buf),
             pending_pubrel: Deque::new(),
+            packet_lengths: Deque::new(),
             republish_index: None,
             pubrel_republish_index: None,
             max_tx_size,
@@ -38,6 +40,7 @@ impl<'a> RepublicationBuffer<'a> {
         self.pubrel_republish_index.take();
         self.publish_buffer.clear();
         self.pending_pubrel.clear();
+        self.packet_lengths.clear();
     }
 
     pub fn reset(&mut self) {
@@ -55,31 +58,23 @@ impl<'a> RepublicationBuffer<'a> {
     }
 
     fn probe_header(&mut self, index: usize) -> Option<(usize, MqttHeader)> {
-        let mut offset = 0;
+        let offset = self.packet_lengths.iter().take(index).sum();
 
-        for i in 0..index + 1 {
-            let (head, tail) = self
-                .publish_buffer
-                .slices_mut(offset, self.publish_buffer.len() - offset);
+        let (head, tail) = self
+            .publish_buffer
+            .slices_mut(offset, self.publish_buffer.len() - offset);
 
-            let Ok(packet) = ReceivedPacket::from_split_buffer(head, tail) else {
-                return None;
-            };
+        let Ok(packet) = ReceivedPacket::from_split_buffer(head, tail) else {
+            return None;
+        };
 
-            if i == index {
-                return Some((
-                    offset,
-                    MqttHeader {
-                        len: packet.len(),
-                        packet_id: packet.id().unwrap(),
-                    },
-                ));
-            }
-
-            offset += packet.len();
-        }
-
-        unreachable!();
+        Some((
+            offset,
+            MqttHeader {
+                len: packet.len(),
+                packet_id: packet.id().unwrap(),
+            },
+        ))
     }
 
     pub fn pop_publish(&mut self, id: u16) -> Result<(), ProtocolError> {
@@ -102,6 +97,10 @@ impl<'a> RepublicationBuffer<'a> {
         if self.publish_buffer.push_slice(packet).is_some() {
             return Err(ProtocolError::BufferSize);
         }
+
+        self.packet_lengths
+            .push_back(packet.len())
+            .map_err(|_| ProtocolError::BufferSize)?;
 
         Ok(())
     }
@@ -197,8 +196,11 @@ impl<'a> RepublicationBuffer<'a> {
     }
 
     pub fn max_send_quota(&self) -> u16 {
-        self.pending_pubrel
-            .capacity()
+        let pubrel_capacity = self.pending_pubrel.capacity();
+        let publish_length_capacity = self.packet_lengths.capacity();
+
+        pubrel_capacity
+            .min(publish_length_capacity)
             .try_into()
             .unwrap_or(u16::MAX)
     }
