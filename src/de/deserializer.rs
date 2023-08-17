@@ -33,6 +33,7 @@
 //! appropriate.
 //!
 //! Other types are explicitly not implemented and there is no plan to implement them.
+use core::convert::TryInto;
 use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 use varint_rs::VarintReader;
 
@@ -40,9 +41,6 @@ use varint_rs::VarintReader;
 pub enum Error {
     /// A custom deserialization error occurred.
     Custom,
-
-    /// The buffer was discontinuous when requesting a byte sequence.
-    BufferDiscontinuity,
 
     /// An invalid string was encountered, where UTF-8 decoding failed.
     BadString,
@@ -70,7 +68,6 @@ impl core::fmt::Display for Error {
             "{}",
             match self {
                 Error::Custom => "Custom deserialization error",
-                Error::BufferDiscontinuity => "Discontinuous byte sequence encountered",
                 Error::BadString => "Improper UTF-8 string encountered",
                 Error::BadBool => "Bad boolean encountered",
                 Error::InsufficientData => "Not enough data in the packet",
@@ -81,38 +78,19 @@ impl core::fmt::Display for Error {
 
 /// Deserializes a byte buffer into an MQTT control packet.
 pub struct MqttDeserializer<'a> {
-    head: &'a [u8],
-    tail: &'a [u8],
+    buf: &'a [u8],
     index: usize,
     next_pending_length: Option<usize>,
-    truncate_on_discontinuity: bool,
 }
 
 impl<'a> MqttDeserializer<'a> {
-    /// Construct a deserializer from a split (non-contiguous) data buffer
-    pub fn new_split(head: &'a [u8], tail: &'a [u8]) -> Self {
-        Self {
-            head,
-            tail,
-            index: 0,
-            next_pending_length: None,
-            truncate_on_discontinuity: false,
-        }
-    }
-
-    /// Construct a deserializer from a data buffer
+    /// Construct a deserializer from a provided data buffer.
     pub fn new(buf: &'a [u8]) -> Self {
         Self {
-            head: buf,
-            tail: &[],
+            buf,
             index: 0,
             next_pending_length: None,
-            truncate_on_discontinuity: false,
         }
-    }
-
-    pub fn truncate_on_discontinuity(&mut self) {
-        self.truncate_on_discontinuity = true;
     }
 
     /// Override the next binary bytes read with some pre-determined size.
@@ -129,21 +107,7 @@ impl<'a> MqttDeserializer<'a> {
             return Err(Error::InsufficientData);
         }
 
-        let data = if self.index < self.head.len() {
-            if self.index + n > self.head.len() {
-                if !self.truncate_on_discontinuity {
-                    return Err(Error::BufferDiscontinuity);
-                }
-
-                &self.head[self.index..]
-            } else {
-                &self.head[self.index..self.index + n]
-            }
-        } else {
-            let index = self.index - self.head.len();
-            &self.tail[index..index + n]
-        };
-
+        let data = &self.buf[self.index..self.index + n];
         self.index += n;
         Ok(data)
     }
@@ -154,8 +118,9 @@ impl<'a> MqttDeserializer<'a> {
             return Err(Error::InsufficientData);
         }
 
-        let byte = self.try_take_n(1)?;
-        Ok(byte[0])
+        let byte = self.buf[self.index];
+        self.index += 1;
+        Ok(byte)
     }
 
     /// Read a 16-bit integer from the data buffer.
@@ -163,34 +128,9 @@ impl<'a> MqttDeserializer<'a> {
         Ok(u16::from_be_bytes([self.pop()?, self.pop()?]))
     }
 
-    /// Read a 16-bit signed integer from the data buffer.
-    pub fn read_i16(&mut self) -> Result<i16, Error> {
-        Ok(i16::from_be_bytes([self.pop()?, self.pop()?]))
-    }
-
-    /// Read a 32-bit integer from the data buffer.
-    pub fn read_u32(&mut self) -> Result<u32, Error> {
-        Ok(u32::from_be_bytes([
-            self.pop()?,
-            self.pop()?,
-            self.pop()?,
-            self.pop()?,
-        ]))
-    }
-
-    /// Read a 32-bit signed integer from the data buffer.
-    pub fn read_i32(&mut self) -> Result<i32, Error> {
-        Ok(i32::from_be_bytes([
-            self.pop()?,
-            self.pop()?,
-            self.pop()?,
-            self.pop()?,
-        ]))
-    }
-
     /// Read the number of remaining bytes in the data buffer.
     pub fn len(&self) -> usize {
-        (self.head.len() + self.tail.len()) - self.index
+        self.buf.len() - self.index
     }
 
     /// Read a variable-length integer from the data buffer.
@@ -207,16 +147,8 @@ impl<'a> MqttDeserializer<'a> {
     ///
     /// # Note
     /// This is intended to be used after deserialization has completed.
-    pub fn remainder(&self) -> Result<&'a [u8], Error> {
-        if self.index < self.head.len() {
-            if !self.tail.is_empty() && !self.truncate_on_discontinuity {
-                return Err(Error::BufferDiscontinuity);
-            }
-            Ok(&self.head[self.index..])
-        } else {
-            let index = self.index - self.head.len();
-            Ok(&self.tail[index..])
-        }
+    pub fn remainder(&self) -> &'a [u8] {
+        &self.buf[self.index..]
     }
 }
 
@@ -245,11 +177,11 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 
     fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_i16(self.read_i16()?)
+        visitor.visit_i16(i16::from_be_bytes(self.try_take_n(2)?.try_into().unwrap()))
     }
 
     fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_i32(self.read_i32()?)
+        visitor.visit_i32(i32::from_be_bytes(self.try_take_n(4)?.try_into().unwrap()))
     }
 
     fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
@@ -261,7 +193,7 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
     }
 
     fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_u32(self.read_u32()?)
+        visitor.visit_u32(u32::from_be_bytes(self.try_take_n(4)?.try_into().unwrap()))
     }
 
     fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {

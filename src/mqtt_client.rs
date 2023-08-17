@@ -453,9 +453,11 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock>
 
         let packet = self.network.send_packet(&publish)?;
 
-        if publish.packet_id.is_some() {
+        if let Some(id) = publish.packet_id {
             let context = self.sm.context_mut();
-            context.session_state.handle_publish(publish.qos, packet)?;
+            context
+                .session_state
+                .handle_publish(publish.qos, id, packet)?;
             context.send_quota = context.send_quota.checked_sub(1).unwrap();
         }
 

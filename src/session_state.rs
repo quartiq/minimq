@@ -56,13 +56,18 @@ impl<'a> SessionState<'a> {
     }
 
     /// Called when publish with QoS > 0 is called so that we can keep track of acknowledgement.
-    pub fn handle_publish(&mut self, qos: QoS, packet: &[u8]) -> Result<(), ProtocolError> {
+    pub fn handle_publish(
+        &mut self,
+        qos: QoS,
+        id: u16,
+        packet: &[u8],
+    ) -> Result<(), ProtocolError> {
         // QoS::AtMostOnce requires no additional state tracking.
         if qos == QoS::AtMostOnce {
             return Ok(());
         }
 
-        self.repub.push_publish(packet)?;
+        self.repub.push_publish(id, packet)?;
 
         Ok(())
     }
