@@ -4,7 +4,7 @@ use crate::{
     packets::{ConnAck, Connect, PingReq, Pub, PubAck, PubRel, SubAck, Subscribe},
     reason_codes::ReasonCode,
     session_state::SessionState,
-    types::{Properties, TopicFilter, Utf8String},
+    types::{Properties, TopicFilter, Utf8String, Auth},
     will::Will,
     Error, Property, ProtocolError, QoS, Retain, MQTT_INSECURE_DEFAULT_PORT,
     {debug, error, info, warn},
@@ -168,6 +168,7 @@ pub struct MqttClient<
     sm: sm::StateMachine<ClientContext<TcpStack, Clock, MSG_SIZE, MSG_COUNT>>,
     network: InterfaceHolder<TcpStack, MSG_SIZE>,
     will: Option<Will<MSG_SIZE>>,
+    auth: Option<Auth>,
     broker: SocketAddr,
 }
 
@@ -199,6 +200,24 @@ impl<
         will.qos(qos);
 
         self.will.replace(will);
+        Ok(())
+    }
+
+    /// Specify the authentication message used by the server.
+    ///
+    /// # Args
+    /// * `user_name` - The user name
+    /// * `password` - The password
+    pub fn set_auth(
+        &mut self,
+        user_name: &str,
+        password: &str,
+    ) -> Result<(), Error<TcpStack::Error>> {
+        let auth = Auth { 
+            user_name: String::from_str(user_name).or(Err(Error::ProvidedClientIdTooLong))?, 
+            password: String::from_str(password).or(Err(Error::ProvidedClientIdTooLong))?, 
+        };
+        self.auth = Some(auth);
         Ok(())
     }
 
@@ -390,6 +409,7 @@ impl<
             keep_alive: self.sm.context().session_state.keepalive_interval(),
             properties: Properties::Slice(&properties),
             client_id: Utf8String(self.sm.context().session_state.client_id.as_str()),
+            auth: self.auth.as_ref(),
             will: self.will.as_ref(),
             clean_start: !self.sm.context().session_state.is_present(),
         })?;
@@ -602,6 +622,7 @@ impl<
             client: MqttClient {
                 sm: StateMachine::new(ClientContext { session_state }),
                 broker: SocketAddr::new(broker, MQTT_INSECURE_DEFAULT_PORT),
+                auth: None,
                 will: None,
                 network: InterfaceHolder::new(network_stack),
             },
