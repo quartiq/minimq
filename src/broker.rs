@@ -1,18 +1,30 @@
 use crate::{warn, MQTT_INSECURE_DEFAULT_PORT};
 use embedded_nal::{nb, AddrType, Dns, IpAddr, Ipv4Addr, SocketAddr};
 
+/// A type that allows us to (eventually) determine the broker address.
 pub trait Broker {
+    /// Retrieve the broker address (if available).
     fn get_address(&mut self) -> Option<SocketAddr>;
+
+    /// Set the port of the broker connection.
     fn set_port(&mut self, port: u16);
 }
 
-pub struct NamedBroker<R: Dns> {
-    raw: &'static str,
+/// A broker that is specified using a qualified domain-name. The name will be resolved at some
+/// point in the future.
+pub struct NamedBroker<'a, R: Dns> {
+    raw: &'a str,
     resolver: R,
     addr: SocketAddr,
 }
 
-impl<R: Dns> NamedBroker<R> {
+impl<R: Dns> NamedBroker<'_, R> {
+    /// Construct a new named broker.
+    ///
+    /// # Args
+    /// * `broker` - The domain name of the broker, such as `broker.example.com`
+    /// * `resolver` - A [embedded_nal::Dns] resolver to resolve the broker domain name to an IP
+    /// address.
     pub fn new(broker: &'static str, resolver: R) -> Self {
         let addr: Ipv4Addr = broker.parse().unwrap_or(Ipv4Addr::UNSPECIFIED);
 
@@ -24,7 +36,7 @@ impl<R: Dns> NamedBroker<R> {
     }
 }
 
-impl<R: Dns> Broker for NamedBroker<R> {
+impl<R: Dns> Broker for NamedBroker<'_, R> {
     fn get_address(&mut self) -> Option<SocketAddr> {
         // Attempt to resolve the address.
         if self.addr.ip().is_unspecified() {
@@ -49,11 +61,13 @@ impl<R: Dns> Broker for NamedBroker<R> {
     }
 }
 
+/// A simple broker specification where the address of the broker is known in advance.
 pub struct IpBroker {
     addr: SocketAddr,
 }
 
 impl IpBroker {
+    /// Construct a broker with a known IP address.
     pub fn new(broker: IpAddr) -> Self {
         Self {
             addr: SocketAddr::new(broker, MQTT_INSECURE_DEFAULT_PORT),
