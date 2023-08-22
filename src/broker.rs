@@ -27,7 +27,7 @@ impl<R: Dns> NamedBroker<R> {
 impl<R: Dns> Broker for NamedBroker<R> {
     fn get_address(&mut self) -> Option<SocketAddr> {
         // Attempt to resolve the address.
-        if !self.addr.ip().is_unspecified() {
+        if self.addr.ip().is_unspecified() {
             match self.resolver.get_host_by_name(self.raw, AddrType::IPv4) {
                 Ok(ip) => self.addr.set_ip(ip),
                 Err(nb::Error::WouldBlock) => {}
