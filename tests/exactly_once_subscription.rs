@@ -15,7 +15,7 @@ fn main() -> std::io::Result<()> {
     let mut session = [0u8; 256];
     let stack = std_embedded_nal::Stack::default();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let mut mqtt = Minimq::new(
+    let mut mqtt: Minimq<'_, _, _, minimq::broker::IpBroker> = Minimq::new(
         localhost,
         "",
         stack,
