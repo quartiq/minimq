@@ -740,7 +740,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     /// A `Minimq` object that can be used for publishing messages, subscribing to topics, and
     /// managing the MQTT state.
     pub fn new(
-        broker: impl Into<Broker>,
+        broker: Broker,
         client_id: &str,
         network_stack: TcpStack,
         clock: Clock,
@@ -755,7 +755,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
         let minimq = Minimq {
             client: MqttClient {
                 sm: StateMachine::new(ClientContext::new(clock, session_state)),
-                broker: broker.into(),
+                broker,
                 will: None,
                 network: InterfaceHolder::new(network_stack, tx_buffer),
                 max_packet_size: rx_buffer.len(),
