@@ -12,35 +12,35 @@ pub trait Broker {
 
 /// A broker that is specified using a qualified domain-name. The name will be resolved at some
 /// point in the future.
-pub struct NamedBroker<'a, R: Dns> {
-    raw: &'a str,
+pub struct NamedBroker<R: Dns, const T: usize = 255> {
+    raw: heapless::String<T>,
     resolver: R,
     addr: SocketAddr,
 }
 
-impl<R: Dns> NamedBroker<'_, R> {
+impl<R: Dns, const T: usize> NamedBroker<R, T> {
     /// Construct a new named broker.
     ///
     /// # Args
     /// * `broker` - The domain name of the broker, such as `broker.example.com`
     /// * `resolver` - A [embedded_nal::Dns] resolver to resolve the broker domain name to an IP
     /// address.
-    pub fn new(broker: &'static str, resolver: R) -> Self {
+    pub fn new(broker: &str, resolver: R) -> Self {
         let addr: Ipv4Addr = broker.parse().unwrap_or(Ipv4Addr::UNSPECIFIED);
 
         Self {
-            raw: broker,
+            raw: heapless::String::from(broker),
             resolver,
             addr: SocketAddr::new(IpAddr::V4(addr), MQTT_INSECURE_DEFAULT_PORT),
         }
     }
 }
 
-impl<R: Dns> Broker for NamedBroker<'_, R> {
+impl<R: Dns, const T: usize> Broker for NamedBroker<R, T> {
     fn get_address(&mut self) -> Option<SocketAddr> {
         // Attempt to resolve the address.
         if self.addr.ip().is_unspecified() {
-            match self.resolver.get_host_by_name(self.raw, AddrType::IPv4) {
+            match self.resolver.get_host_by_name(&self.raw, AddrType::IPv4) {
                 Ok(ip) => self.addr.set_ip(ip),
                 Err(nb::Error::WouldBlock) => {}
                 Err(_other) => {
