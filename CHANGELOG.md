@@ -10,6 +10,7 @@ This document describes the changes to Minimq between releases.
 
 ## Added
 * Support for subscribing at `QoS::ExactlyOnce`
+* Support for downgrading the `QoS` to the maximum permitted by the server
 
 ## Fixed
 * Fixed an issue where PubComp was serialized with an incorrect control code
