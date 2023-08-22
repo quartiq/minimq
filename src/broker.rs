@@ -1,4 +1,4 @@
-use crate::MQTT_INSECURE_DEFAULT_PORT;
+use crate::{warn, MQTT_INSECURE_DEFAULT_PORT};
 use embedded_nal::{nb, AddrType, Dns, IpAddr, Ipv4Addr, SocketAddr};
 
 pub trait Broker {
@@ -31,8 +31,8 @@ impl<R: Dns> Broker for NamedBroker<R> {
             match self.resolver.get_host_by_name(self.raw, AddrType::IPv4) {
                 Ok(ip) => self.addr.set_ip(ip),
                 Err(nb::Error::WouldBlock) => {}
-                other => {
-                    other.unwrap();
+                Err(_other) => {
+                    warn!("DNS lookup failed: {_other:?}")
                 }
             }
         }
