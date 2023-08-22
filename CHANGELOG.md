@@ -10,6 +10,7 @@ This document describes the changes to Minimq between releases.
 
 ## Added
 * Support for subscribing at `QoS::ExactlyOnce`
+* Brokers may now be provided using domain-name syntax or static IP addresses.
 
 ## Fixed
 * Fixed an issue where PubComp was serialized with an incorrect control code

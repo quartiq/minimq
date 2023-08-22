@@ -6,8 +6,7 @@ use crate::{
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
     will::Will,
-    Error, MinimqError, Property, ProtocolError, QoS, MQTT_INSECURE_DEFAULT_PORT,
-    {debug, error, info, warn},
+    Error, MinimqError, Property, ProtocolError, QoS, {debug, error, info, warn},
 };
 
 use core::convert::TryInto;
@@ -16,7 +15,7 @@ use embedded_time::{
     Instant,
 };
 
-use embedded_nal::{IpAddr, SocketAddr, TcpClientStack};
+use embedded_nal::TcpClientStack;
 
 use heapless::String;
 
@@ -268,16 +267,21 @@ impl<E> From<sm::Error<MinimqError>> for Error<E> {
 }
 
 /// The client that can be used for interacting with the MQTT broker.
-pub struct MqttClient<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock> {
+pub struct MqttClient<
+    'buf,
+    TcpStack: TcpClientStack,
+    Clock: embedded_time::Clock,
+    Broker: crate::Broker,
+> {
     sm: sm::StateMachine<ClientContext<'buf, Clock>>,
     network: InterfaceHolder<'buf, TcpStack>,
     will: Option<Will<'buf>>,
-    broker: SocketAddr,
+    broker: Broker,
     max_packet_size: usize,
 }
 
-impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock>
-    MqttClient<'buf, TcpStack, Clock>
+impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate::Broker>
+    MqttClient<'buf, TcpStack, Clock, Broker>
 {
     /// Specify the Will message to be sent if the client disconnects.
     ///
@@ -538,9 +542,11 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock>
 
         match *self.sm.state() {
             States::Disconnected => {
-                if self.network.connect(self.broker)? {
-                    info!("TCP socket connected");
-                    self.sm.process_event(Events::TcpConnected)?;
+                if let Some(broker) = self.broker.get_address() {
+                    if self.network.connect(broker)? {
+                        info!("TCP socket connected");
+                        self.sm.process_event(Events::TcpConnected)?;
+                    }
                 }
             }
             States::Restart => self.handle_restart()?,
@@ -557,7 +563,12 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock>
         f: &mut F,
     ) -> Result<Option<T>, Error<TcpStack::Error>>
     where
-        F: FnMut(&mut MqttClient<'buf, TcpStack, Clock>, &'a str, &[u8], &Properties<'a>) -> T,
+        F: FnMut(
+            &mut MqttClient<'buf, TcpStack, Clock, Broker>,
+            &'a str,
+            &[u8],
+            &Properties<'a>,
+        ) -> T,
     {
         match control_packet {
             ReceivedPacket::ConnAck(ack) => {
@@ -702,20 +713,24 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock>
 /// # Note
 /// To connect and maintain an MQTT connection, the `Minimq::poll()` method must be called
 /// regularly.
-pub struct Minimq<'buf, TcpStack, Clock>
+pub struct Minimq<'buf, TcpStack, Clock, Broker>
 where
     TcpStack: TcpClientStack,
     Clock: embedded_time::Clock,
+    Broker: crate::Broker,
 {
-    client: MqttClient<'buf, TcpStack, Clock>,
+    client: MqttClient<'buf, TcpStack, Clock, Broker>,
     packet_reader: PacketReader<'buf>,
 }
 
-impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock> Minimq<'buf, TcpStack, Clock> {
+impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate::Broker>
+    Minimq<'buf, TcpStack, Clock, Broker>
+{
     /// Construct a new MQTT interface.
     ///
     /// # Args
-    /// * `broker` - The IP address of the broker to connect to.
+    /// * `broker` - The broker to connect to. See [crate::broker::NamedBroker] and
+    /// [crate::broker::IpBroker].
     /// * `client_id` The client ID to use for communicating with the broker. If empty, rely on the
     ///   broker to automatically assign a client ID.
     /// * `network_stack` - The network stack to use for communication.
@@ -725,7 +740,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock> Minimq<'buf, T
     /// A `Minimq` object that can be used for publishing messages, subscribing to topics, and
     /// managing the MQTT state.
     pub fn new(
-        broker: IpAddr,
+        broker: Broker,
         client_id: &str,
         network_stack: TcpStack,
         clock: Clock,
@@ -740,7 +755,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock> Minimq<'buf, T
         let minimq = Minimq {
             client: MqttClient {
                 sm: StateMachine::new(ClientContext::new(clock, session_state)),
-                broker: SocketAddr::new(broker, MQTT_INSECURE_DEFAULT_PORT),
+                broker,
                 will: None,
                 network: InterfaceHolder::new(network_stack, tx_buffer),
                 max_packet_size: rx_buffer.len(),
@@ -773,8 +788,12 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock> Minimq<'buf, T
     /// subscriptions or session state.
     pub fn poll<F, T>(&mut self, mut f: F) -> Result<Option<T>, Error<TcpStack::Error>>
     where
-        for<'a> F:
-            FnMut(&mut MqttClient<'buf, TcpStack, Clock>, &'a str, &[u8], &Properties<'a>) -> T,
+        for<'a> F: FnMut(
+            &mut MqttClient<'buf, TcpStack, Clock, Broker>,
+            &'a str,
+            &[u8],
+            &Properties<'a>,
+        ) -> T,
     {
         self.client.update()?;
 
@@ -822,7 +841,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock> Minimq<'buf, T
     }
 
     /// Directly access the MQTT client.
-    pub fn client(&mut self) -> &mut MqttClient<'buf, TcpStack, Clock> {
+    pub fn client(&mut self) -> &mut MqttClient<'buf, TcpStack, Clock, Broker> {
         &mut self.client
     }
 }
