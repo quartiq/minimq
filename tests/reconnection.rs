@@ -19,7 +19,7 @@ fn main() -> std::io::Result<()> {
     let stack = stack::MitmStack::new(&sockets);
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
     let mut mqtt: Minimq<'_, _, _, minimq::broker::IpBroker> = Minimq::new(
-        localhost,
+        localhost.into(),
         "",
         stack,
         StandardClock::default(),

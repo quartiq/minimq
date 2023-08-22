@@ -35,7 +35,7 @@
 //! let mut session = [0; 256];
 //! let localhost: embedded_nal::IpAddr = "127.0.0.1".parse().unwrap();
 //! let mut mqtt: Minimq<'_, _, _, minimq::broker::IpBroker> = Minimq::new(
-//!         localhost,
+//!         localhost.into(),
 //!         "test",
 //!         std_embedded_nal::Stack::default(),
 //!         std_embedded_time::StandardClock::default(),
