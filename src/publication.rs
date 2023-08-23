@@ -5,6 +5,47 @@ use crate::{
     ProtocolError, QoS, Retain,
 };
 
+pub trait ToPayload {
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ProtocolError>;
+}
+
+impl<'a> ToPayload for &'a [u8] {
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ProtocolError> {
+        if buffer.len() < self.len() {
+            return Err(ProtocolError::BufferSize);
+        }
+        buffer[..self.len()].copy_from_slice(self);
+        Ok(self.len())
+    }
+}
+
+impl<const N: usize> ToPayload for [u8; N] {
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ProtocolError> {
+        (&self[..]).serialize(buffer)
+    }
+}
+impl<const N: usize> ToPayload for &[u8; N] {
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ProtocolError> {
+        (&self[..]).serialize(buffer)
+    }
+}
+
+pub struct DeferedPayload<F: Fn(&mut [u8]) -> Result<usize, ProtocolError>> {
+    func: F,
+}
+
+impl<F: Fn(&mut [u8]) -> Result<usize, ProtocolError>> DeferedPayload<F> {
+    pub fn new(func: F) -> Self {
+        Self { func }
+    }
+}
+
+impl<F: Fn(&mut [u8]) -> Result<usize, ProtocolError>> ToPayload for DeferedPayload<F> {
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ProtocolError> {
+        (self.func)(buffer)
+    }
+}
+
 /// Builder pattern for generating MQTT publications.
 ///
 /// # Note
@@ -17,17 +58,17 @@ use crate::{
 /// It is expected that the user provide a topic either by directly specifying a publication topic
 /// in [Publication::topic], or by parsing a topic from the [Property::ResponseTopic] property
 /// contained within received properties by using the [Publication::reply] API.
-pub struct Publication<'a> {
+pub struct Publication<'a, P: ToPayload> {
     topic: Option<&'a str>,
     properties: Properties<'a>,
     qos: QoS,
-    payload: &'a [u8],
+    payload: P,
     retain: Retain,
 }
 
-impl<'a> Publication<'a> {
+impl<'a, P: ToPayload> Publication<'a, P> {
     /// Construct a new publication with a payload.
-    pub fn new(payload: &'a [u8]) -> Self {
+    pub fn new(payload: P) -> Self {
         Self {
             payload,
             qos: QoS::AtMostOnce,
@@ -121,7 +162,7 @@ impl<'a> Publication<'a> {
     /// # Returns
     /// The message to be published if a publication topic was specified. If no publication topic
     /// was identified, an error is returned.
-    pub fn finish(self) -> Result<Pub<'a>, ProtocolError> {
+    pub fn finish(self) -> Result<Pub<'a, P>, ProtocolError> {
         Ok(Pub {
             topic: Utf8String(self.topic.ok_or(ProtocolError::NoTopic)?),
             properties: self.properties,

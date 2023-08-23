@@ -75,7 +75,7 @@ pub struct ConnAck<'a> {
 
 /// An MQTT PUBLISH packet, containing data to be sent or received.
 #[derive(Debug, Serialize)]
-pub struct Pub<'a> {
+pub struct Pub<'a, P: crate::publication::ToPayload> {
     /// The topic that the message was received on.
     pub topic: Utf8String<'a>,
 
@@ -86,7 +86,8 @@ pub struct Pub<'a> {
     pub properties: Properties<'a>,
 
     /// The message to be transmitted.
-    pub payload: &'a [u8],
+    #[serde(skip)]
+    pub payload: P,
 
     /// Specifies whether or not the message should be retained on the broker.
     #[serde(skip)]
@@ -256,7 +257,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -283,7 +284,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -335,7 +336,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -367,7 +368,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
