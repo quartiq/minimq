@@ -23,7 +23,7 @@
 //! Below is a sample snippet showing how this library is used.
 //!
 //! ```no_run
-//! use minimq::{Minimq, Publication};
+//! use minimq::{Config, Minimq, Publication};
 //!
 //! // Construct an MQTT client with a maximum packet size of 256 bytes
 //! // and a maximum of 16 messages that are allowed to be "in flight".
@@ -36,12 +36,12 @@
 //! let localhost: embedded_nal::IpAddr = "127.0.0.1".parse().unwrap();
 //! let mut mqtt: Minimq<'_, _, _, minimq::broker::IpBroker> = Minimq::new(
 //!         localhost.into(),
-//!         "test",
 //!         std_embedded_nal::Stack::default(),
 //!         std_embedded_time::StandardClock::default(),
-//!         &mut rx_buffer,
-//!         &mut tx_buffer,
-//!         &mut session).unwrap();
+//!         Config::new(&mut rx_buffer, &mut tx_buffer)
+//!             .session_state(&mut session)
+//!             .client_id("test").unwrap(),
+//!         );
 //!
 //! let mut subscribed = false;
 //!
@@ -66,11 +66,8 @@
 //! ```
 
 pub mod broker;
+pub mod config;
 mod de;
-mod ser;
-
-pub use broker::Broker;
-
 mod message_types;
 pub mod mqtt_client;
 mod network_manager;
@@ -80,11 +77,14 @@ pub mod publication;
 mod reason_codes;
 mod republication;
 mod ring_buffer;
+mod ser;
 mod session_state;
 pub mod types;
 mod varint;
 mod will;
 
+pub use broker::Broker;
+pub use config::Config;
 pub use properties::Property;
 pub use publication::Publication;
 pub use reason_codes::ReasonCode;

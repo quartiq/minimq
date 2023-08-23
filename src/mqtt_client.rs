@@ -6,7 +6,7 @@ use crate::{
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
     will::Will,
-    Error, MinimqError, Property, ProtocolError, QoS, {debug, error, info, warn},
+    Config, Error, MinimqError, Property, ProtocolError, QoS, {debug, error, info, warn},
 };
 
 use core::convert::{TryFrom, TryInto};
@@ -174,15 +174,6 @@ where
             .0
             / 1000) as u16
     }
-
-    /// Update the keep-alive interval.
-    ///
-    /// # Args
-    /// * `seconds` - The number of seconds in the keep-alive interval.
-    pub fn set_keepalive(&mut self, seconds: u16) {
-        self.keep_alive_interval
-            .replace(Milliseconds(seconds as u32 * 1000));
-    }
 }
 
 impl<'a, Clock> sm::StateMachineContext for ClientContext<'a, Clock>
@@ -244,7 +235,8 @@ where
                         String::from_str(id.0).or(Err(ProtocolError::ProvidedClientIdTooLong))?;
                 }
                 Property::ServerKeepAlive(keep_alive) => {
-                    self.set_keepalive(keep_alive);
+                    self.keep_alive_interval
+                        .replace(Milliseconds(keep_alive as u32 * 1000));
                 }
                 Property::ReceiveMaximum(max) => {
                     self.send_quota = max.max(self.session_state.max_send_quota());
@@ -290,55 +282,6 @@ pub struct MqttClient<
 impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate::Broker>
     MqttClient<'buf, TcpStack, Clock, Broker>
 {
-    /// Specify the Will message to be sent if the client disconnects.
-    ///
-    /// # Args
-    /// * `will` - The will to use.
-    pub fn set_will(&mut self, will: Will<'buf>) -> Result<(), Error<TcpStack::Error>> {
-        self.will.replace(will);
-        Ok(())
-    }
-
-    /// Configure the MQTT keep-alive interval.
-    ///
-    /// # Note
-    /// This must be completed before connecting to a broker.
-    ///
-    /// # Note
-    /// The broker may override the requested keep-alive interval. Any value requested by the
-    /// broker will be used instead.
-    ///
-    /// # Args
-    /// * `interval` - The keep-alive interval in seconds. A ping will be transmitted if no other
-    /// messages are sent within 50% of the keep-alive interval.
-    pub fn set_keepalive_interval(
-        &mut self,
-        interval_seconds: u16,
-    ) -> Result<(), Error<TcpStack::Error>> {
-        if self.sm.state() != &States::Disconnected {
-            return Err(Error::NotReady);
-        }
-
-        self.sm.context_mut().set_keepalive(interval_seconds);
-        Ok(())
-    }
-
-    /// Set custom MQTT port to connect to.
-    ///
-    /// # Note
-    /// This must be completed before connecting to a broker.
-    ///
-    /// # Args
-    /// * `port` - The Port number to connect to.
-    pub fn set_broker_port(&mut self, port: u16) -> Result<(), Error<TcpStack::Error>> {
-        if self.sm.state() != &States::Disconnected {
-            return Err(Error::NotReady);
-        }
-
-        self.broker.set_port(port);
-        Ok(())
-    }
-
     /// Subscribe to a topic.
     ///
     /// # Note
@@ -384,12 +327,6 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     /// True if any subscriptions are waiting for confirmation from the broker.
     pub fn subscriptions_pending(&self) -> bool {
         !self.sm.context().pending_subscriptions.is_empty()
-    }
-
-    /// Specify if publication [QoS] should be automatically downgraded to the maximum supported by
-    /// the server if they exceed the server [QoS] maximum.
-    pub fn autodowngrade_qos(&mut self, enabled: bool) {
-        self.downgrade_qos = enabled;
     }
 
     /// Determine if the client has established a connection with the broker.
@@ -760,30 +697,32 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     /// managing the MQTT state.
     pub fn new(
         broker: Broker,
-        client_id: &str,
         network_stack: TcpStack,
         clock: Clock,
-        rx_buffer: &'buf mut [u8],
-        tx_buffer: &'buf mut [u8],
-        state_buffer: &'buf mut [u8],
-    ) -> Result<Self, Error<TcpStack::Error>> {
-        let client_id =
-            String::from_str(client_id).or(Err(ProtocolError::ProvidedClientIdTooLong))?;
-        let session_state = SessionState::new(client_id, state_buffer, tx_buffer.len());
+        config: Config<'buf>,
+    ) -> Self {
+        let session_state = SessionState::new(
+            config.client_id,
+            config.state_buffer,
+            config.tx_buffer.len(),
+        );
 
-        let minimq = Minimq {
+        let mut client_context = ClientContext::new(clock, session_state);
+        if let Some(keepalive) = config.keepalive_interval {
+            client_context.keep_alive_interval.replace(keepalive);
+        }
+
+        Minimq {
             client: MqttClient {
-                sm: StateMachine::new(ClientContext::new(clock, session_state)),
-                downgrade_qos: false,
+                sm: StateMachine::new(client_context),
+                downgrade_qos: config.downgrade_qos,
                 broker,
-                will: None,
-                network: InterfaceHolder::new(network_stack, tx_buffer),
-                max_packet_size: rx_buffer.len(),
+                will: config.will,
+                network: InterfaceHolder::new(network_stack, config.tx_buffer),
+                max_packet_size: config.rx_buffer.len(),
             },
-            packet_reader: PacketReader::new(rx_buffer),
-        };
-
-        Ok(minimq)
+            packet_reader: PacketReader::new(config.rx_buffer),
+        }
     }
 
     /// Check the MQTT interface for available messages.
