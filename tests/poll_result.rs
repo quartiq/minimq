@@ -13,10 +13,9 @@ fn main() -> std::io::Result<()> {
     let stack = std_embedded_nal::Stack::default();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
     let mut mqtt: Minimq<'_, _, _, minimq::broker::IpBroker> = Minimq::new(
-        localhost.into(),
         stack,
         StandardClock::default(),
-        minimq::Config::new(&mut rx_buffer, &mut tx_buffer)
+        minimq::Config::new(localhost.into(), &mut rx_buffer, &mut tx_buffer)
             .session_state(&mut session)
             .keepalive_interval(60),
     );

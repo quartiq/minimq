@@ -4,7 +4,8 @@ use embedded_time::duration::{Extensions, Milliseconds};
 use heapless::String;
 
 /// Configuration specifying the operational state of the MQTT client.
-pub struct Config<'a> {
+pub struct Config<'a, Broker: crate::Broker> {
+    pub(crate) broker: Broker,
     pub(crate) rx_buffer: &'a mut [u8],
     pub(crate) tx_buffer: &'a mut [u8],
     pub(crate) state_buffer: &'a mut [u8],
@@ -14,7 +15,7 @@ pub struct Config<'a> {
     pub(crate) will: Option<Will<'a>>,
 }
 
-impl<'a> Config<'a> {
+impl<'a, Broker: crate::Broker> Config<'a, Broker> {
     /// Construct configuration for the MQTT client.
     ///
     /// # Args
@@ -22,8 +23,9 @@ impl<'a> Config<'a> {
     /// receive packet length.
     /// * `tx` - Memory used for transmitting messages. The length of this buffer is the max
     /// transmit length.
-    pub fn new(rx: &'a mut [u8], tx: &'a mut [u8]) -> Self {
+    pub fn new(broker: Broker, rx: &'a mut [u8], tx: &'a mut [u8]) -> Self {
         Self {
+            broker,
             rx_buffer: rx,
             tx_buffer: tx,
             state_buffer: &mut [],

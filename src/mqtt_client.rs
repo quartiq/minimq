@@ -690,12 +690,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     /// # Returns
     /// A `Minimq` object that can be used for publishing messages, subscribing to topics, and
     /// managing the MQTT state.
-    pub fn new(
-        broker: Broker,
-        network_stack: TcpStack,
-        clock: Clock,
-        config: Config<'buf>,
-    ) -> Self {
+    pub fn new(network_stack: TcpStack, clock: Clock, config: Config<'buf, Broker>) -> Self {
         let session_state = SessionState::new(
             config.client_id,
             config.state_buffer,
@@ -710,7 +705,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
                     config.keepalive_interval,
                 )),
                 downgrade_qos: config.downgrade_qos,
-                broker,
+                broker: config.broker,
                 will: config.will,
                 network: InterfaceHolder::new(network_stack, config.tx_buffer),
                 max_packet_size: config.rx_buffer.len(),
