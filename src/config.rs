@@ -1,6 +1,6 @@
 use crate::{ProtocolError, Will};
 use core::str::FromStr;
-use embedded_time::duration::Milliseconds;
+use embedded_time::duration::{Extensions, Milliseconds};
 use heapless::String;
 
 /// Configuration specifying the operational state of the MQTT client.
@@ -9,7 +9,7 @@ pub struct Config<'a> {
     pub(crate) tx_buffer: &'a mut [u8],
     pub(crate) state_buffer: &'a mut [u8],
     pub(crate) client_id: String<64>,
-    pub(crate) keepalive_interval: Option<Milliseconds<u32>>,
+    pub(crate) keepalive_interval: Milliseconds<u32>,
     pub(crate) downgrade_qos: bool,
     pub(crate) will: Option<Will<'a>>,
 }
@@ -28,7 +28,7 @@ impl<'a> Config<'a> {
             tx_buffer: tx,
             state_buffer: &mut [],
             client_id: String::new(),
-            keepalive_interval: None,
+            keepalive_interval: 59_000.milliseconds(),
             downgrade_qos: false,
             will: None,
         }
@@ -56,8 +56,7 @@ impl<'a> Config<'a> {
     /// * `interval` - The keep-alive interval in seconds. A ping will be transmitted if no other
     /// messages are sent within 50% of the keep-alive interval.
     pub fn keepalive_interval(mut self, seconds: u16) -> Self {
-        self.keepalive_interval
-            .replace(Milliseconds(seconds as u32 * 1000));
+        self.keepalive_interval = Milliseconds(seconds as u32 * 1000);
         self
     }
 

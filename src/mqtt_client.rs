@@ -11,7 +11,7 @@ use crate::{
 
 use core::convert::{TryFrom, TryInto};
 use embedded_time::{
-    duration::{Extensions, Milliseconds, Seconds},
+    duration::{Milliseconds, Seconds},
     Instant,
 };
 
@@ -54,7 +54,7 @@ struct ClientContext<'a, Clock: embedded_time::Clock> {
     send_quota: u16,
     max_send_quota: u16,
     maximum_packet_size: Option<u32>,
-    keep_alive_interval: Option<Milliseconds<u32>>,
+    keep_alive_interval: Milliseconds<u32>,
     pending_subscriptions: heapless::Vec<u16, 32>,
 
     ping_timeout: Option<Instant<Clock>>,
@@ -67,7 +67,11 @@ impl<'a, Clock> ClientContext<'a, Clock>
 where
     Clock: embedded_time::Clock,
 {
-    pub fn new(clock: Clock, session_state: SessionState<'a>) -> Self {
+    pub fn new(
+        clock: Clock,
+        session_state: SessionState<'a>,
+        keepalive: Milliseconds<u32>,
+    ) -> Self {
         Self {
             session_state,
             send_quota: u16::MAX,
@@ -77,7 +81,7 @@ where
             ping_timeout: None,
             next_ping: None,
             max_qos: None,
-            keep_alive_interval: Some(59_000.milliseconds()),
+            keep_alive_interval: keepalive,
             maximum_packet_size: None,
         }
     }
@@ -111,9 +115,8 @@ where
         self.ping_timeout = None;
 
         // The next ping should be sent out in half the keep-alive interval from now.
-        if let Some(interval) = self.keep_alive_interval {
-            self.next_ping.replace(self.clock.try_now()? + interval / 2);
-        }
+        self.next_ping
+            .replace(self.clock.try_now()? + self.keep_alive_interval / 2);
 
         Ok(())
     }
@@ -147,20 +150,17 @@ where
 
         let now = self.clock.try_now()?;
 
-        Ok(self
-            .keep_alive_interval
-            .zip(self.next_ping)
-            .map(|(keep_alive_interval, ping_deadline)| {
-                // Update the next ping deadline if the ping is due.
-                if now > ping_deadline {
-                    // The next ping should be sent out in half the keep-alive interval from now.
-                    self.next_ping.replace(now + keep_alive_interval / 2);
-                    self.ping_timeout.replace(now + PING_TIMEOUT);
-                }
+        let Some(ping_deadline) = self.next_ping else {
+            return Ok(false);
+        };
+        // Update the next ping deadline if the ping is due.
+        if now > ping_deadline {
+            // The next ping should be sent out in half the keep-alive interval from now.
+            self.next_ping.replace(now + self.keep_alive_interval / 2);
+            self.ping_timeout.replace(now + PING_TIMEOUT);
+        }
 
-                now > ping_deadline
-            })
-            .unwrap_or(false))
+        Ok(now > ping_deadline)
     }
 
     /// Get the keep-alive interval as an integer number of seconds.
@@ -168,11 +168,7 @@ where
     /// # Note
     /// If no keep-alive interval is specified, zero is returned.
     pub fn keepalive_interval(&self) -> u16 {
-        (self
-            .keep_alive_interval
-            .unwrap_or_else(|| 0.milliseconds())
-            .0
-            / 1000) as u16
+        (self.keep_alive_interval.0 / 1000) as u16
     }
 }
 
@@ -235,8 +231,7 @@ where
                         String::from_str(id.0).or(Err(ProtocolError::ProvidedClientIdTooLong))?;
                 }
                 Property::ServerKeepAlive(keep_alive) => {
-                    self.keep_alive_interval
-                        .replace(Milliseconds(keep_alive as u32 * 1000));
+                    self.keep_alive_interval = Milliseconds(keep_alive as u32 * 1000);
                 }
                 Property::ReceiveMaximum(max) => {
                     self.send_quota = max.max(self.session_state.max_send_quota());
@@ -707,14 +702,13 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
             config.tx_buffer.len(),
         );
 
-        let mut client_context = ClientContext::new(clock, session_state);
-        if let Some(keepalive) = config.keepalive_interval {
-            client_context.keep_alive_interval.replace(keepalive);
-        }
-
         Minimq {
             client: MqttClient {
-                sm: StateMachine::new(client_context),
+                sm: StateMachine::new(ClientContext::new(
+                    clock,
+                    session_state,
+                    config.keepalive_interval,
+                )),
                 downgrade_qos: config.downgrade_qos,
                 broker,
                 will: config.will,
