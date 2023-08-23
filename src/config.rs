@@ -1,5 +1,5 @@
 use crate::{ProtocolError, Will};
-use core::str::FromStr;
+use core::convert::TryFrom;
 use embedded_time::duration::{Extensions, Milliseconds};
 use heapless::String;
 
@@ -42,7 +42,8 @@ impl<'a> Config<'a> {
 
     /// Specify a known client ID to use. If not assigned, the broker will auto assign an ID.
     pub fn client_id(mut self, id: &str) -> Result<Self, ProtocolError> {
-        self.client_id = String::from_str(id).or(Err(ProtocolError::ProvidedClientIdTooLong))?;
+        self.client_id =
+            String::try_from(id).map_err(|_| ProtocolError::ProvidedClientIdTooLong)?;
         Ok(self)
     }
 
