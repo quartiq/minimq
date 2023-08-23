@@ -10,6 +10,7 @@ This document describes the changes to Minimq between releases.
 
 ## Added
 * Support for subscribing at `QoS::ExactlyOnce`
+* Support for downgrading the `QoS` to the maximum permitted by the server
 * Brokers may now be provided using domain-name syntax or static IP addresses.
 
 ## Fixed

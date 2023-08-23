@@ -9,7 +9,7 @@ use crate::{
     Error, MinimqError, Property, ProtocolError, QoS, {debug, error, info, warn},
 };
 
-use core::convert::TryInto;
+use core::convert::{TryFrom, TryInto};
 use embedded_time::{
     duration::{Extensions, Milliseconds, Seconds},
     Instant,
@@ -59,6 +59,7 @@ struct ClientContext<'a, Clock: embedded_time::Clock> {
 
     ping_timeout: Option<Instant<Clock>>,
     next_ping: Option<Instant<Clock>>,
+    max_qos: Option<QoS>,
     clock: Clock,
 }
 
@@ -75,6 +76,7 @@ where
             clock,
             ping_timeout: None,
             next_ping: None,
+            max_qos: None,
             keep_alive_interval: Some(59_000.milliseconds()),
             maximum_packet_size: None,
         }
@@ -230,6 +232,7 @@ where
         // connection.
         self.send_quota = u16::MAX;
         self.max_send_quota = u16::MAX;
+        self.max_qos = None;
 
         for property in acknowledge.properties.into_iter() {
             match property? {
@@ -246,6 +249,9 @@ where
                 Property::ReceiveMaximum(max) => {
                     self.send_quota = max.max(self.session_state.max_send_quota());
                     self.max_send_quota = max.max(self.session_state.max_send_quota());
+                }
+                Property::MaximumQoS(max) => {
+                    self.max_qos = Some(QoS::try_from(max).map_err(|_| ProtocolError::WrongQos)?);
                 }
                 _prop => info!("Ignoring property: {:?}", _prop),
             };
@@ -276,6 +282,7 @@ pub struct MqttClient<
     sm: sm::StateMachine<ClientContext<'buf, Clock>>,
     network: InterfaceHolder<'buf, TcpStack>,
     will: Option<Will<'buf>>,
+    downgrade_qos: bool,
     broker: Broker,
     max_packet_size: usize,
 }
@@ -379,6 +386,12 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
         !self.sm.context().pending_subscriptions.is_empty()
     }
 
+    /// Specify if publication [QoS] should be automatically downgraded to the maximum supported by
+    /// the server if they exceed the server [QoS] maximum.
+    pub fn autodowngrade_qos(&mut self, enabled: bool) {
+        self.downgrade_qos = enabled;
+    }
+
     /// Determine if the client has established a connection with the broker.
     ///
     /// # Returns
@@ -439,6 +452,12 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
         // If we are not yet connected to the broker, we can't transmit a message.
         if !self.is_connected() {
             return Ok(());
+        }
+
+        if let Some(max) = &self.sm.context().max_qos {
+            if self.downgrade_qos && publish.qos > *max {
+                publish.qos = *max
+            }
         }
 
         if !self.can_publish(publish.qos) {
@@ -755,6 +774,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
         let minimq = Minimq {
             client: MqttClient {
                 sm: StateMachine::new(ClientContext::new(clock, session_state)),
+                downgrade_qos: false,
                 broker,
                 will: None,
                 network: InterfaceHolder::new(network_stack, tx_buffer),
