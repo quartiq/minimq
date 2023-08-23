@@ -19,18 +19,12 @@ fn main() -> std::io::Result<()> {
     let stack = stack::MitmStack::new(&sockets);
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
     let mut mqtt: Minimq<'_, _, _, minimq::broker::IpBroker> = Minimq::new(
-        localhost.into(),
-        "",
         stack,
         StandardClock::default(),
-        &mut rx_buffer,
-        &mut tx_buffer,
-        &mut session,
-    )
-    .unwrap();
-
-    // Use a keepalive interval for the client.
-    mqtt.client().set_keepalive_interval(1).unwrap();
+        minimq::Config::new(localhost.into(), &mut rx_buffer, &mut tx_buffer)
+            .session_state(&mut session)
+            .keepalive_interval(1),
+    );
 
     // 1. Poll until we're connected and subscribed to a test topic
     while !mqtt.client().is_connected() {

@@ -7,6 +7,9 @@ This document describes the changes to Minimq between releases.
 ## Changed
 * [breaking] Const generics for message size and allowable in-flight messages have been removed.
   Instead, the user now supplies an RX buffer, a TX buffer, and a session state buffer.
+ * Setup-only configuration APIs such as `set_will()` and `set_keepalive_interval()` have been moved
+ to a new `Config` structure that is supplied to the `Minimq::new()` constructor to simplify the
+ client.
 
 ## Added
 * Support for subscribing at `QoS::ExactlyOnce`

@@ -7,31 +7,25 @@ use std_embedded_time::StandardClock;
 fn main() -> std::io::Result<()> {
     env_logger::init();
 
+    let will = Will::new("exit", "Test complete".as_bytes(), &[]).unwrap();
+
     let mut rx_buffer = [0u8; 256];
     let mut tx_buffer = [0u8; 256];
     let mut session = [0u8; 256];
     let stack = std_embedded_nal::Stack::default();
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
     let mut mqtt: Minimq<'_, _, _, minimq::broker::IpBroker> = Minimq::new(
-        localhost.into(),
-        "",
         stack,
         StandardClock::default(),
-        &mut rx_buffer,
-        &mut tx_buffer,
-        &mut session,
-    )
-    .unwrap();
-
-    // Use a keepalive interval for the client.
-    mqtt.client().set_keepalive_interval(60).unwrap();
+        minimq::Config::new(localhost.into(), &mut rx_buffer, &mut tx_buffer)
+            .session_state(&mut session)
+            .will(will)
+            .keepalive_interval(60),
+    );
 
     let mut published = false;
     let mut subscribed = false;
     let mut responses = 0;
-
-    let will = Will::new("exit", "Test complete".as_bytes(), &[]).unwrap();
-    mqtt.client().set_will(will).unwrap();
 
     loop {
         // Continually poll the client until there is no more data.

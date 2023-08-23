@@ -6,12 +6,12 @@ use crate::{
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
     will::Will,
-    Error, MinimqError, Property, ProtocolError, QoS, {debug, error, info, warn},
+    Config, Error, MinimqError, Property, ProtocolError, QoS, {debug, error, info, warn},
 };
 
 use core::convert::{TryFrom, TryInto};
 use embedded_time::{
-    duration::{Extensions, Milliseconds, Seconds},
+    duration::{Milliseconds, Seconds},
     Instant,
 };
 
@@ -54,7 +54,7 @@ struct ClientContext<'a, Clock: embedded_time::Clock> {
     send_quota: u16,
     max_send_quota: u16,
     maximum_packet_size: Option<u32>,
-    keep_alive_interval: Option<Milliseconds<u32>>,
+    keep_alive_interval: Milliseconds<u32>,
     pending_subscriptions: heapless::Vec<u16, 32>,
 
     ping_timeout: Option<Instant<Clock>>,
@@ -67,7 +67,11 @@ impl<'a, Clock> ClientContext<'a, Clock>
 where
     Clock: embedded_time::Clock,
 {
-    pub fn new(clock: Clock, session_state: SessionState<'a>) -> Self {
+    pub fn new(
+        clock: Clock,
+        session_state: SessionState<'a>,
+        keepalive: Milliseconds<u32>,
+    ) -> Self {
         Self {
             session_state,
             send_quota: u16::MAX,
@@ -77,7 +81,7 @@ where
             ping_timeout: None,
             next_ping: None,
             max_qos: None,
-            keep_alive_interval: Some(59_000.milliseconds()),
+            keep_alive_interval: keepalive,
             maximum_packet_size: None,
         }
     }
@@ -111,9 +115,8 @@ where
         self.ping_timeout = None;
 
         // The next ping should be sent out in half the keep-alive interval from now.
-        if let Some(interval) = self.keep_alive_interval {
-            self.next_ping.replace(self.clock.try_now()? + interval / 2);
-        }
+        self.next_ping
+            .replace(self.clock.try_now()? + self.keep_alive_interval / 2);
 
         Ok(())
     }
@@ -147,20 +150,17 @@ where
 
         let now = self.clock.try_now()?;
 
-        Ok(self
-            .keep_alive_interval
-            .zip(self.next_ping)
-            .map(|(keep_alive_interval, ping_deadline)| {
-                // Update the next ping deadline if the ping is due.
-                if now > ping_deadline {
-                    // The next ping should be sent out in half the keep-alive interval from now.
-                    self.next_ping.replace(now + keep_alive_interval / 2);
-                    self.ping_timeout.replace(now + PING_TIMEOUT);
-                }
+        let Some(ping_deadline) = self.next_ping else {
+            return Ok(false);
+        };
+        // Update the next ping deadline if the ping is due.
+        if now > ping_deadline {
+            // The next ping should be sent out in half the keep-alive interval from now.
+            self.next_ping.replace(now + self.keep_alive_interval / 2);
+            self.ping_timeout.replace(now + PING_TIMEOUT);
+        }
 
-                now > ping_deadline
-            })
-            .unwrap_or(false))
+        Ok(now > ping_deadline)
     }
 
     /// Get the keep-alive interval as an integer number of seconds.
@@ -168,20 +168,7 @@ where
     /// # Note
     /// If no keep-alive interval is specified, zero is returned.
     pub fn keepalive_interval(&self) -> u16 {
-        (self
-            .keep_alive_interval
-            .unwrap_or_else(|| 0.milliseconds())
-            .0
-            / 1000) as u16
-    }
-
-    /// Update the keep-alive interval.
-    ///
-    /// # Args
-    /// * `seconds` - The number of seconds in the keep-alive interval.
-    pub fn set_keepalive(&mut self, seconds: u16) {
-        self.keep_alive_interval
-            .replace(Milliseconds(seconds as u32 * 1000));
+        (self.keep_alive_interval.0 / 1000) as u16
     }
 }
 
@@ -244,7 +231,7 @@ where
                         String::from_str(id.0).or(Err(ProtocolError::ProvidedClientIdTooLong))?;
                 }
                 Property::ServerKeepAlive(keep_alive) => {
-                    self.set_keepalive(keep_alive);
+                    self.keep_alive_interval = Milliseconds(keep_alive as u32 * 1000);
                 }
                 Property::ReceiveMaximum(max) => {
                     self.send_quota = max.max(self.session_state.max_send_quota());
@@ -290,55 +277,6 @@ pub struct MqttClient<
 impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate::Broker>
     MqttClient<'buf, TcpStack, Clock, Broker>
 {
-    /// Specify the Will message to be sent if the client disconnects.
-    ///
-    /// # Args
-    /// * `will` - The will to use.
-    pub fn set_will(&mut self, will: Will<'buf>) -> Result<(), Error<TcpStack::Error>> {
-        self.will.replace(will);
-        Ok(())
-    }
-
-    /// Configure the MQTT keep-alive interval.
-    ///
-    /// # Note
-    /// This must be completed before connecting to a broker.
-    ///
-    /// # Note
-    /// The broker may override the requested keep-alive interval. Any value requested by the
-    /// broker will be used instead.
-    ///
-    /// # Args
-    /// * `interval` - The keep-alive interval in seconds. A ping will be transmitted if no other
-    /// messages are sent within 50% of the keep-alive interval.
-    pub fn set_keepalive_interval(
-        &mut self,
-        interval_seconds: u16,
-    ) -> Result<(), Error<TcpStack::Error>> {
-        if self.sm.state() != &States::Disconnected {
-            return Err(Error::NotReady);
-        }
-
-        self.sm.context_mut().set_keepalive(interval_seconds);
-        Ok(())
-    }
-
-    /// Set custom MQTT port to connect to.
-    ///
-    /// # Note
-    /// This must be completed before connecting to a broker.
-    ///
-    /// # Args
-    /// * `port` - The Port number to connect to.
-    pub fn set_broker_port(&mut self, port: u16) -> Result<(), Error<TcpStack::Error>> {
-        if self.sm.state() != &States::Disconnected {
-            return Err(Error::NotReady);
-        }
-
-        self.broker.set_port(port);
-        Ok(())
-    }
-
     /// Subscribe to a topic.
     ///
     /// # Note
@@ -384,12 +322,6 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     /// True if any subscriptions are waiting for confirmation from the broker.
     pub fn subscriptions_pending(&self) -> bool {
         !self.sm.context().pending_subscriptions.is_empty()
-    }
-
-    /// Specify if publication [QoS] should be automatically downgraded to the maximum supported by
-    /// the server if they exceed the server [QoS] maximum.
-    pub fn autodowngrade_qos(&mut self, enabled: bool) {
-        self.downgrade_qos = enabled;
     }
 
     /// Determine if the client has established a connection with the broker.
@@ -758,32 +690,28 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     /// # Returns
     /// A `Minimq` object that can be used for publishing messages, subscribing to topics, and
     /// managing the MQTT state.
-    pub fn new(
-        broker: Broker,
-        client_id: &str,
-        network_stack: TcpStack,
-        clock: Clock,
-        rx_buffer: &'buf mut [u8],
-        tx_buffer: &'buf mut [u8],
-        state_buffer: &'buf mut [u8],
-    ) -> Result<Self, Error<TcpStack::Error>> {
-        let client_id =
-            String::from_str(client_id).or(Err(ProtocolError::ProvidedClientIdTooLong))?;
-        let session_state = SessionState::new(client_id, state_buffer, tx_buffer.len());
+    pub fn new(network_stack: TcpStack, clock: Clock, config: Config<'buf, Broker>) -> Self {
+        let session_state = SessionState::new(
+            config.client_id,
+            config.state_buffer,
+            config.tx_buffer.len(),
+        );
 
-        let minimq = Minimq {
+        Minimq {
             client: MqttClient {
-                sm: StateMachine::new(ClientContext::new(clock, session_state)),
-                downgrade_qos: false,
-                broker,
-                will: None,
-                network: InterfaceHolder::new(network_stack, tx_buffer),
-                max_packet_size: rx_buffer.len(),
+                sm: StateMachine::new(ClientContext::new(
+                    clock,
+                    session_state,
+                    config.keepalive_interval,
+                )),
+                downgrade_qos: config.downgrade_qos,
+                broker: config.broker,
+                will: config.will,
+                network: InterfaceHolder::new(network_stack, config.tx_buffer),
+                max_packet_size: config.rx_buffer.len(),
             },
-            packet_reader: PacketReader::new(rx_buffer),
-        };
-
-        Ok(minimq)
+            packet_reader: PacketReader::new(config.rx_buffer),
+        }
     }
 
     /// Check the MQTT interface for available messages.
