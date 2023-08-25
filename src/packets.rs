@@ -1,7 +1,7 @@
 use crate::{
     reason_codes::ReasonCode,
     types::{Properties, TopicFilter, Utf8String},
-    will::Will,
+    will::SerializedWill,
     QoS, Retain,
 };
 use bit_field::BitField;
@@ -23,7 +23,7 @@ pub struct Connect<'a> {
     pub client_id: Utf8String<'a>,
 
     /// An optional will message to be transmitted whenever the connection is lost.
-    pub will: Option<&'a Will<'a>>,
+    pub(crate) will: Option<SerializedWill<'a>>,
 
     /// Specified true there is no session state being taken in to the MQTT connection.
     pub clean_start: bool,
@@ -51,8 +51,7 @@ impl<'a> serde::Serialize for Connect<'a> {
         item.serialize_field("client_id", &self.client_id)?;
 
         if let Some(will) = &self.will {
-            let flattened = will.flatten();
-            item.serialize_field("will", &flattened)?;
+            item.serialize_field("will", will.contents)?;
         }
 
         item.end()
@@ -428,6 +427,7 @@ mod tests {
         ];
 
         let mut buffer: [u8; 900] = [0; 900];
+        let mut will_buff = [0; 64];
         let mut will = crate::will::Will::new("EFG", &[0xAB, 0xCD], &[]).unwrap();
         will.qos(crate::QoS::AtMostOnce);
         will.retained(crate::Retain::NotRetained);
@@ -437,7 +437,7 @@ mod tests {
             keep_alive: 10,
             properties: crate::types::Properties::Slice(&[]),
             client_id: crate::types::Utf8String("ABC"),
-            will: Some(&will),
+            will: Some(will.serialize(&mut will_buff).unwrap()),
         };
 
         let message = MqttSerializer::to_buffer(&mut buffer, &connect).unwrap();

@@ -5,7 +5,7 @@ use crate::{
     reason_codes::ReasonCode,
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
-    will::Will,
+    will::SerializedWill,
     Config, Error, MinimqError, Property, ProtocolError, QoS, {debug, error, info, warn},
 };
 
@@ -268,7 +268,7 @@ pub struct MqttClient<
 > {
     sm: sm::StateMachine<ClientContext<'buf, Clock>>,
     network: InterfaceHolder<'buf, TcpStack>,
-    will: Option<Will<'buf>>,
+    will: Option<SerializedWill<'buf>>,
     downgrade_qos: bool,
     broker: Broker,
     max_packet_size: usize,
@@ -443,7 +443,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
             keep_alive: self.sm.context().keepalive_interval(),
             properties: Properties::Slice(&properties),
             client_id: Utf8String(self.sm.context().session_state.client_id.as_str()),
-            will: self.will.as_ref(),
+            will: self.will,
             clean_start: !self.sm.context().session_state.is_present(),
         })?;
 
@@ -701,6 +701,12 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
             config.tx_buffer.len(),
         );
 
+        let will = if let Some(crate::config::WillState::Serialized(will)) = config.will {
+            Some(will)
+        } else {
+            None
+        };
+
         Minimq {
             client: MqttClient {
                 sm: StateMachine::new(ClientContext::new(
@@ -710,7 +716,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
                 )),
                 downgrade_qos: config.downgrade_qos,
                 broker: config.broker,
-                will: config.will,
+                will,
                 network: InterfaceHolder::new(network_stack, config.tx_buffer),
                 max_packet_size: config.rx_buffer.len(),
             },
