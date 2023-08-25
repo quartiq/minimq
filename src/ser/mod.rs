@@ -86,6 +86,14 @@ impl<'a> MqttSerializer<'a> {
         }
     }
 
+    /// Immediately finish the packet and return the contents.
+    ///
+    /// # Note
+    /// This does not append any MQTT headers.
+    pub fn finish(self) -> &'a mut [u8] {
+        &mut self.buf[MAX_FIXED_HEADER_SIZE..self.index]
+    }
+
     /// Encode an MQTT control packet into a buffer.
     ///
     /// # Args
