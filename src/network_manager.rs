@@ -149,15 +149,21 @@ where
     pub fn send_pub<P: crate::publication::ToPayload>(
         &mut self,
         pub_packet: &Pub<'_, P>,
-    ) -> Result<&[u8], Error<TcpStack::Error>> {
+    ) -> Result<&[u8], crate::PubError<TcpStack::Error, P::Error>> {
         // If there's an unfinished write pending, it's invalid to try to write new data. The
         // previous write must first be completed.
         assert!(self.pending_write.is_none());
 
         crate::info!("Sending: {:?}", pub_packet);
         let (offset, packet) =
-            crate::ser::MqttSerializer::pub_to_buffer_meta(self.tx_buffer, pub_packet)
-                .map_err(ProtocolError::from)?;
+            crate::ser::MqttSerializer::pub_to_buffer_meta(self.tx_buffer, pub_packet).map_err(
+                |e| match e {
+                    crate::ser::PubError::Other(e) => crate::PubError::Custom(e),
+                    crate::ser::PubError::Error(e) => crate::PubError::Error(crate::Error::Minimq(
+                        crate::MinimqError::Protocol(ProtocolError::from(e)),
+                    )),
+                },
+            )?;
 
         let len = packet.len();
 

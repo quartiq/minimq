@@ -152,6 +152,18 @@ pub enum ProtocolError {
     Deserialization(crate::de::Error),
 }
 
+#[derive(Debug, PartialEq)]
+pub enum PubError<T, E> {
+    Error(Error<T>),
+    Custom(E),
+}
+
+impl<T, E> From<Error<T>> for PubError<T, E> {
+    fn from(e: Error<T>) -> Self {
+        Self::Error(e)
+    }
+}
+
 impl From<crate::ser::Error> for ProtocolError {
     fn from(err: crate::ser::Error) -> Self {
         ProtocolError::Serialization(err)

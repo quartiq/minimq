@@ -6,13 +6,16 @@ use crate::{
 };
 
 pub trait ToPayload {
-    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ProtocolError>;
+    type Error;
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, Self::Error>;
 }
 
 impl<'a> ToPayload for &'a [u8] {
-    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ProtocolError> {
+    type Error = ();
+
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
         if buffer.len() < self.len() {
-            return Err(ProtocolError::BufferSize);
+            return Err(());
         }
         buffer[..self.len()].copy_from_slice(self);
         Ok(self.len())
@@ -20,28 +23,33 @@ impl<'a> ToPayload for &'a [u8] {
 }
 
 impl<const N: usize> ToPayload for [u8; N] {
-    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ProtocolError> {
+    type Error = ();
+
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ()> {
         (&self[..]).serialize(buffer)
     }
 }
 impl<const N: usize> ToPayload for &[u8; N] {
-    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ProtocolError> {
+    type Error = ();
+
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ()> {
         (&self[..]).serialize(buffer)
     }
 }
 
-pub struct DeferedPayload<F: Fn(&mut [u8]) -> Result<usize, ProtocolError>> {
+pub struct DeferedPayload<E, F: Fn(&mut [u8]) -> Result<usize, E>> {
     func: F,
 }
 
-impl<F: Fn(&mut [u8]) -> Result<usize, ProtocolError>> DeferedPayload<F> {
+impl<E, F: Fn(&mut [u8]) -> Result<usize, E>> DeferedPayload<E, F> {
     pub fn new(func: F) -> Self {
         Self { func }
     }
 }
 
-impl<F: Fn(&mut [u8]) -> Result<usize, ProtocolError>> ToPayload for DeferedPayload<F> {
-    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ProtocolError> {
+impl<E, F: Fn(&mut [u8]) -> Result<usize, E>> ToPayload for DeferedPayload<E, F> {
+    type Error = E;
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, E> {
         (self.func)(buffer)
     }
 }

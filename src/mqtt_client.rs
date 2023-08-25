@@ -383,7 +383,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     pub fn publish<P: crate::publication::ToPayload>(
         &mut self,
         mut publish: Pub<'_, P>,
-    ) -> Result<(), Error<TcpStack::Error>> {
+    ) -> Result<(), crate::PubError<TcpStack::Error, P::Error>> {
         // If we are not yet connected to the broker, we can't transmit a message.
         if !self.is_connected() {
             return Ok(());
@@ -396,7 +396,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
         }
 
         if !self.can_publish(publish.qos) {
-            return Err(Error::NotReady);
+            return Err(crate::PubError::Error(Error::NotReady));
         }
 
         publish.dup = false;
@@ -415,7 +415,8 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
             let context = self.sm.context_mut();
             context
                 .session_state
-                .handle_publish(publish.qos, id, packet)?;
+                .handle_publish(publish.qos, id, packet)
+                .map_err(|e| crate::Error::Minimq(e.into()))?;
             context.send_quota = context.send_quota.checked_sub(1).unwrap();
         }
 
