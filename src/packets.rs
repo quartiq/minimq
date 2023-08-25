@@ -73,7 +73,7 @@ pub struct ConnAck<'a> {
 }
 
 /// An MQTT PUBLISH packet, containing data to be sent or received.
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct Pub<'a, P: crate::publication::ToPayload> {
     /// The topic that the message was received on.
     pub topic: Utf8String<'a>,
@@ -99,6 +99,20 @@ pub struct Pub<'a, P: crate::publication::ToPayload> {
     /// Specified true if this message is a duplicate (e.g. it has already been transmitted).
     #[serde(skip)]
     pub dup: bool,
+}
+
+impl<'a, P: crate::publication::ToPayload> core::fmt::Debug for Pub<'a, P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Pub")
+            .field("topic", &self.topic)
+            .field("packet_id", &self.packet_id)
+            .field("properties", &self.properties)
+            .field("retain", &self.retain)
+            .field("qos", &self.qos)
+            .field("dup", &self.dup)
+            .field("payload", &"<deferred>")
+            .finish()
+    }
 }
 
 /// An MQTT SUBSCRIBE control packet
