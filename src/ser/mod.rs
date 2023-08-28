@@ -130,11 +130,15 @@ impl<'a> MqttSerializer<'a> {
         let flags = pub_packet.fixed_header_flags();
 
         // Next, serialize the payload into the remaining buffer
-        let len = pub_packet
-            .payload
-            .serialize(serializer.remainder())
-            .map_err(PubError::Other)?;
-        serializer.commit(len).map_err(PubError::Error)?;
+        match pub_packet.payload {
+            crate::publication::Payload::Borrowed(slice) => {
+                slice.serialize(&mut serializer).map_err(PubError::Error)?;
+            }
+            crate::publication::Payload::Callback(func) => {
+                let len = func(serializer.remainder()).map_err(PubError::Other)?;
+                serializer.commit(len).map_err(PubError::Error)?;
+            }
+        }
 
         // Finally, finish the packet and send it.
         let (offset, packet) = serializer

@@ -10,19 +10,6 @@ pub enum Payload<'a, E, F: FnOnce(&mut [u8]) -> Result<usize, E>> {
     Callback(F),
 }
 
-impl<'a, E, F: FnOnce(&mut [u8]) -> Result<usize, E>> Payload<'a, E, F> {
-    pub fn serialize(self, buffer: &mut [u8]) -> Result<usize, E> {
-        match self {
-            Payload::Borrowed(slice) => {
-                // TODO: Handle buffer too small?
-                buffer[..slice.len()].copy_from_slice(slice);
-                Ok(slice.len())
-            }
-            Payload::Callback(func) => func(buffer),
-        }
-    }
-}
-
 /// Builder pattern for generating MQTT publications.
 ///
 /// # Note
