@@ -155,7 +155,18 @@ pub enum ProtocolError {
 #[derive(Debug, PartialEq)]
 pub enum PubError<T, E> {
     Error(Error<T>),
-    Custom(E),
+    Serialization(E),
+}
+
+impl<T, E> From<crate::ser::PubError<E>> for PubError<T, E> {
+    fn from(e: crate::ser::PubError<E>) -> Self {
+        match e {
+            crate::ser::PubError::Other(e) => crate::PubError::Serialization(e),
+            crate::ser::PubError::Error(e) => crate::PubError::Error(crate::Error::Minimq(
+                crate::MinimqError::Protocol(ProtocolError::from(e)),
+            )),
+        }
+    }
 }
 
 impl<T, E> From<Error<T>> for PubError<T, E> {
