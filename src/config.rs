@@ -88,16 +88,15 @@ impl<'a, Broker: crate::Broker> Config<'a, Broker> {
         will: Will<'_>,
     ) -> Result<Self, crate::ser::Error> {
         self = self.will_buffer(buf);
-        self.will(will)?;
-        Ok(self)
+        self.will(will)
     }
 
     /// Specify the Will message to be sent if the client disconnects.
     ///
     /// # Args
     /// * `will` - The will to use.
-    pub fn will(&mut self, will: Will<'_>) -> Result<&mut Self, crate::ser::Error> {
-        let Some(WillState::BufferAvailable(buf)) = self.will.take() else {
+    pub fn will(mut self, will: Will<'_>) -> Result<Self, crate::ser::Error> {
+        let Some(WillState::BufferAvailable(buf)) = self.will else {
             return Err(crate::ser::Error::InsufficientMemory);
         };
 
