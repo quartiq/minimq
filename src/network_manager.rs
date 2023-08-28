@@ -5,7 +5,7 @@
 //! simple ownership semantics of reading and writing to the network stack. This allows the network
 //! stack to be used to transmit buffers that may be stored internally in other structs without
 //! violating Rust's borrow rules.
-use crate::{message_types::ControlPacket, packets::Pub};
+use crate::{message_types::ControlPacket, packets::OutgoingPub};
 use embedded_nal::{nb, SocketAddr, TcpClientStack, TcpError};
 use serde::Serialize;
 
@@ -146,10 +146,10 @@ where
         Ok(&self.tx_buffer[offset..][..len])
     }
 
-    pub fn send_pub<P: crate::publication::ToPayload>(
+    pub fn send_pub<E, F: FnOnce(&mut [u8]) -> Result<usize, E>>(
         &mut self,
-        pub_packet: &Pub<'_, P>,
-    ) -> Result<&[u8], crate::PubError<TcpStack::Error, P::Error>> {
+        pub_packet: OutgoingPub<'_, E, F>,
+    ) -> Result<&[u8], crate::PubError<TcpStack::Error, E>> {
         // If there's an unfinished write pending, it's invalid to try to write new data. The
         // previous write must first be completed.
         assert!(self.pending_write.is_none());

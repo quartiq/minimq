@@ -14,7 +14,7 @@ use serde::Deserialize;
 #[derive(Debug)]
 pub enum ReceivedPacket<'a> {
     ConnAck(ConnAck<'a>),
-    Publish(Pub<'a, &'a [u8]>),
+    Publish(Pub<'a>),
     PubAck(PubAck<'a>),
     SubAck(SubAck<'a>),
     PubRel(PubRel<'a>),
@@ -83,7 +83,7 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
 
                 let properties = seq.next_element()?.unwrap();
 
-                let publish: Pub<'_, &[u8]> = Pub {
+                let publish = Pub {
                     topic,
                     packet_id,
                     properties,

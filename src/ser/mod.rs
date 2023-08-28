@@ -29,7 +29,7 @@
 use crate::varint::VarintBuffer;
 use crate::{
     message_types::{ControlPacket, MessageType},
-    packets::Pub,
+    packets::OutgoingPub,
 };
 use bit_field::BitField;
 use serde::Serialize;
@@ -118,14 +118,16 @@ impl<'a> MqttSerializer<'a> {
         Ok((offset, packet))
     }
 
-    pub fn pub_to_buffer_meta<P: crate::publication::ToPayload>(
+    pub fn pub_to_buffer_meta<E, F: FnOnce(&mut [u8]) -> Result<usize, E>>(
         buf: &'a mut [u8],
-        pub_packet: &Pub<'a, P>,
-    ) -> Result<(usize, &'a [u8]), PubError<P::Error>> {
+        pub_packet: OutgoingPub<'a, E, F>,
+    ) -> Result<(usize, &'a [u8]), PubError<E>> {
         let mut serializer = crate::ser::MqttSerializer::new(buf);
         pub_packet
             .serialize(&mut serializer)
             .map_err(PubError::Error)?;
+
+        let flags = pub_packet.fixed_header_flags();
 
         // Next, serialize the payload into the remaining buffer
         let len = pub_packet
@@ -136,15 +138,15 @@ impl<'a> MqttSerializer<'a> {
 
         // Finally, finish the packet and send it.
         let (offset, packet) = serializer
-            .finalize(MessageType::Publish, pub_packet.fixed_header_flags())
+            .finalize(MessageType::Publish, flags)
             .map_err(PubError::Error)?;
         Ok((offset, packet))
     }
 
-    pub fn pub_to_buffer<P: crate::publication::ToPayload>(
+    pub fn pub_to_buffer<E, F: FnOnce(&mut [u8]) -> Result<usize, E>>(
         buf: &'a mut [u8],
-        pub_packet: &Pub<'a, P>,
-    ) -> Result<&'a [u8], PubError<P::Error>> {
+        pub_packet: OutgoingPub<'a, E, F>,
+    ) -> Result<&'a [u8], PubError<E>> {
         let (_, packet) = Self::pub_to_buffer_meta(buf, pub_packet)?;
         Ok(packet)
     }

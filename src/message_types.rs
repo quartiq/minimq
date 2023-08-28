@@ -1,7 +1,7 @@
 use crate::{
     packets::{
-        ConnAck, Connect, Disconnect, PingReq, PingResp, Pub, PubAck, PubComp, PubRec, PubRel,
-        SubAck, Subscribe,
+        ConnAck, Connect, Disconnect, OutgoingPub, PingReq, PingResp, PubAck, PubComp, PubRec,
+        PubRel, SubAck, Subscribe,
     },
     Retain,
 };
@@ -43,7 +43,7 @@ impl<'a> ControlPacket for ConnAck<'a> {
     const MESSAGE_TYPE: MessageType = MessageType::ConnAck;
 }
 
-impl<'a, P: crate::publication::ToPayload> Pub<'a, P> {
+impl<'a, E, F: FnOnce(&mut [u8]) -> Result<usize, E>> OutgoingPub<'a, E, F> {
     pub fn fixed_header_flags(&self) -> u8 {
         *0u8.set_bits(1..=2, self.qos as u8)
             .set_bit(0, self.retain == Retain::Retained)

@@ -1,7 +1,9 @@
 use crate::{
     de::{received_packet::ReceivedPacket, PacketReader},
     network_manager::InterfaceHolder,
-    packets::{ConnAck, Connect, PingReq, Pub, PubAck, PubComp, PubRec, PubRel, SubAck, Subscribe},
+    packets::{
+        ConnAck, Connect, OutgoingPub, PingReq, PubAck, PubComp, PubRec, PubRel, SubAck, Subscribe,
+    },
     reason_codes::ReasonCode,
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
@@ -380,10 +382,10 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     /// # Args
     /// * `publish` - The publication to generate. See [Publication] for a builder pattern to
     /// generate a message.
-    pub fn publish<P: crate::publication::ToPayload>(
+    pub fn publish<E, F: FnOnce(&mut [u8]) -> Result<usize, E>>(
         &mut self,
-        mut publish: Pub<'_, P>,
-    ) -> Result<(), crate::PubError<TcpStack::Error, P::Error>> {
+        mut publish: OutgoingPub<'_, E, F>,
+    ) -> Result<(), crate::PubError<TcpStack::Error, E>> {
         // If we are not yet connected to the broker, we can't transmit a message.
         if !self.is_connected() {
             return Ok(());
@@ -409,13 +411,16 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
                 .replace(self.sm.context_mut().session_state.get_packet_identifier());
         }
 
-        let packet = self.network.send_pub(&publish)?;
+        let qos = publish.qos;
+        let id = publish.packet_id;
 
-        if let Some(id) = publish.packet_id {
+        let packet = self.network.send_pub(publish)?;
+
+        if let Some(id) = id {
             let context = self.sm.context_mut();
             context
                 .session_state
-                .handle_publish(publish.qos, id, packet)
+                .handle_publish(qos, id, packet)
                 .map_err(|e| crate::Error::Minimq(e.into()))?;
             context.send_quota = context.send_quota.checked_sub(1).unwrap();
         }
