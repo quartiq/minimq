@@ -25,6 +25,26 @@ pub enum Properties<'a> {
     },
 }
 
+impl<'a> Properties<'a> {
+    /// The length in bytes of the serialized properties.
+    pub fn size(&self) -> usize {
+        // Properties in MQTTv5 must be prefixed with a variable-length integer denoting the size
+        // of the all of the properties in bytes.
+        match self {
+            Properties::Slice(props) => props.iter().map(|prop| prop.size()).sum(),
+            Properties::CorrelatedSlice {
+                correlation,
+                properties,
+            } => properties
+                .iter()
+                .chain([*correlation].iter())
+                .map(|prop| prop.size())
+                .sum(),
+            Properties::DataBlock(block) => block.len(),
+        }
+    }
+}
+
 /// Used to progressively iterate across binary property blocks, deserializing them along the way.
 pub struct PropertiesIter<'a> {
     props: &'a [u8],
@@ -69,30 +89,22 @@ impl<'a> core::iter::IntoIterator for &'a Properties<'a> {
 impl<'a> serde::Serialize for Properties<'a> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut item = serializer.serialize_struct("Properties", 0)?;
+        item.serialize_field("_len", &Varint(self.size() as u32))?;
 
         // Properties in MQTTv5 must be prefixed with a variable-length integer denoting the size
         // of the all of the properties in bytes.
         match self {
             Properties::Slice(props) => {
-                let property_length: usize = props.iter().map(|prop| prop.size()).sum();
-                item.serialize_field("_len", &Varint(property_length as u32))?;
                 item.serialize_field("_props", props)?;
             }
             Properties::CorrelatedSlice {
                 correlation,
                 properties,
             } => {
-                let property_length: usize = properties
-                    .iter()
-                    .chain([*correlation].iter())
-                    .map(|prop| prop.size())
-                    .sum();
-                item.serialize_field("_len", &Varint(property_length as u32))?;
                 item.serialize_field("_correlation", &correlation)?;
                 item.serialize_field("_props", properties)?;
             }
             Properties::DataBlock(block) => {
-                item.serialize_field("_len", &Varint(block.len() as u32))?;
                 item.serialize_field("_data", block)?;
             }
         }

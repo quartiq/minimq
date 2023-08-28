@@ -63,7 +63,7 @@ impl<'de> serde::de::Visitor<'de> for VarintVisitor {
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
         let mut reader = VarintParser {
             seq,
-            _data: core::marker::PhantomData::default(),
+            _data: core::marker::PhantomData,
         };
         Ok(Varint(reader.read_u32_varint()?))
     }

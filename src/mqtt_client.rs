@@ -6,7 +6,7 @@ use crate::{
     session_state::SessionState,
     types::{Properties, TopicFilter, Utf8String},
     will::SerializedWill,
-    Config, Error, MinimqError, Property, ProtocolError, QoS, {debug, error, info, warn},
+    ConfigBuilder, Error, MinimqError, Property, ProtocolError, QoS, {debug, error, info, warn},
 };
 
 use core::convert::{TryFrom, TryInto};
@@ -690,18 +690,14 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     /// # Returns
     /// A `Minimq` object that can be used for publishing messages, subscribing to topics, and
     /// managing the MQTT state.
-    pub fn new(network_stack: TcpStack, clock: Clock, config: Config<'buf, Broker>) -> Self {
+    pub fn new(network_stack: TcpStack, clock: Clock, config: ConfigBuilder<'buf, Broker>) -> Self {
+        let config = config.build();
+
         let session_state = SessionState::new(
             config.client_id,
             config.state_buffer,
             config.tx_buffer.len(),
         );
-
-        let will = if let Some(crate::config::WillState::Serialized(will)) = config.will {
-            Some(will)
-        } else {
-            None
-        };
 
         Minimq {
             client: MqttClient {
@@ -712,7 +708,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
                 )),
                 downgrade_qos: config.downgrade_qos,
                 broker: config.broker,
-                will,
+                will: config.will,
                 network: InterfaceHolder::new(network_stack, config.tx_buffer),
                 max_packet_size: config.rx_buffer.len(),
             },

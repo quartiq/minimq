@@ -1,6 +1,7 @@
 use crate::{
     properties::{Property, PropertyIdentifier},
     types::{BinaryData, Properties, Utf8String},
+    varint::Varint,
     ProtocolError, QoS, Retain,
 };
 
@@ -68,13 +69,24 @@ impl<'a> Will<'a> {
             data: BinaryData(self.data),
         };
 
-        let mut serializer = crate::ser::MqttSerializer::new(buf);
+        let mut serializer = crate::ser::MqttSerializer::new_without_header(buf);
         message.serialize(&mut serializer)?;
         Ok(SerializedWill {
             qos: self.qos,
             retained: self.retained,
             contents: serializer.finish(),
         })
+    }
+
+    /// Precalculate the length of the serialized will.
+    pub(crate) fn serialized_len(&self) -> usize {
+        let prop_len = {
+            let prop_size = Properties::Slice(self.properties).size();
+            Varint(prop_size as u32).len() + prop_size
+        };
+        let topic_len = self.topic.len() + core::mem::size_of::<u16>();
+        let payload_len = self.data.len() + core::mem::size_of::<u16>();
+        topic_len + payload_len + prop_len
     }
 
     /// Set the retained status of the will.
