@@ -421,7 +421,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
             context
                 .session_state
                 .handle_publish(qos, id, packet)
-                .map_err(|e| crate::Error::Minimq(e.into()))?;
+                .map_err(|e| Error::Minimq(e.into()))?;
             context.send_quota = context.send_quota.checked_sub(1).unwrap();
         }
 
