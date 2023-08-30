@@ -128,7 +128,10 @@ impl<'a> MqttSerializer<'a> {
             .map_err(PubError::Error)?;
 
         // Next, serialize the payload into the remaining buffer
-        let len = pub_packet.payload.serialize(serializer.remainder()).map_err(PubError::Other)?;
+        let len = pub_packet
+            .payload
+            .serialize(serializer.remainder())
+            .map_err(PubError::Other)?;
         serializer.commit(len).map_err(PubError::Error)?;
 
         // Finally, finish the packet and send it.
