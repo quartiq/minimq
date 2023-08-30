@@ -37,17 +37,17 @@ impl<const N: usize> ToPayload for &[u8; N] {
     }
 }
 
-pub struct DeferredPayload<E, F: Fn(&mut [u8]) -> Result<usize, E>> {
+pub struct DeferredPublication<E, F: Fn(&mut [u8]) -> Result<usize, E>> {
     func: F,
 }
 
-impl<E, F: Fn(&mut [u8]) -> Result<usize, E>> DeferredPayload<E, F> {
-    pub fn new(func: F) -> Self {
-        Self { func }
+impl<E, F: Fn(&mut [u8]) -> Result<usize, E>> DeferredPublication<E, F> {
+    pub fn new<'a>(func: F) -> Publication<'a, Self> {
+        Publication::new(Self { func })
     }
 }
 
-impl<E, F: Fn(&mut [u8]) -> Result<usize, E>> ToPayload for DeferredPayload<E, F> {
+impl<E, F: Fn(&mut [u8]) -> Result<usize, E>> ToPayload for DeferredPublication<E, F> {
     type Error = E;
     fn serialize(&self, buffer: &mut [u8]) -> Result<usize, E> {
         (self.func)(buffer)
