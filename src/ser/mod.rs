@@ -29,7 +29,7 @@
 use crate::varint::VarintBuffer;
 use crate::{
     message_types::{ControlPacket, MessageType},
-    packets::OutgoingPub,
+    packets::Pub,
 };
 use bit_field::BitField;
 use serde::Serialize;
@@ -118,39 +118,30 @@ impl<'a> MqttSerializer<'a> {
         Ok((offset, packet))
     }
 
-    pub fn pub_to_buffer_meta<E, F: FnOnce(&mut [u8]) -> Result<usize, E>>(
+    pub fn pub_to_buffer_meta<P: crate::publication::ToPayload>(
         buf: &'a mut [u8],
-        pub_packet: OutgoingPub<'a, E, F>,
-    ) -> Result<(usize, &'a [u8]), PubError<E>> {
+        pub_packet: &Pub<'a, P>,
+    ) -> Result<(usize, &'a [u8]), PubError<P::Error>> {
         let mut serializer = crate::ser::MqttSerializer::new(buf);
         pub_packet
             .serialize(&mut serializer)
             .map_err(PubError::Error)?;
 
-        let flags = pub_packet.fixed_header_flags();
-
         // Next, serialize the payload into the remaining buffer
-        match pub_packet.payload {
-            crate::publication::Payload::Borrowed(slice) => {
-                slice.serialize(&mut serializer).map_err(PubError::Error)?;
-            }
-            crate::publication::Payload::Callback(func) => {
-                let len = func(serializer.remainder()).map_err(PubError::Other)?;
-                serializer.commit(len).map_err(PubError::Error)?;
-            }
-        }
+        let len = pub_packet.payload.serialize(serializer.remainder()).map_err(PubError::Other)?;
+        serializer.commit(len).map_err(PubError::Error)?;
 
         // Finally, finish the packet and send it.
         let (offset, packet) = serializer
-            .finalize(MessageType::Publish, flags)
+            .finalize(MessageType::Publish, pub_packet.fixed_header_flags())
             .map_err(PubError::Error)?;
         Ok((offset, packet))
     }
 
-    pub fn pub_to_buffer<E, F: FnOnce(&mut [u8]) -> Result<usize, E>>(
+    pub fn pub_to_buffer<P: crate::publication::ToPayload>(
         buf: &'a mut [u8],
-        pub_packet: OutgoingPub<'a, E, F>,
-    ) -> Result<&'a [u8], PubError<E>> {
+        pub_packet: &Pub<'a, P>,
+    ) -> Result<&'a [u8], PubError<P::Error>> {
         let (_, packet) = Self::pub_to_buffer_meta(buf, pub_packet)?;
         Ok(packet)
     }

@@ -78,7 +78,7 @@ impl TcpSocket {
 
     fn connect(&mut self, remote: embedded_nal::SocketAddr) -> Result<(), Error> {
         let embedded_nal::IpAddr::V4(addr) = remote.ip() else {
-            return Err(Error::new(ErrorKind::Other, "Only IPv4 supported"));
+            return Err(Error::new(ErrorKind::Other, "Only IPv4 supported"))
         };
         let remote = SocketAddr::new(addr.octets().into(), remote.port());
         let soc = TcpStream::connect(remote)?;

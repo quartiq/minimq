@@ -74,7 +74,7 @@ pub struct ConnAck<'a> {
 
 /// An MQTT PUBLISH packet, containing data to be sent or received.
 #[derive(Serialize)]
-pub struct OutgoingPub<'a, E, F: FnOnce(&mut [u8]) -> Result<usize, E>> {
+pub struct Pub<'a, P: crate::publication::ToPayload> {
     /// The topic that the message was received on.
     pub topic: Utf8String<'a>,
 
@@ -86,7 +86,7 @@ pub struct OutgoingPub<'a, E, F: FnOnce(&mut [u8]) -> Result<usize, E>> {
 
     /// The message to be transmitted.
     #[serde(skip)]
-    pub payload: crate::publication::Payload<'a, E, F>,
+    pub payload: P,
 
     /// Specifies whether or not the message should be retained on the broker.
     #[serde(skip)]
@@ -101,52 +101,18 @@ pub struct OutgoingPub<'a, E, F: FnOnce(&mut [u8]) -> Result<usize, E>> {
     pub dup: bool,
 }
 
-impl<'a, E, F: FnOnce(&mut [u8]) -> Result<usize, E>> core::fmt::Debug for OutgoingPub<'a, E, F> {
+impl<'a, P: crate::publication::ToPayload> core::fmt::Debug for Pub<'a, P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let mut debug = f.debug_struct("Pub");
-        debug
+        f.debug_struct("Pub")
             .field("topic", &self.topic)
             .field("packet_id", &self.packet_id)
             .field("properties", &self.properties)
             .field("retain", &self.retain)
             .field("qos", &self.qos)
-            .field("dup", &self.dup);
-
-        match self.payload {
-            crate::publication::Payload::Borrowed(slice) => {
-                debug.field("payload", &slice);
-            }
-            crate::publication::Payload::Callback(_) => {
-                debug.field("payload", &"<deferred>");
-            }
-        }
-
-        debug.finish()
+            .field("dup", &self.dup)
+            .field("payload", &"<deferred>")
+            .finish()
     }
-}
-
-#[derive(Debug)]
-pub struct Pub<'a> {
-    /// The topic that the message was received on.
-    pub topic: Utf8String<'a>,
-
-    /// The ID of the internal message.
-    pub packet_id: Option<u16>,
-
-    /// The properties transmitted with the publish data.
-    pub properties: Properties<'a>,
-
-    /// The message to be transmitted.
-    pub payload: &'a [u8],
-
-    /// Specifies whether or not the message should be retained on the broker.
-    pub retain: Retain,
-
-    /// Specifies the quality-of-service of the transmission.
-    pub qos: QoS,
-
-    /// Specified true if this message is a duplicate (e.g. it has already been transmitted).
-    pub dup: bool,
 }
 
 /// An MQTT SUBSCRIBE control packet

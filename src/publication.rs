@@ -1,13 +1,57 @@
 use crate::{
-    packets::OutgoingPub,
+    packets::Pub,
     properties::Property,
     types::{Properties, Utf8String},
     ProtocolError, QoS, Retain,
 };
 
-pub enum Payload<'a, E, F: FnOnce(&mut [u8]) -> Result<usize, E>> {
-    Borrowed(&'a [u8]),
-    Callback(F),
+pub trait ToPayload {
+    type Error;
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, Self::Error>;
+}
+
+impl<'a> ToPayload for &'a [u8] {
+    type Error = ();
+
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
+        if buffer.len() < self.len() {
+            return Err(());
+        }
+        buffer[..self.len()].copy_from_slice(self);
+        Ok(self.len())
+    }
+}
+
+impl<const N: usize> ToPayload for [u8; N] {
+    type Error = ();
+
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ()> {
+        (&self[..]).serialize(buffer)
+    }
+}
+impl<const N: usize> ToPayload for &[u8; N] {
+    type Error = ();
+
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ()> {
+        (&self[..]).serialize(buffer)
+    }
+}
+
+pub struct DeferredPayload<E, F: Fn(&mut [u8]) -> Result<usize, E>> {
+    func: F,
+}
+
+impl<E, F: Fn(&mut [u8]) -> Result<usize, E>> DeferredPayload<E, F> {
+    pub fn new(func: F) -> Self {
+        Self { func }
+    }
+}
+
+impl<E, F: Fn(&mut [u8]) -> Result<usize, E>> ToPayload for DeferredPayload<E, F> {
+    type Error = E;
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, E> {
+        (self.func)(buffer)
+    }
 }
 
 /// Builder pattern for generating MQTT publications.
@@ -22,29 +66,19 @@ pub enum Payload<'a, E, F: FnOnce(&mut [u8]) -> Result<usize, E>> {
 /// It is expected that the user provide a topic either by directly specifying a publication topic
 /// in [Publication::topic], or by parsing a topic from the [Property::ResponseTopic] property
 /// contained within received properties by using the [Publication::reply] API.
-pub struct Publication<'a, E, F: FnOnce(&mut [u8]) -> Result<usize, E>> {
+pub struct Publication<'a, P: ToPayload> {
     topic: Option<&'a str>,
     properties: Properties<'a>,
     qos: QoS,
-    payload: Payload<'a, E, F>,
+    payload: P,
     retain: Retain,
 }
 
-impl<'a, E, F: FnOnce(&mut [u8]) -> Result<usize, E>> Publication<'a, E, F> {
+impl<'a, P: ToPayload> Publication<'a, P> {
     /// Construct a new publication with a payload.
-    pub fn new(payload: &'a [u8]) -> Self {
+    pub fn new(payload: P) -> Self {
         Self {
-            payload: Payload::Borrowed(payload),
-            qos: QoS::AtMostOnce,
-            topic: None,
-            properties: Properties::Slice(&[]),
-            retain: Retain::NotRetained,
-        }
-    }
-
-    pub fn new_deferred(func: F) -> Self {
-        Self {
-            payload: Payload::Callback(func),
+            payload,
             qos: QoS::AtMostOnce,
             topic: None,
             properties: Properties::Slice(&[]),
@@ -136,8 +170,8 @@ impl<'a, E, F: FnOnce(&mut [u8]) -> Result<usize, E>> Publication<'a, E, F> {
     /// # Returns
     /// The message to be published if a publication topic was specified. If no publication topic
     /// was identified, an error is returned.
-    pub fn finish(self) -> Result<OutgoingPub<'a, E, F>, ProtocolError> {
-        Ok(OutgoingPub {
+    pub fn finish(self) -> Result<Pub<'a, P>, ProtocolError> {
+        Ok(Pub {
             topic: Utf8String(self.topic.ok_or(ProtocolError::NoTopic)?),
             properties: self.properties,
             packet_id: None,
