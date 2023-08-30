@@ -57,7 +57,7 @@ impl<'a> Will<'a> {
         })
     }
 
-    /// Serialize the will contents into a flattened, owned buffer.
+    /// Serialize the will contents into a flattened, borrowed buffer.
     pub(crate) fn serialize<'b>(
         &self,
         buf: &'b mut [u8],
