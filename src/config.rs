@@ -1,7 +1,12 @@
-use crate::{ProtocolError, Will};
+use crate::{will::SerializedWill, ProtocolError, Will};
 use core::convert::TryFrom;
 use embedded_time::duration::{Extensions, Milliseconds};
 use heapless::String;
+
+pub(crate) enum WillState<'a> {
+    BufferAvailable(&'a mut [u8]),
+    Serialized(SerializedWill<'a>),
+}
 
 /// Configuration specifying the operational state of the MQTT client.
 pub struct Config<'a, Broker: crate::Broker> {
@@ -9,10 +14,10 @@ pub struct Config<'a, Broker: crate::Broker> {
     pub(crate) rx_buffer: &'a mut [u8],
     pub(crate) tx_buffer: &'a mut [u8],
     pub(crate) state_buffer: &'a mut [u8],
+    pub(crate) will: Option<WillState<'a>>,
     pub(crate) client_id: String<64>,
     pub(crate) keepalive_interval: Milliseconds<u32>,
     pub(crate) downgrade_qos: bool,
-    pub(crate) will: Option<Will<'a>>,
 }
 
 impl<'a, Broker: crate::Broker> Config<'a, Broker> {
@@ -39,6 +44,12 @@ impl<'a, Broker: crate::Broker> Config<'a, Broker> {
     /// Provide additional buffer space if messages above [QoS::AtMostOnce] are required.
     pub fn session_state(mut self, buffer: &'a mut [u8]) -> Self {
         self.state_buffer = buffer;
+        self
+    }
+
+    /// Provide additional buffer space for an optional connection [Will]
+    pub fn will_buffer(mut self, buffer: &'a mut [u8]) -> Self {
+        self.will = Some(WillState::BufferAvailable(buffer));
         self
     }
 
@@ -70,12 +81,27 @@ impl<'a, Broker: crate::Broker> Config<'a, Broker> {
         self
     }
 
+    /// Construct a will in the provided buffer.
+    pub fn will_with_buffer(
+        mut self,
+        buf: &'a mut [u8],
+        will: Will<'_>,
+    ) -> Result<Self, crate::ser::Error> {
+        self = self.will_buffer(buf);
+        self.will(will)
+    }
+
     /// Specify the Will message to be sent if the client disconnects.
     ///
     /// # Args
     /// * `will` - The will to use.
-    pub fn will(mut self, will: Will<'a>) -> Self {
-        self.will.replace(will);
-        self
+    pub fn will(mut self, will: Will<'_>) -> Result<Self, crate::ser::Error> {
+        let Some(WillState::BufferAvailable(buf)) = self.will else {
+            return Err(crate::ser::Error::InsufficientMemory);
+        };
+
+        self.will = Some(WillState::Serialized(will.serialize(buf)?));
+
+        Ok(self)
     }
 }

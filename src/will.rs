@@ -10,13 +10,13 @@ use serde::Serialize;
 pub struct Will<'a> {
     topic: &'a str,
     data: &'a [u8],
-    pub(crate) qos: QoS,
-    pub(crate) retained: Retain,
+    qos: QoS,
+    retained: Retain,
     properties: &'a [Property<'a>],
 }
 
 #[derive(Serialize)]
-pub(crate) struct WillMessage<'a> {
+struct WillMessage<'a> {
     properties: Properties<'a>,
     topic: Utf8String<'a>,
     data: BinaryData<'a>,
@@ -57,12 +57,24 @@ impl<'a> Will<'a> {
         })
     }
 
-    pub(crate) fn flatten(&self) -> WillMessage<'a> {
-        WillMessage {
+    /// Serialize the will contents into a flattened, borrowed buffer.
+    pub(crate) fn serialize<'b>(
+        &self,
+        buf: &'b mut [u8],
+    ) -> Result<SerializedWill<'b>, crate::ser::Error> {
+        let message = WillMessage {
             topic: Utf8String(self.topic),
             properties: Properties::Slice(self.properties),
             data: BinaryData(self.data),
-        }
+        };
+
+        let mut serializer = crate::ser::MqttSerializer::new(buf);
+        message.serialize(&mut serializer)?;
+        Ok(SerializedWill {
+            qos: self.qos,
+            retained: self.retained,
+            contents: serializer.finish(),
+        })
     }
 
     /// Set the retained status of the will.
@@ -80,4 +92,12 @@ impl<'a> Will<'a> {
     pub fn qos(&mut self, qos: QoS) {
         self.qos = qos;
     }
+}
+
+/// A will where the topic, properties, and contents have already been serialized.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub(crate) struct SerializedWill<'a> {
+    pub(crate) qos: QoS,
+    pub(crate) retained: Retain,
+    pub(crate) contents: &'a [u8],
 }
