@@ -13,8 +13,7 @@ fn main() -> std::io::Result<()> {
     let mut mqtt: Minimq<'_, _, _, minimq::broker::IpBroker> = Minimq::new(
         stack,
         StandardClock::default(),
-        minimq::ConfigBuilder::new(localhost.into(), &mut buffer)
-            .keepalive_interval(60),
+        minimq::ConfigBuilder::new(localhost.into(), &mut buffer).keepalive_interval(60),
     );
 
     while !mqtt.client().is_connected() {
