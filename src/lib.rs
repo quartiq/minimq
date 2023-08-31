@@ -91,6 +91,9 @@ pub use embedded_time;
 pub use mqtt_client::Minimq;
 use num_enum::TryFromPrimitive;
 
+pub use de::Error as DeError;
+pub use ser::Error as SerError;
+
 #[cfg(feature = "logging")]
 pub(crate) use log::{debug, error, info, trace, warn};
 
@@ -145,8 +148,8 @@ pub enum ProtocolError {
     UnsupportedPacket,
     NoTopic,
     Failed(ReasonCode),
-    Serialization(crate::ser::Error),
-    Deserialization(crate::de::Error),
+    Serialization(SerError),
+    Deserialization(DeError),
 }
 
 #[derive(Debug, PartialEq)]
