@@ -7,16 +7,13 @@ use std_embedded_time::StandardClock;
 fn main() -> std::io::Result<()> {
     env_logger::init();
 
-    let mut rx_buffer = [0u8; 256];
-    let mut tx_buffer = [0u8; 256];
-    let mut session = [0u8; 256];
+    let mut buffer = [0u8; 1024];
     let stack = std_embedded_nal::Stack;
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
     let mut mqtt: Minimq<'_, _, _, minimq::broker::IpBroker> = Minimq::new(
         stack,
         StandardClock::default(),
-        minimq::Config::new(localhost.into(), &mut rx_buffer, &mut tx_buffer)
-            .session_state(&mut session)
+        minimq::ConfigBuilder::new(localhost.into(), &mut buffer)
             .keepalive_interval(60),
     );
 
