@@ -148,6 +148,7 @@ pub enum ProtocolError {
     WrongQos,
     UnsupportedPacket,
     NoTopic,
+    WillAlreadySpecified,
     Failed(ReasonCode),
     Serialization(SerError),
     Deserialization(DeError),
