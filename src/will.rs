@@ -90,7 +90,7 @@ impl<'a> Will<'a> {
     }
 
     /// Specify the will as a retained message.
-    pub fn set_retained(mut self) -> Self {
+    pub fn retained(mut self) -> Self {
         self.retained = Retain::Retained;
         self
     }
