@@ -41,6 +41,7 @@ const MAX_FIXED_HEADER_SIZE: usize = 5;
 
 /// Errors that result from the serialization process
 #[derive(Debug, Copy, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Error {
     /// The provided memory buffer did not have enough space to serialize into.
     InsufficientMemory,

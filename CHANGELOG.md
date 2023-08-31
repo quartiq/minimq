@@ -10,6 +10,7 @@ This document describes the changes to Minimq between releases.
  * Setup-only configuration APIs such as `set_will()` and `set_keepalive_interval()` have been moved
  to a new `Config` structure that is supplied to the `Minimq::new()` constructor to simplify the
  client.
+* Added a new `correlate()` API to publication builder to easily add correlation data.
 
 
 ## Added

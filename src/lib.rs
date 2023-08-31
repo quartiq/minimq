@@ -91,6 +91,9 @@ pub use embedded_time;
 pub use mqtt_client::Minimq;
 use num_enum::TryFromPrimitive;
 
+pub use de::Error as DeError;
+pub use ser::Error as SerError;
+
 #[cfg(feature = "logging")]
 pub(crate) use log::{debug, error, info, trace, warn};
 
@@ -132,6 +135,7 @@ pub enum Retain {
 }
 
 /// Errors that are specific to the MQTT protocol implementation.
+#[non_exhaustive]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ProtocolError {
     ProvidedClientIdTooLong,
@@ -145,8 +149,8 @@ pub enum ProtocolError {
     UnsupportedPacket,
     NoTopic,
     Failed(ReasonCode),
-    Serialization(crate::ser::Error),
-    Deserialization(crate::de::Error),
+    Serialization(SerError),
+    Deserialization(DeError),
 }
 
 #[derive(Debug, PartialEq)]
@@ -191,6 +195,7 @@ impl From<ReasonCode> for ProtocolError {
 }
 
 #[derive(Debug, PartialEq)]
+#[non_exhaustive]
 pub enum MinimqError {
     Protocol(ProtocolError),
     Clock(embedded_time::clock::Error),
@@ -198,6 +203,7 @@ pub enum MinimqError {
 
 /// Possible errors encountered during an MQTT connection.
 #[derive(Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Error<E> {
     WriteFail,
     NotReady,
