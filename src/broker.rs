@@ -13,6 +13,7 @@ pub trait Broker {
 
 /// A broker that is specified using a qualified domain-name. The name will be resolved at some
 /// point in the future.
+#[derive(Debug)]
 pub struct NamedBroker<R: Dns, const T: usize = 253> {
     raw: heapless::String<T>,
     resolver: R,
@@ -63,6 +64,7 @@ impl<R: Dns, const T: usize> Broker for NamedBroker<R, T> {
 }
 
 /// A simple broker specification where the address of the broker is known in advance.
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct IpBroker {
     addr: SocketAddr,
 }

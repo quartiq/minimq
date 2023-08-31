@@ -9,18 +9,14 @@ fn main() -> std::io::Result<()> {
 
     let will = Will::new("exit", "Test complete".as_bytes(), &[]).unwrap();
 
-    let mut rx_buffer = [0u8; 256];
-    let mut tx_buffer = [0u8; 256];
-    let mut session = [0u8; 256];
-    let mut will_buffer = [0; 64];
-    let stack = std_embedded_nal::Stack::default();
+    let mut buffer = [0u8; 1024];
+    let stack = std_embedded_nal::Stack;
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
     let mut mqtt: Minimq<'_, _, _, minimq::broker::IpBroker> = Minimq::new(
         stack,
         StandardClock::default(),
-        minimq::Config::new(localhost.into(), &mut rx_buffer, &mut tx_buffer)
-            .session_state(&mut session)
-            .will_with_buffer(&mut will_buffer, will)
+        minimq::ConfigBuilder::new(localhost.into(), &mut buffer)
+            .will(will)
             .unwrap()
             .keepalive_interval(60),
     );

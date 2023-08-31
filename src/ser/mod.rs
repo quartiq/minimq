@@ -81,6 +81,7 @@ impl core::fmt::Display for Error {
 pub struct MqttSerializer<'a> {
     buf: &'a mut [u8],
     index: usize,
+    with_header: bool,
 }
 
 impl<'a> MqttSerializer<'a> {
@@ -92,6 +93,15 @@ impl<'a> MqttSerializer<'a> {
         Self {
             buf,
             index: MAX_FIXED_HEADER_SIZE,
+            with_header: true,
+        }
+    }
+
+    pub fn new_without_header(buf: &'a mut [u8]) -> Self {
+        Self {
+            buf,
+            index: 0,
+            with_header: false,
         }
     }
 
@@ -100,7 +110,9 @@ impl<'a> MqttSerializer<'a> {
     /// # Note
     /// This does not append any MQTT headers.
     pub fn finish(self) -> &'a mut [u8] {
-        &mut self.buf[MAX_FIXED_HEADER_SIZE..self.index]
+        assert!(!self.with_header);
+
+        &mut self.buf[..self.index]
     }
 
     /// Encode an MQTT control packet into a buffer.
