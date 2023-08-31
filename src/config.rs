@@ -124,7 +124,10 @@ impl<'a, Broker: crate::Broker> ConfigBuilder<'a, Broker> {
     ///
     /// # Args
     /// * `will` - The will to use.
-    pub fn will(mut self, will: Will<'_>) -> Result<Self, crate::ProtocolError> {
+    pub fn will(mut self, will: Will<'_>) -> Result<Self, ProtocolError> {
+        if self.will.is_some() {
+            return Err(ProtocolError::WillAlreadySpecified);
+        }
         let will_len = will.serialized_len();
         let (head, tail) = self.buffer.split_at_mut(will_len);
         self.buffer = tail;

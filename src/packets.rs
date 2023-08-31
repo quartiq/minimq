@@ -442,9 +442,9 @@ mod tests {
 
         let mut buffer: [u8; 900] = [0; 900];
         let mut will_buff = [0; 64];
-        let mut will = crate::will::Will::new("EFG", &[0xAB, 0xCD], &[]).unwrap();
-        will.qos(crate::QoS::AtMostOnce);
-        will.retained(crate::Retain::NotRetained);
+        let will = crate::will::Will::new("EFG", &[0xAB, 0xCD], &[])
+            .unwrap()
+            .qos(crate::QoS::AtMostOnce);
 
         let connect = crate::packets::Connect {
             clean_start: true,

@@ -89,20 +89,19 @@ impl<'a> Will<'a> {
         topic_len + payload_len + prop_len
     }
 
-    /// Set the retained status of the will.
-    ///
-    /// # Args
-    /// * `retained` - Specifies the retained state of the will.
-    pub fn retained(&mut self, retained: Retain) {
-        self.retained = retained;
+    /// Specify the will as a retained message.
+    pub fn set_retained(mut self) -> Self {
+        self.retained = Retain::Retained;
+        self
     }
 
     /// Set the quality of service at which the will message is sent.
     ///
     /// # Args
     /// * `qos` - The desired quality-of-service level to send the message at.
-    pub fn qos(&mut self, qos: QoS) {
+    pub fn qos(mut self, qos: QoS) -> Self {
         self.qos = qos;
+        self
     }
 }
 
