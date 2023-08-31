@@ -26,8 +26,11 @@
 //! * Structs
 //!
 //! Other types are explicitly not implemented and there is no plan to implement them.
-use crate::message_types::{ControlPacket, MessageType};
 use crate::varint::VarintBuffer;
+use crate::{
+    message_types::{ControlPacket, MessageType},
+    packets::Pub,
+};
 use bit_field::BitField;
 use serde::Serialize;
 use varint_rs::VarintWriter;
@@ -44,6 +47,12 @@ pub enum Error {
 
     /// A custom serialization error occurred.
     Custom,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum PubError<E> {
+    Error(Error),
+    Other(E),
 }
 
 impl serde::ser::StdError for Error {}
@@ -107,6 +116,37 @@ impl<'a> MqttSerializer<'a> {
         packet.serialize(&mut serializer)?;
         let (offset, packet) = serializer.finalize(T::MESSAGE_TYPE, packet.fixed_header_flags())?;
         Ok((offset, packet))
+    }
+
+    pub fn pub_to_buffer_meta<P: crate::publication::ToPayload>(
+        buf: &'a mut [u8],
+        pub_packet: &Pub<'a, P>,
+    ) -> Result<(usize, &'a [u8]), PubError<P::Error>> {
+        let mut serializer = crate::ser::MqttSerializer::new(buf);
+        pub_packet
+            .serialize(&mut serializer)
+            .map_err(PubError::Error)?;
+
+        // Next, serialize the payload into the remaining buffer
+        let len = pub_packet
+            .payload
+            .serialize(serializer.remainder())
+            .map_err(PubError::Other)?;
+        serializer.commit(len).map_err(PubError::Error)?;
+
+        // Finally, finish the packet and send it.
+        let (offset, packet) = serializer
+            .finalize(MessageType::Publish, pub_packet.fixed_header_flags())
+            .map_err(PubError::Error)?;
+        Ok((offset, packet))
+    }
+
+    pub fn pub_to_buffer<P: crate::publication::ToPayload>(
+        buf: &'a mut [u8],
+        pub_packet: &Pub<'a, P>,
+    ) -> Result<&'a [u8], PubError<P::Error>> {
+        let (_, packet) = Self::pub_to_buffer_meta(buf, pub_packet)?;
+        Ok(packet)
     }
 
     /// Encode an MQTT control packet into a buffer.
@@ -177,6 +217,27 @@ impl<'a> MqttSerializer<'a> {
         self.buf[self.index] = byte;
         self.index += 1;
 
+        Ok(())
+    }
+
+    /// Get the remaining buffer to serialize into directly.
+    ///
+    /// # Note
+    /// You must call `commit` after serializing.
+    pub fn remainder(&mut self) -> &mut [u8] {
+        &mut self.buf[self.index..]
+    }
+
+    /// Commit previously-serialized data into the buffer.
+    ///
+    /// # Args
+    /// * `len` - The number of bytes serialized.
+    pub fn commit(&mut self, len: usize) -> Result<(), Error> {
+        if self.buf.len() < (self.index + len) {
+            return Err(Error::InsufficientMemory);
+        }
+
+        self.index += len;
         Ok(())
     }
 }

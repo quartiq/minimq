@@ -380,7 +380,10 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     /// # Args
     /// * `publish` - The publication to generate. See [Publication] for a builder pattern to
     /// generate a message.
-    pub fn publish(&mut self, mut publish: Pub<'_>) -> Result<(), Error<TcpStack::Error>> {
+    pub fn publish<P: crate::publication::ToPayload>(
+        &mut self,
+        mut publish: Pub<'_, P>,
+    ) -> Result<(), crate::PubError<TcpStack::Error, P::Error>> {
         // If we are not yet connected to the broker, we can't transmit a message.
         if !self.is_connected() {
             return Ok(());
@@ -393,7 +396,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
         }
 
         if !self.can_publish(publish.qos) {
-            return Err(Error::NotReady);
+            return Err(crate::PubError::Error(Error::NotReady));
         }
 
         publish.dup = false;
@@ -406,13 +409,14 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
                 .replace(self.sm.context_mut().session_state.get_packet_identifier());
         }
 
-        let packet = self.network.send_packet(&publish)?;
+        let packet = self.network.send_pub(&publish)?;
 
         if let Some(id) = publish.packet_id {
             let context = self.sm.context_mut();
             context
                 .session_state
-                .handle_publish(publish.qos, id, packet)?;
+                .handle_publish(publish.qos, id, packet)
+                .map_err(|e| Error::Minimq(e.into()))?;
             context.send_quota = context.send_quota.checked_sub(1).unwrap();
         }
 

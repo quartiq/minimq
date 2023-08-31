@@ -73,8 +73,8 @@ pub struct ConnAck<'a> {
 }
 
 /// An MQTT PUBLISH packet, containing data to be sent or received.
-#[derive(Debug, Serialize)]
-pub struct Pub<'a> {
+#[derive(Serialize)]
+pub struct Pub<'a, P: crate::publication::ToPayload> {
     /// The topic that the message was received on.
     pub topic: Utf8String<'a>,
 
@@ -85,7 +85,8 @@ pub struct Pub<'a> {
     pub properties: Properties<'a>,
 
     /// The message to be transmitted.
-    pub payload: &'a [u8],
+    #[serde(skip)]
+    pub payload: P,
 
     /// Specifies whether or not the message should be retained on the broker.
     #[serde(skip)]
@@ -98,6 +99,20 @@ pub struct Pub<'a> {
     /// Specified true if this message is a duplicate (e.g. it has already been transmitted).
     #[serde(skip)]
     pub dup: bool,
+}
+
+impl<'a, P: crate::publication::ToPayload> core::fmt::Debug for Pub<'a, P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Pub")
+            .field("topic", &self.topic)
+            .field("packet_id", &self.packet_id)
+            .field("properties", &self.properties)
+            .field("retain", &self.retain)
+            .field("qos", &self.qos)
+            .field("dup", &self.dup)
+            .field("payload", &"<deferred>")
+            .finish()
+    }
 }
 
 /// An MQTT SUBSCRIBE control packet
@@ -255,7 +270,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -282,7 +297,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -334,7 +349,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -366,7 +381,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }

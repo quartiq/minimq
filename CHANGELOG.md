@@ -11,6 +11,7 @@ This document describes the changes to Minimq between releases.
  to a new `Config` structure that is supplied to the `Minimq::new()` constructor to simplify the
  client.
 
+
 ## Added
 * Support for subscribing at `QoS::ExactlyOnce`
 * Support for downgrading the `QoS` to the maximum permitted by the server
