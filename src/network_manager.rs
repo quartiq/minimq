@@ -5,7 +5,7 @@
 //! simple ownership semantics of reading and writing to the network stack. This allows the network
 //! stack to be used to transmit buffers that may be stored internally in other structs without
 //! violating Rust's borrow rules.
-use crate::message_types::ControlPacket;
+use crate::{message_types::ControlPacket, packets::Pub};
 use embedded_nal::{nb, SocketAddr, TcpClientStack, TcpError};
 use serde::Serialize;
 
@@ -140,6 +140,24 @@ where
         crate::info!("Sending: {:?}", packet);
         let (offset, packet) = crate::ser::MqttSerializer::to_buffer_meta(self.tx_buffer, packet)
             .map_err(ProtocolError::from)?;
+        let len = packet.len();
+
+        self.commit_write(offset, len)?;
+        Ok(&self.tx_buffer[offset..][..len])
+    }
+
+    pub fn send_pub<P: crate::publication::ToPayload>(
+        &mut self,
+        pub_packet: &Pub<'_, P>,
+    ) -> Result<&[u8], crate::PubError<TcpStack::Error, P::Error>> {
+        // If there's an unfinished write pending, it's invalid to try to write new data. The
+        // previous write must first be completed.
+        assert!(self.pending_write.is_none());
+
+        crate::info!("Sending: {:?}", pub_packet);
+        let (offset, packet) =
+            crate::ser::MqttSerializer::pub_to_buffer_meta(self.tx_buffer, pub_packet)?;
+
         let len = packet.len();
 
         self.commit_write(offset, len)?;

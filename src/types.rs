@@ -51,6 +51,17 @@ pub struct PropertiesIter<'a> {
     index: usize,
 }
 
+impl<'a> PropertiesIter<'a> {
+    pub fn response_topic(&mut self) -> Option<&'a str> {
+        self.find_map(|prop| {
+            if let Ok(crate::Property::ResponseTopic(topic)) = prop {
+                Some(topic.0)
+            } else {
+                None
+            }
+        })
+    }
+}
 impl<'a> core::iter::Iterator for PropertiesIter<'a> {
     type Item = Result<Property<'a>, ProtocolError>;
 

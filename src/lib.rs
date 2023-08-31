@@ -82,7 +82,7 @@ mod will;
 pub use broker::Broker;
 pub use config::ConfigBuilder;
 pub use properties::Property;
-pub use publication::Publication;
+pub use publication::{DeferredPublication, Publication};
 pub use reason_codes::ReasonCode;
 pub use will::Will;
 
@@ -147,6 +147,29 @@ pub enum ProtocolError {
     Failed(ReasonCode),
     Serialization(crate::ser::Error),
     Deserialization(crate::de::Error),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum PubError<T, E> {
+    Error(Error<T>),
+    Serialization(E),
+}
+
+impl<T, E> From<crate::ser::PubError<E>> for PubError<T, E> {
+    fn from(e: crate::ser::PubError<E>) -> Self {
+        match e {
+            crate::ser::PubError::Other(e) => crate::PubError::Serialization(e),
+            crate::ser::PubError::Error(e) => crate::PubError::Error(crate::Error::Minimq(
+                crate::MinimqError::Protocol(ProtocolError::from(e)),
+            )),
+        }
+    }
+}
+
+impl<T, E> From<Error<T>> for PubError<T, E> {
+    fn from(e: Error<T>) -> Self {
+        Self::Error(e)
+    }
 }
 
 impl From<crate::ser::Error> for ProtocolError {
