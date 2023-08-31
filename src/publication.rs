@@ -1,7 +1,7 @@
 use crate::{
     packets::Pub,
     properties::Property,
-    types::{Properties, Utf8String},
+    types::{BinaryData, Properties, Utf8String},
     ProtocolError, QoS, Retain,
 };
 
@@ -145,22 +145,35 @@ impl<'a, P: ToPayload> Publication<'a, P> {
 
         // Next, copy over any correlation data to the outbound properties.
         if let Some(correlation_data) = received_properties.into_iter().find_map(|p| {
-            if let Ok(data @ Property::CorrelationData(_)) = p {
-                Some(data)
+            if let Ok(Property::CorrelationData(data)) = p {
+                Some(data.0)
             } else {
                 None
             }
         }) {
-            self.properties = match self.properties {
-                Properties::Slice(properties) | Properties::CorrelatedSlice { properties, .. } => {
-                    Properties::CorrelatedSlice {
-                        properties,
-                        correlation: correlation_data,
-                    }
-                }
-                _ => unimplemented!(),
-            };
+            self.correlate(correlation_data)
+        } else {
+            self
         }
+    }
+
+    /// Include correlation data to the message
+    ///
+    /// # Note
+    /// This will override any existing correlation data in the message.
+    ///
+    /// # Args
+    /// * `data` - The data composing the correlation data.
+    pub fn correlate(mut self, data: &'a [u8]) -> Self {
+        self.properties = match self.properties {
+            Properties::Slice(properties) | Properties::CorrelatedSlice { properties, .. } => {
+                Properties::CorrelatedSlice {
+                    properties,
+                    correlation: Property::CorrelationData(BinaryData(data)),
+                }
+            }
+            _ => unimplemented!(),
+        };
 
         self
     }

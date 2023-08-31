@@ -135,6 +135,7 @@ pub enum Retain {
 }
 
 /// Errors that are specific to the MQTT protocol implementation.
+#[non_exhaustive]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ProtocolError {
     ProvidedClientIdTooLong,
@@ -194,6 +195,7 @@ impl From<ReasonCode> for ProtocolError {
 }
 
 #[derive(Debug, PartialEq)]
+#[non_exhaustive]
 pub enum MinimqError {
     Protocol(ProtocolError),
     Clock(embedded_time::clock::Error),
@@ -201,6 +203,7 @@ pub enum MinimqError {
 
 /// Possible errors encountered during an MQTT connection.
 #[derive(Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Error<E> {
     WriteFail,
     NotReady,

@@ -38,6 +38,7 @@ use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 use varint_rs::VarintReader;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Error {
     /// A custom deserialization error occurred.
     Custom,
