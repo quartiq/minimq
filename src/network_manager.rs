@@ -110,7 +110,7 @@ where
                 crate::trace!("Wrote: {:0x?}", &self.tx_buffer[..written]);
                 if written != len {
                     crate::warn!("Saving pending data. Wrote {written} of {len}");
-                    self.pending_write.replace((written, len));
+                    self.pending_write.replace((start + written, len - written));
                 }
             })
     }
@@ -167,7 +167,7 @@ where
     /// Finish writing an MQTT control packet to the interface if one exists.
     pub fn finish_write(&mut self) -> Result<(), Error<TcpStack::Error>> {
         if let Some((head, tail)) = self.pending_write.take() {
-            self.commit_write(head, tail - head)?;
+            self.commit_write(head, tail)?;
         }
 
         Ok(())
