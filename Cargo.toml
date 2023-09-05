@@ -28,6 +28,7 @@ embedded-nal = "0.7"
 [features]
 default = []
 logging = ["log"]
+unsecure = []
 
 [dev-dependencies]
 log = "0.4"
