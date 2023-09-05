@@ -269,7 +269,7 @@ pub struct MqttClient<
     sm: sm::StateMachine<ClientContext<'buf, Clock>>,
     network: InterfaceHolder<'buf, TcpStack>,
     will: Option<SerializedWill<'buf>>,
-    auth: Option<Auth>,
+    auth: Option<Auth<'buf>>,
     downgrade_qos: bool,
     broker: Broker,
     max_packet_size: usize,
@@ -278,25 +278,6 @@ pub struct MqttClient<
 impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate::Broker>
     MqttClient<'buf, TcpStack, Clock, Broker>
 {
-    /// Specify the authentication message used by the server.
-    ///
-    /// # Args
-    /// * `user_name` - The user name
-    /// * `password` - The password
-    #[cfg(feature = "unsecure")]
-    pub fn set_auth(
-        &mut self,
-        user_name: &str,
-        password: &str,
-    ) -> Result<(), Error<TcpStack::Error>> {
-        let auth = Auth { 
-            user_name: String::from_str(user_name).or(Err(Error::ProvidedClientIdTooLong))?, 
-            password: String::from_str(password).or(Err(Error::ProvidedClientIdTooLong))?, 
-        };
-        self.auth = Some(auth);
-        Ok(())
-    }
-
     /// Subscribe to a topic.
     ///
     /// # Note
@@ -463,8 +444,8 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
             keep_alive: self.sm.context().keepalive_interval(),
             properties: Properties::Slice(&properties),
             client_id: Utf8String(self.sm.context().session_state.client_id.as_str()),
-            auth: self.auth.as_ref(),
-            will: self.will.as_ref(),
+            auth: self.auth,
+            will: self.will,
             clean_start: !self.sm.context().session_state.is_present(),
         })?;
 
@@ -734,7 +715,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
                 downgrade_qos: config.downgrade_qos,
                 broker: config.broker,
                 will: config.will,
-                auth: None,
+                auth: config.auth,
                 network: InterfaceHolder::new(network_stack, config.tx_buffer),
                 max_packet_size: config.rx_buffer.len(),
             },

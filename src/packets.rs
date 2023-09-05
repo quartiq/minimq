@@ -23,7 +23,7 @@ pub struct Connect<'a> {
     pub client_id: Utf8String<'a>,
 
     /// An optional authentication message used by the server.
-    pub auth: Option<&'a Auth>,
+    pub auth: Option<Auth<'a>>,
 
     /// An optional will message to be transmitted whenever the connection is lost.
     pub(crate) will: Option<SerializedWill<'a>>,
@@ -49,7 +49,7 @@ impl<'a> serde::Serialize for Connect<'a> {
             flags.set_bit(6, true);
             flags.set_bit(7, true);
         }
-        
+
         let mut item = serializer.serialize_struct("Connect", 0)?;
         item.serialize_field("protocol_name", &Utf8String("MQTT"))?;
         item.serialize_field("protocol_version", &5u8)?;
@@ -59,10 +59,10 @@ impl<'a> serde::Serialize for Connect<'a> {
         item.serialize_field("client_id", &self.client_id)?;
         if let Some(will) = &self.will {
             item.serialize_field("will", will.contents)?;
-        item.serialize_field("will", &self.will)?;
+        }
         if let Some(auth) = &self.auth {
-            item.serialize_field("user_name", &Utf8String(auth.user_name.as_str()))?;
-            item.serialize_field("password", &Utf8String(auth.password.as_str()))?;
+            item.serialize_field("user_name", &Utf8String(auth.user_name))?;
+            item.serialize_field("password", &Utf8String(auth.password))?;
         }
 
         item.end()
