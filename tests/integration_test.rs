@@ -1,4 +1,4 @@
-use minimq::{types::Utf8String, Minimq, Property, Publication, QoS, Retain};
+use minimq::{types::Utf8String, Minimq, Property, Publication, QoS, Will};
 
 use embedded_nal::{self, IpAddr, Ipv4Addr};
 use std_embedded_time::StandardClock;
@@ -7,27 +7,23 @@ use std_embedded_time::StandardClock;
 fn main() -> std::io::Result<()> {
     env_logger::init();
 
-    let stack = std_embedded_nal::Stack::default();
-    let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let mut mqtt =
-        Minimq::<_, _, 256, 16>::new(localhost, "", stack, StandardClock::default()).unwrap();
+    let will = Will::new("exit", "Test complete".as_bytes(), &[]).unwrap();
 
-    // Use a keepalive interval for the client.
-    mqtt.client().set_keepalive_interval(60).unwrap();
+    let mut buffer = [0u8; 1024];
+    let stack = std_embedded_nal::Stack;
+    let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+    let mut mqtt: Minimq<'_, _, _, minimq::broker::IpBroker> = Minimq::new(
+        stack,
+        StandardClock::default(),
+        minimq::ConfigBuilder::new(localhost.into(), &mut buffer)
+            .will(will)
+            .unwrap()
+            .keepalive_interval(60),
+    );
 
     let mut published = false;
     let mut subscribed = false;
     let mut responses = 0;
-
-    mqtt.client()
-        .set_will(
-            "exit",
-            "Test complete".as_bytes(),
-            QoS::AtMostOnce,
-            Retain::NotRetained,
-            &[],
-        )
-        .unwrap();
 
     loop {
         // Continually poll the client until there is no more data.
@@ -49,7 +45,7 @@ fn main() -> std::io::Result<()> {
             if was_response {
                 responses += 1;
                 if responses == 2 {
-                    assert_eq!(0, mqtt.client().pending_messages(QoS::AtLeastOnce));
+                    assert!(!mqtt.client().pending_messages());
                     std::process::exit(0);
                 }
             }
@@ -84,7 +80,7 @@ fn main() -> std::io::Result<()> {
             client.publish(publication).unwrap();
 
             // The message cannot be ack'd until the next poll call
-            assert_eq!(1, client.pending_messages(QoS::AtLeastOnce));
+            assert!(client.pending_messages());
 
             published = true;
         }

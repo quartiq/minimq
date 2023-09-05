@@ -1,4 +1,4 @@
-use crate::Error;
+use crate::ProtocolError;
 use num_enum::{FromPrimitive, IntoPrimitive};
 
 /// MQTTv5-defined codes that may be returned in response to control packets.
@@ -85,11 +85,11 @@ impl From<&ReasonCode> for u8 {
     }
 }
 
-impl<T> From<Result<T, ReasonCode>> for ReasonCode {
-    fn from(result: Result<T, ReasonCode>) -> ReasonCode {
+impl<T, E: Into<ReasonCode>> From<Result<T, E>> for ReasonCode {
+    fn from(result: Result<T, E>) -> ReasonCode {
         match result {
             Ok(_) => ReasonCode::Success,
-            Err(code) => code,
+            Err(code) => code.into(),
         }
     }
 }
@@ -105,7 +105,7 @@ impl From<ReasonCode> for Result<(), ReasonCode> {
 }
 
 impl ReasonCode {
-    pub fn as_result<E>(&self) -> Result<(), Error<E>> {
+    pub fn as_result(&self) -> Result<(), ProtocolError> {
         let result: Result<(), ReasonCode> = (*self).into();
         result?;
         Ok(())

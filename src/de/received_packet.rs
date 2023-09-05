@@ -1,6 +1,6 @@
 use crate::{
     message_types::MessageType,
-    packets::{ConnAck, Disconnect, Pub, PubAck, PubComp, PubRec, SubAck},
+    packets::{ConnAck, Disconnect, Pub, PubAck, PubComp, PubRec, PubRel, SubAck},
     varint::Varint,
     ProtocolError, QoS, Retain,
 };
@@ -14,9 +14,10 @@ use serde::Deserialize;
 #[derive(Debug)]
 pub enum ReceivedPacket<'a> {
     ConnAck(ConnAck<'a>),
-    Publish(Pub<'a>),
+    Publish(Pub<'a, &'a [u8]>),
     PubAck(PubAck<'a>),
     SubAck(SubAck<'a>),
+    PubRel(PubRel<'a>),
     PubRec(PubRec<'a>),
     PubComp(PubComp<'a>),
     Disconnect(Disconnect<'a>),
@@ -82,7 +83,7 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
 
                 let properties = seq.next_element()?.unwrap();
 
-                let publish = Pub {
+                let publish: Pub<'_, &[u8]> = Pub {
                     topic,
                     packet_id,
                     properties,
@@ -102,6 +103,7 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
             MessageType::SubAck => ReceivedPacket::SubAck(seq.next_element()?.unwrap()),
             MessageType::PingResp => ReceivedPacket::PingResp,
             MessageType::PubRec => ReceivedPacket::PubRec(seq.next_element()?.unwrap()),
+            MessageType::PubRel => ReceivedPacket::PubRel(seq.next_element()?.unwrap()),
             MessageType::PubComp => ReceivedPacket::PubComp(seq.next_element()?.unwrap()),
             MessageType::Disconnect => ReceivedPacket::Disconnect(seq.next_element()?.unwrap()),
             _ => return Err(A::Error::custom("Unsupported message type")),
@@ -325,6 +327,44 @@ mod test {
         let packet = ReceivedPacket::from_buffer(&serialized_pubrec).unwrap();
         match packet {
             ReceivedPacket::PubRec(rec) => {
+                assert_eq!(rec.packet_id, 5);
+                assert_eq!(rec.reason.code(), ReasonCode::Success);
+            }
+            _ => panic!("Invalid message"),
+        }
+    }
+
+    #[test]
+    fn deserialize_good_pubrel() {
+        let serialized_pubrel: [u8; 6] = [
+            6 << 4 | 0b10, // PubRec
+            0x04,          // Remaining length
+            0x00,
+            0x05, // Identifier
+            0x10, // Response Code
+            0x00, // Properties length
+        ];
+        let packet = ReceivedPacket::from_buffer(&serialized_pubrel).unwrap();
+        match packet {
+            ReceivedPacket::PubRel(rec) => {
+                assert_eq!(rec.packet_id, 5);
+                assert_eq!(rec.reason.code(), ReasonCode::NoMatchingSubscribers);
+            }
+            _ => panic!("Invalid message"),
+        }
+    }
+
+    #[test]
+    fn deserialize_short_pubrel() {
+        let serialized_pubrel: [u8; 4] = [
+            6 << 4 | 0b10, // PubRec
+            0x02,          // Remaining length
+            0x00,
+            0x05, // Identifier
+        ];
+        let packet = ReceivedPacket::from_buffer(&serialized_pubrel).unwrap();
+        match packet {
+            ReceivedPacket::PubRel(rec) => {
                 assert_eq!(rec.packet_id, 5);
                 assert_eq!(rec.reason.code(), ReasonCode::Success);
             }

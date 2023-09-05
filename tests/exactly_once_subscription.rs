@@ -1,4 +1,7 @@
-use minimq::{Minimq, Publication, QoS};
+use minimq::{
+    types::{SubscriptionOptions, TopicFilter},
+    Minimq, Publication, QoS,
+};
 
 use embedded_nal::{self, IpAddr, Ipv4Addr};
 use std_embedded_time::StandardClock;
@@ -18,17 +21,16 @@ fn main() -> std::io::Result<()> {
 
     let mut published = false;
     let mut subscribed = false;
+    let mut received_messages = 0;
 
     loop {
-        // Service the MQTT client until there's no more data to process.
-        while let Some(complete) = mqtt
-            .poll(|_client, topic, _payload, _properties| topic == "data")
+        // Continually process the client until no more data is received.
+        while let Some(count) = mqtt
+            .poll(|_client, _topic, _payload, _properties| 1)
             .unwrap()
         {
-            if complete {
-                log::info!("Transmission complete");
-                std::process::exit(0);
-            }
+            log::info!("Received a message");
+            received_messages += count;
         }
 
         if !mqtt.client().is_connected() {
@@ -36,14 +38,17 @@ fn main() -> std::io::Result<()> {
         }
 
         if !subscribed {
-            mqtt.client().subscribe(&["data".into()], &[]).unwrap();
+            let topic_filter = TopicFilter::new("data")
+                .options(SubscriptionOptions::default().maximum_qos(QoS::ExactlyOnce));
+            mqtt.client().subscribe(&[topic_filter], &[]).unwrap();
             subscribed = true;
         }
 
-        if !mqtt.client().subscriptions_pending()
-            && !published
-            && mqtt.client().can_publish(QoS::ExactlyOnce)
-        {
+        if mqtt.client().subscriptions_pending() {
+            continue;
+        }
+
+        if !published && mqtt.client().can_publish(QoS::ExactlyOnce) {
             mqtt.client()
                 .publish(
                     Publication::new("Ping".as_bytes())
@@ -55,6 +60,12 @@ fn main() -> std::io::Result<()> {
                 .unwrap();
             log::info!("Publishing message");
             published = true;
+        }
+
+        if received_messages > 0 && !mqtt.client().pending_messages() {
+            assert!(published);
+            log::info!("Reception Complete");
+            std::process::exit(0);
         }
     }
 }

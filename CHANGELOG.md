@@ -2,6 +2,28 @@
 
 This document describes the changes to Minimq between releases.
 
+# [Unreleased]
+
+## Changed
+* [breaking] Const generics for message size and allowable in-flight messages have been removed.
+  Instead, the user now supplies an RX buffer, a TX buffer, and a session state buffer.
+ * Setup-only configuration APIs such as `set_will()` and `set_keepalive_interval()` have been moved
+ to a new `Config` structure that is supplied to the `Minimq::new()` constructor to simplify the
+ client.
+* Added a new `correlate()` API to publication builder to easily add correlation data.
+
+
+## Added
+* Support for subscribing at `QoS::ExactlyOnce`
+* Support for downgrading the `QoS` to the maximum permitted by the server
+* Brokers may now be provided using domain-name syntax or static IP addresses.
+
+## Fixed
+* Fixed an issue where PubComp was serialized with an incorrect control code
+* Fixed an issue where some response control packets would be improperly serialized
+* The client now respects the server max packet reception
+
+
 # [0.7.0] - 2023-06-22
 
 ## Fixed
@@ -118,7 +140,8 @@ keep-alive interval
 
 * Initial library release and publish to crates.io
 
-[Unreleased]: https://github.com/quartiq/minimq/compare/0.6.2...HEAD
+[Unreleased]: https://github.com/quartiq/minimq/compare/0.7.0...HEAD
+[0.7.0]: https://github.com/quartiq/minimq/releases/tag/0.7.0
 [0.6.2]: https://github.com/quartiq/minimq/releases/tag/0.6.2
 [0.6.1]: https://github.com/quartiq/minimq/releases/tag/0.6.1
 [0.6.0]: https://github.com/quartiq/minimq/releases/tag/0.6.0

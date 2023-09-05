@@ -1,7 +1,7 @@
 use crate::{
     reason_codes::ReasonCode,
-    types::{Properties, TopicFilter, Utf8String, Auth},
-    will::Will,
+    types::{Auth, Properties, TopicFilter, Utf8String},
+    will::SerializedWill,
     QoS, Retain,
 };
 use bit_field::BitField;
@@ -11,7 +11,7 @@ use serde::ser::SerializeStruct;
 
 /// An MQTT CONNECT packet.
 #[derive(Debug)]
-pub struct Connect<'a, const T: usize> {
+pub struct Connect<'a> {
     /// Specifies the keep-alive interval of the connection in seconds.
     pub keep_alive: u16,
 
@@ -26,13 +26,13 @@ pub struct Connect<'a, const T: usize> {
     pub auth: Option<&'a Auth>,
 
     /// An optional will message to be transmitted whenever the connection is lost.
-    pub will: Option<&'a Will<T>>,
+    pub(crate) will: Option<SerializedWill<'a>>,
 
     /// Specified true there is no session state being taken in to the MQTT connection.
     pub clean_start: bool,
 }
 
-impl<'a, const T: usize> serde::Serialize for Connect<'a, T> {
+impl<'a> serde::Serialize for Connect<'a> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut flags: u8 = 0;
         flags.set_bit(1, self.clean_start);
@@ -42,7 +42,7 @@ impl<'a, const T: usize> serde::Serialize for Connect<'a, T> {
             // the will message, and whether or not the will message should be retained.
             flags.set_bit(2, true);
             flags.set_bits(3..=4, will.qos as u8);
-            flags.set_bit(5, will.retain == Retain::Retained);
+            flags.set_bit(5, will.retained == Retain::Retained);
         }
 
         if self.auth.is_some() {
@@ -57,6 +57,8 @@ impl<'a, const T: usize> serde::Serialize for Connect<'a, T> {
         item.serialize_field("keep_alive", &self.keep_alive)?;
         item.serialize_field("properties", &self.properties)?;
         item.serialize_field("client_id", &self.client_id)?;
+        if let Some(will) = &self.will {
+            item.serialize_field("will", will.contents)?;
         item.serialize_field("will", &self.will)?;
         if let Some(auth) = &self.auth {
             item.serialize_field("user_name", &Utf8String(auth.user_name.as_str()))?;
@@ -82,8 +84,8 @@ pub struct ConnAck<'a> {
 }
 
 /// An MQTT PUBLISH packet, containing data to be sent or received.
-#[derive(Debug, Serialize)]
-pub struct Pub<'a> {
+#[derive(Serialize)]
+pub struct Pub<'a, P: crate::publication::ToPayload> {
     /// The topic that the message was received on.
     pub topic: Utf8String<'a>,
 
@@ -94,7 +96,8 @@ pub struct Pub<'a> {
     pub properties: Properties<'a>,
 
     /// The message to be transmitted.
-    pub payload: &'a [u8],
+    #[serde(skip)]
+    pub payload: P,
 
     /// Specifies whether or not the message should be retained on the broker.
     #[serde(skip)]
@@ -107,6 +110,20 @@ pub struct Pub<'a> {
     /// Specified true if this message is a duplicate (e.g. it has already been transmitted).
     #[serde(skip)]
     pub dup: bool,
+}
+
+impl<'a, P: crate::publication::ToPayload> core::fmt::Debug for Pub<'a, P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Pub")
+            .field("topic", &self.topic)
+            .field("packet_id", &self.packet_id)
+            .field("properties", &self.properties)
+            .field("retain", &self.retain)
+            .field("qos", &self.qos)
+            .field("dup", &self.dup)
+            .field("payload", &"<deferred>")
+            .finish()
+    }
 }
 
 /// An MQTT SUBSCRIBE control packet
@@ -157,7 +174,7 @@ pub struct SubAck<'a> {
 }
 
 /// An MQTT PUBREC control packet
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PubRec<'a> {
     /// The ID of the packet that publication reception occurred on.
     pub packet_id: u16,
@@ -168,20 +185,18 @@ pub struct PubRec<'a> {
 }
 
 /// An MQTT PUBREL control packet
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PubRel<'a> {
     /// The ID of the publication that this packet is associated with.
     pub packet_id: u16,
 
-    /// The response code of the publish release message.
-    pub code: ReasonCode,
-
-    /// Properties associated wtih the packet
-    pub properties: Properties<'a>,
+    /// The properties and success status of associated with the publication.
+    #[serde(borrow)]
+    pub reason: Reason<'a>,
 }
 
 /// An MQTT PUBCOMP control packet
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PubComp<'a> {
     /// Packet identifier of the publication that this packet is associated with.
     pub packet_id: u16,
@@ -214,7 +229,7 @@ impl<'a> From<ReasonCode> for Reason<'a> {
         Self {
             reason: Some(ReasonData {
                 code,
-                _properties: None,
+                _properties: Some(Properties::Slice(&[])),
             }),
         }
     }
@@ -266,7 +281,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -293,7 +308,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -345,7 +360,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -377,7 +392,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -395,7 +410,7 @@ mod tests {
         ];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let connect: crate::packets::Connect<'_, 1> = crate::packets::Connect {
+        let connect: crate::packets::Connect<'_> = crate::packets::Connect {
             client_id: crate::types::Utf8String("ABC"),
             auth: None,
             will: None,
@@ -438,9 +453,10 @@ mod tests {
         ];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let mut will = crate::will::Will::<100>::new("EFG", &[0xAB, 0xCD], &[]).unwrap();
-        will.qos(crate::QoS::AtMostOnce);
-        will.retained(crate::Retain::NotRetained);
+        let mut will_buff = [0; 64];
+        let will = crate::will::Will::new("EFG", &[0xAB, 0xCD], &[])
+            .unwrap()
+            .qos(crate::QoS::AtMostOnce);
 
         let connect = crate::packets::Connect {
             clean_start: true,
@@ -448,7 +464,7 @@ mod tests {
             properties: crate::types::Properties::Slice(&[]),
             client_id: crate::types::Utf8String("ABC"),
             auth: None,
-            will: Some(&will),
+            will: Some(will.serialize(&mut will_buff).unwrap()),
         };
 
         let message = MqttSerializer::to_buffer(&mut buffer, &connect).unwrap();
@@ -471,7 +487,7 @@ mod tests {
     #[test]
     fn serialize_pubrel() {
         let good_pubrel: [u8; 6] = [
-            6 << 4 | 0b10, // PubRec
+            6 << 4 | 0b10, // PubRel
             0x04,          // Remaining length
             0x00,
             0x05, // Identifier
@@ -481,8 +497,7 @@ mod tests {
 
         let pubrel = crate::packets::PubRel {
             packet_id: 5,
-            code: ReasonCode::NoMatchingSubscribers,
-            properties: crate::types::Properties::Slice(&[]),
+            reason: ReasonCode::NoMatchingSubscribers.into(),
         };
 
         let mut buffer: [u8; 1024] = [0; 1024];
@@ -516,6 +531,33 @@ mod tests {
         assert_eq!(
             MqttSerializer::to_buffer(&mut buffer, &pubrel).unwrap(),
             good_puback
+        );
+    }
+
+    #[test]
+    fn serialize_pubcomp() {
+        let good_pubcomp: [u8; 5] = [
+            7 << 4, // PubComp
+            0x03,   // Remaining length
+            0x00,
+            0x15, // Identifier
+            0x00, // Response Code
+        ];
+
+        let pubrel = crate::packets::PubComp {
+            packet_id: 0x15,
+            reason: crate::packets::Reason {
+                reason: Some(crate::packets::ReasonData {
+                    code: ReasonCode::Success,
+                    _properties: None,
+                }),
+            },
+        };
+
+        let mut buffer: [u8; 1024] = [0; 1024];
+        assert_eq!(
+            MqttSerializer::to_buffer(&mut buffer, &pubrel).unwrap(),
+            good_pubcomp
         );
     }
 }

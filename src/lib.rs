@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 //! # MiniMQ
 //! Provides a minimal MQTTv5 client and message parsing for the MQTT version 5 protocol.
 //!
@@ -23,18 +23,21 @@
 //! Below is a sample snippet showing how this library is used.
 //!
 //! ```no_run
-//! use minimq::{Minimq, Publication};
+//! use minimq::{ConfigBuilder, Minimq, Publication};
 //!
 //! // Construct an MQTT client with a maximum packet size of 256 bytes
 //! // and a maximum of 16 messages that are allowed to be "in flight".
 //! // Messages are "in flight" if QoS::AtLeastOnce has not yet been acknowledged (PUBACK)
 //! // or QoS::ExactlyOnce has not been completed (PUBCOMP).
 //! // Connect to a broker at localhost - Use a client ID of "test".
-//! let mut mqtt: Minimq<_, _, 256, 16> = Minimq::new(
-//!         "127.0.0.1".parse().unwrap(),
-//!         "test",
+//! let mut buffer = [0; 256];
+//! let localhost: embedded_nal::IpAddr = "127.0.0.1".parse().unwrap();
+//! let mut mqtt: Minimq<'_, _, _, minimq::broker::IpBroker> = Minimq::new(
 //!         std_embedded_nal::Stack::default(),
-//!         std_embedded_time::StandardClock::default()).unwrap();
+//!         std_embedded_time::StandardClock::default(),
+//!         ConfigBuilder::new(localhost.into(), &mut buffer)
+//!             .client_id("test").unwrap(),
+//!         );
 //!
 //! let mut subscribed = false;
 //!
@@ -58,9 +61,9 @@
 //! }
 //! ```
 
+pub mod broker;
+pub mod config;
 mod de;
-mod ser;
-
 mod message_types;
 pub mod mqtt_client;
 mod network_manager;
@@ -68,19 +71,28 @@ mod packets;
 mod properties;
 pub mod publication;
 mod reason_codes;
+mod republication;
+mod ring_buffer;
+mod ser;
 mod session_state;
 pub mod types;
 mod varint;
 mod will;
 
+pub use broker::Broker;
+pub use config::ConfigBuilder;
 pub use properties::Property;
-pub use publication::Publication;
+pub use publication::{DeferredPublication, Publication};
 pub use reason_codes::ReasonCode;
+pub use will::Will;
 
 pub use embedded_nal;
 pub use embedded_time;
 pub use mqtt_client::Minimq;
 use num_enum::TryFromPrimitive;
+
+pub use de::Error as DeError;
+pub use ser::Error as SerError;
 
 #[cfg(feature = "logging")]
 pub(crate) use log::{debug, error, info, trace, warn};
@@ -123,19 +135,46 @@ pub enum Retain {
 }
 
 /// Errors that are specific to the MQTT protocol implementation.
+#[non_exhaustive]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ProtocolError {
-    PacketSize,
+    ProvidedClientIdTooLong,
+    UnexpectedPacket,
+    InvalidProperty,
     MalformedPacket,
     BufferSize,
-    InvalidProperty,
     BadIdentifier,
     Unacknowledged,
     WrongQos,
     UnsupportedPacket,
     NoTopic,
-    Serialization(crate::ser::Error),
-    Deserialization(crate::de::Error),
+    WillAlreadySpecified,
+    Failed(ReasonCode),
+    Serialization(SerError),
+    Deserialization(DeError),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum PubError<T, E> {
+    Error(Error<T>),
+    Serialization(E),
+}
+
+impl<T, E> From<crate::ser::PubError<E>> for PubError<T, E> {
+    fn from(e: crate::ser::PubError<E>) -> Self {
+        match e {
+            crate::ser::PubError::Other(e) => crate::PubError::Serialization(e),
+            crate::ser::PubError::Error(e) => crate::PubError::Error(crate::Error::Minimq(
+                crate::MinimqError::Protocol(ProtocolError::from(e)),
+            )),
+        }
+    }
+}
+
+impl<T, E> From<Error<T>> for PubError<T, E> {
+    fn from(e: Error<T>) -> Self {
+        Self::Error(e)
+    }
 }
 
 impl From<crate::ser::Error> for ProtocolError {
@@ -150,48 +189,59 @@ impl From<crate::de::Error> for ProtocolError {
     }
 }
 
-impl<E> From<crate::ser::Error> for Error<E> {
-    fn from(err: crate::ser::Error) -> Self {
-        Error::Protocol(ProtocolError::Serialization(err))
-    }
-}
-
-impl<E> From<crate::de::Error> for Error<E> {
-    fn from(err: crate::de::Error) -> Self {
-        Error::Protocol(ProtocolError::Deserialization(err))
-    }
-}
-
-impl<E> From<ReasonCode> for Error<E> {
+impl From<ReasonCode> for ProtocolError {
     fn from(code: ReasonCode) -> Self {
-        Error::Failed(code)
+        ProtocolError::Failed(code)
     }
+}
+
+#[derive(Debug, PartialEq)]
+#[non_exhaustive]
+pub enum MinimqError {
+    Protocol(ProtocolError),
+    Clock(embedded_time::clock::Error),
 }
 
 /// Possible errors encountered during an MQTT connection.
 #[derive(Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Error<E> {
-    Network(E),
     WriteFail,
     NotReady,
     Unsupported,
-    ProvidedClientIdTooLong,
     NoResponseTopic,
-    Failed(ReasonCode),
-    Protocol(ProtocolError),
     SessionReset,
-    Clock(embedded_time::clock::Error),
+    Network(E),
+    Minimq(MinimqError),
 }
 
-impl<E> From<embedded_time::clock::Error> for Error<E> {
+impl<E> From<MinimqError> for Error<E> {
+    fn from(minimq: MinimqError) -> Self {
+        Error::Minimq(minimq)
+    }
+}
+
+impl From<embedded_time::clock::Error> for MinimqError {
     fn from(clock: embedded_time::clock::Error) -> Self {
-        Error::Clock(clock)
+        MinimqError::Clock(clock)
     }
 }
 
 impl<E> From<ProtocolError> for Error<E> {
+    fn from(p: ProtocolError) -> Self {
+        Error::Minimq(p.into())
+    }
+}
+
+impl<E> From<embedded_time::clock::Error> for Error<E> {
+    fn from(clock: embedded_time::clock::Error) -> Self {
+        Error::Minimq(clock.into())
+    }
+}
+
+impl From<ProtocolError> for MinimqError {
     fn from(error: ProtocolError) -> Self {
-        Error::Protocol(error)
+        MinimqError::Protocol(error)
     }
 }
 

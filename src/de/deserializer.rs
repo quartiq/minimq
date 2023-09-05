@@ -38,6 +38,7 @@ use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 use varint_rs::VarintReader;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Error {
     /// A custom deserialization error occurred.
     Custom,
@@ -51,6 +52,8 @@ pub enum Error {
     /// There was not sufficient data to deserialize the required datatype.
     InsufficientData,
 }
+
+impl serde::ser::StdError for Error {}
 
 impl serde::de::Error for Error {
     fn custom<T: core::fmt::Display>(_msg: T) -> Self {

@@ -10,13 +10,14 @@ use std_embedded_time::StandardClock;
 fn main() -> std::io::Result<()> {
     env_logger::init();
 
-    let stack = std_embedded_nal::Stack::default();
+    let mut buffer = [0u8; 1024];
+    let stack = std_embedded_nal::Stack;
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let mut mqtt =
-        Minimq::<_, _, 256, 16>::new(localhost, "", stack, StandardClock::default()).unwrap();
-
-    // Use a keepalive interval for the client.
-    mqtt.client().set_keepalive_interval(60).unwrap();
+    let mut mqtt: Minimq<'_, _, _, minimq::broker::IpBroker> = Minimq::new(
+        stack,
+        StandardClock::default(),
+        minimq::ConfigBuilder::new(localhost.into(), &mut buffer).keepalive_interval(60),
+    );
 
     let mut published = false;
     let mut subscribed = false;
@@ -62,7 +63,7 @@ fn main() -> std::io::Result<()> {
 
         if received_messages > 0 {
             assert!(published);
-            assert!(mqtt.client().pending_messages(QoS::AtLeastOnce) == 0);
+            assert!(!mqtt.client().pending_messages());
             log::info!("Reception Complete");
             std::process::exit(0);
         }

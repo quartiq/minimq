@@ -35,7 +35,7 @@ pub trait ControlPacket {
     }
 }
 
-impl<'a, const T: usize> ControlPacket for Connect<'a, T> {
+impl<'a> ControlPacket for Connect<'a> {
     const MESSAGE_TYPE: MessageType = MessageType::Connect;
 }
 
@@ -43,9 +43,8 @@ impl<'a> ControlPacket for ConnAck<'a> {
     const MESSAGE_TYPE: MessageType = MessageType::ConnAck;
 }
 
-impl<'a> ControlPacket for Pub<'a> {
-    const MESSAGE_TYPE: MessageType = MessageType::Publish;
-    fn fixed_header_flags(&self) -> u8 {
+impl<'a, P: crate::publication::ToPayload> Pub<'a, P> {
+    pub fn fixed_header_flags(&self) -> u8 {
         *0u8.set_bits(1..=2, self.qos as u8)
             .set_bit(0, self.retain == Retain::Retained)
     }
@@ -67,7 +66,7 @@ impl<'a> ControlPacket for PubRel<'a> {
 }
 
 impl<'a> ControlPacket for PubComp<'a> {
-    const MESSAGE_TYPE: MessageType = MessageType::PubRec;
+    const MESSAGE_TYPE: MessageType = MessageType::PubComp;
 }
 
 impl<'a> ControlPacket for Subscribe<'a> {

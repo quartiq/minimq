@@ -1,9 +1,58 @@
 use crate::{
     packets::Pub,
     properties::Property,
-    types::{Properties, Utf8String},
+    types::{BinaryData, Properties, Utf8String},
     ProtocolError, QoS, Retain,
 };
+
+pub trait ToPayload {
+    type Error;
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, Self::Error>;
+}
+
+impl<'a> ToPayload for &'a [u8] {
+    type Error = ();
+
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
+        if buffer.len() < self.len() {
+            return Err(());
+        }
+        buffer[..self.len()].copy_from_slice(self);
+        Ok(self.len())
+    }
+}
+
+impl<const N: usize> ToPayload for [u8; N] {
+    type Error = ();
+
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ()> {
+        (&self[..]).serialize(buffer)
+    }
+}
+impl<const N: usize> ToPayload for &[u8; N] {
+    type Error = ();
+
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, ()> {
+        (&self[..]).serialize(buffer)
+    }
+}
+
+pub struct DeferredPublication<E, F: Fn(&mut [u8]) -> Result<usize, E>> {
+    func: F,
+}
+
+impl<E, F: Fn(&mut [u8]) -> Result<usize, E>> DeferredPublication<E, F> {
+    pub fn new<'a>(func: F) -> Publication<'a, Self> {
+        Publication::new(Self { func })
+    }
+}
+
+impl<E, F: Fn(&mut [u8]) -> Result<usize, E>> ToPayload for DeferredPublication<E, F> {
+    type Error = E;
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, E> {
+        (self.func)(buffer)
+    }
+}
 
 /// Builder pattern for generating MQTT publications.
 ///
@@ -17,17 +66,17 @@ use crate::{
 /// It is expected that the user provide a topic either by directly specifying a publication topic
 /// in [Publication::topic], or by parsing a topic from the [Property::ResponseTopic] property
 /// contained within received properties by using the [Publication::reply] API.
-pub struct Publication<'a> {
+pub struct Publication<'a, P: ToPayload> {
     topic: Option<&'a str>,
     properties: Properties<'a>,
     qos: QoS,
-    payload: &'a [u8],
+    payload: P,
     retain: Retain,
 }
 
-impl<'a> Publication<'a> {
+impl<'a, P: ToPayload> Publication<'a, P> {
     /// Construct a new publication with a payload.
-    pub fn new(payload: &'a [u8]) -> Self {
+    pub fn new(payload: P) -> Self {
         Self {
             payload,
             qos: QoS::AtMostOnce,
@@ -96,22 +145,35 @@ impl<'a> Publication<'a> {
 
         // Next, copy over any correlation data to the outbound properties.
         if let Some(correlation_data) = received_properties.into_iter().find_map(|p| {
-            if let Ok(data @ Property::CorrelationData(_)) = p {
-                Some(data)
+            if let Ok(Property::CorrelationData(data)) = p {
+                Some(data.0)
             } else {
                 None
             }
         }) {
-            self.properties = match self.properties {
-                Properties::Slice(properties) | Properties::CorrelatedSlice { properties, .. } => {
-                    Properties::CorrelatedSlice {
-                        properties,
-                        correlation: correlation_data,
-                    }
-                }
-                _ => unimplemented!(),
-            };
+            self.correlate(correlation_data)
+        } else {
+            self
         }
+    }
+
+    /// Include correlation data to the message
+    ///
+    /// # Note
+    /// This will override any existing correlation data in the message.
+    ///
+    /// # Args
+    /// * `data` - The data composing the correlation data.
+    pub fn correlate(mut self, data: &'a [u8]) -> Self {
+        self.properties = match self.properties {
+            Properties::Slice(properties) | Properties::CorrelatedSlice { properties, .. } => {
+                Properties::CorrelatedSlice {
+                    properties,
+                    correlation: Property::CorrelationData(BinaryData(data)),
+                }
+            }
+            _ => unimplemented!(),
+        };
 
         self
     }
@@ -121,7 +183,7 @@ impl<'a> Publication<'a> {
     /// # Returns
     /// The message to be published if a publication topic was specified. If no publication topic
     /// was identified, an error is returned.
-    pub fn finish(self) -> Result<Pub<'a>, ProtocolError> {
+    pub fn finish(self) -> Result<Pub<'a, P>, ProtocolError> {
         Ok(Pub {
             topic: Utf8String(self.topic.ok_or(ProtocolError::NoTopic)?),
             properties: self.properties,

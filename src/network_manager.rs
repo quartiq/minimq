@@ -5,32 +5,33 @@
 //! simple ownership semantics of reading and writing to the network stack. This allows the network
 //! stack to be used to transmit buffers that may be stored internally in other structs without
 //! violating Rust's borrow rules.
-use crate::message_types::ControlPacket;
+use crate::{message_types::ControlPacket, packets::Pub};
 use embedded_nal::{nb, SocketAddr, TcpClientStack, TcpError};
-use heapless::Vec;
 use serde::Serialize;
 
-use crate::Error;
+use crate::{Error, ProtocolError};
 
 /// Simple structure for maintaining state of the network connection.
-pub(crate) struct InterfaceHolder<TcpStack: TcpClientStack, const MSG_SIZE: usize> {
+pub(crate) struct InterfaceHolder<'a, TcpStack: TcpClientStack> {
     socket: Option<TcpStack::TcpSocket>,
     network_stack: TcpStack,
-    pending_write: Option<Vec<u8, MSG_SIZE>>,
+    tx_buffer: &'a mut [u8],
+    pending_write: Option<(usize, usize)>,
     connection_died: bool,
 }
 
-impl<TcpStack, const MSG_SIZE: usize> InterfaceHolder<TcpStack, MSG_SIZE>
+impl<'a, TcpStack> InterfaceHolder<'a, TcpStack>
 where
     TcpStack: TcpClientStack,
 {
     /// Construct a new network holder utility.
-    pub fn new(stack: TcpStack) -> Self {
+    pub fn new(stack: TcpStack, tx_buffer: &'a mut [u8]) -> Self {
         Self {
             socket: None,
             network_stack: stack,
             pending_write: None,
             connection_died: false,
+            tx_buffer,
         }
     }
 
@@ -89,14 +90,14 @@ where
     ///
     /// # Args
     /// * `packet` - The data to write.
-    pub fn write(&mut self, data: &[u8]) -> Result<(), Error<TcpStack::Error>> {
+    fn commit_write(&mut self, start: usize, len: usize) -> Result<(), Error<TcpStack::Error>> {
         // If there's an unfinished write pending, it's invalid to try to write new data. The
         // previous write must first be completed.
         assert!(self.pending_write.is_none());
 
         let socket = self.socket.as_mut().ok_or(Error::NotReady)?;
         self.network_stack
-            .send(socket, data)
+            .send(socket, &self.tx_buffer[start..][..len])
             .or_else(|err| match err {
                 nb::Error::WouldBlock => Ok(0),
                 nb::Error::Other(err) if err.kind() == embedded_nal::TcpErrorKind::PipeClosed => {
@@ -106,13 +107,22 @@ where
                 nb::Error::Other(err) => Err(Error::Network(err)),
             })
             .map(|written| {
-                crate::trace!("Wrote: {:0x?}", &data[..written]);
-                if written != data.len() {
-                    // Note(unwrap): The packet should always be smaller than a single message.
-                    self.pending_write
-                        .replace(Vec::from_slice(&data[written..]).unwrap());
+                crate::trace!("Wrote: {:0x?}", &self.tx_buffer[..written]);
+                if written != len {
+                    crate::warn!("Saving pending data. Wrote {written} of {len}");
+                    self.pending_write.replace((start + written, len - written));
                 }
             })
+    }
+
+    pub fn write_multipart(
+        &mut self,
+        head: &[u8],
+        tail: &[u8],
+    ) -> Result<(), Error<TcpStack::Error>> {
+        self.tx_buffer[..head.len()].copy_from_slice(head);
+        self.tx_buffer[head.len()..][..tail.len()].copy_from_slice(tail);
+        self.commit_write(0, head.len() + tail.len())
     }
 
     /// Send an MQTT control packet over the interface.
@@ -122,19 +132,42 @@ where
     pub fn send_packet<T: Serialize + ControlPacket + core::fmt::Debug>(
         &mut self,
         packet: &T,
-    ) -> Result<(), Error<TcpStack::Error>> {
-        crate::info!("Sending: {:?}", packet);
-        let mut buffer: [u8; MSG_SIZE] = [0; MSG_SIZE];
-        let packet = crate::ser::MqttSerializer::to_buffer(&mut buffer, packet)?;
+    ) -> Result<&[u8], Error<TcpStack::Error>> {
+        // If there's an unfinished write pending, it's invalid to try to write new data. The
+        // previous write must first be completed.
+        assert!(self.pending_write.is_none());
 
-        self.write(packet)?;
-        Ok(())
+        crate::info!("Sending: {:?}", packet);
+        let (offset, packet) = crate::ser::MqttSerializer::to_buffer_meta(self.tx_buffer, packet)
+            .map_err(ProtocolError::from)?;
+        let len = packet.len();
+
+        self.commit_write(offset, len)?;
+        Ok(&self.tx_buffer[offset..][..len])
+    }
+
+    pub fn send_pub<P: crate::publication::ToPayload>(
+        &mut self,
+        pub_packet: &Pub<'_, P>,
+    ) -> Result<&[u8], crate::PubError<TcpStack::Error, P::Error>> {
+        // If there's an unfinished write pending, it's invalid to try to write new data. The
+        // previous write must first be completed.
+        assert!(self.pending_write.is_none());
+
+        crate::info!("Sending: {:?}", pub_packet);
+        let (offset, packet) =
+            crate::ser::MqttSerializer::pub_to_buffer_meta(self.tx_buffer, pub_packet)?;
+
+        let len = packet.len();
+
+        self.commit_write(offset, len)?;
+        Ok(&self.tx_buffer[offset..][..len])
     }
 
     /// Finish writing an MQTT control packet to the interface if one exists.
     pub fn finish_write(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        if let Some(ref packet) = self.pending_write.take() {
-            self.write(packet.as_slice())?;
+        if let Some((head, tail)) = self.pending_write.take() {
+            self.commit_write(head, tail)?;
         }
 
         Ok(())

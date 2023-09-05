@@ -26,8 +26,11 @@
 //! * Structs
 //!
 //! Other types are explicitly not implemented and there is no plan to implement them.
-use crate::message_types::{ControlPacket, MessageType};
 use crate::varint::VarintBuffer;
+use crate::{
+    message_types::{ControlPacket, MessageType},
+    packets::Pub,
+};
 use bit_field::BitField;
 use serde::Serialize;
 use varint_rs::VarintWriter;
@@ -38,6 +41,7 @@ const MAX_FIXED_HEADER_SIZE: usize = 5;
 
 /// Errors that result from the serialization process
 #[derive(Debug, Copy, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Error {
     /// The provided memory buffer did not have enough space to serialize into.
     InsufficientMemory,
@@ -45,6 +49,14 @@ pub enum Error {
     /// A custom serialization error occurred.
     Custom,
 }
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum PubError<E> {
+    Error(Error),
+    Other(E),
+}
+
+impl serde::ser::StdError for Error {}
 
 impl serde::ser::Error for Error {
     fn custom<T: core::fmt::Display>(_msg: T) -> Self {
@@ -70,6 +82,7 @@ impl core::fmt::Display for Error {
 pub struct MqttSerializer<'a> {
     buf: &'a mut [u8],
     index: usize,
+    with_header: bool,
 }
 
 impl<'a> MqttSerializer<'a> {
@@ -81,7 +94,72 @@ impl<'a> MqttSerializer<'a> {
         Self {
             buf,
             index: MAX_FIXED_HEADER_SIZE,
+            with_header: true,
         }
+    }
+
+    pub fn new_without_header(buf: &'a mut [u8]) -> Self {
+        Self {
+            buf,
+            index: 0,
+            with_header: false,
+        }
+    }
+
+    /// Immediately finish the packet and return the contents.
+    ///
+    /// # Note
+    /// This does not append any MQTT headers.
+    pub fn finish(self) -> &'a mut [u8] {
+        assert!(!self.with_header);
+
+        &mut self.buf[..self.index]
+    }
+
+    /// Encode an MQTT control packet into a buffer.
+    ///
+    /// # Args
+    /// * `buf` - The buffer to encode data into.
+    /// * `packet` - The packet to encode.
+    pub fn to_buffer_meta<T: Serialize + ControlPacket>(
+        buf: &'a mut [u8],
+        packet: &T,
+    ) -> Result<(usize, &'a [u8]), Error> {
+        let mut serializer = Self::new(buf);
+        packet.serialize(&mut serializer)?;
+        let (offset, packet) = serializer.finalize(T::MESSAGE_TYPE, packet.fixed_header_flags())?;
+        Ok((offset, packet))
+    }
+
+    pub fn pub_to_buffer_meta<P: crate::publication::ToPayload>(
+        buf: &'a mut [u8],
+        pub_packet: &Pub<'a, P>,
+    ) -> Result<(usize, &'a [u8]), PubError<P::Error>> {
+        let mut serializer = crate::ser::MqttSerializer::new(buf);
+        pub_packet
+            .serialize(&mut serializer)
+            .map_err(PubError::Error)?;
+
+        // Next, serialize the payload into the remaining buffer
+        let len = pub_packet
+            .payload
+            .serialize(serializer.remainder())
+            .map_err(PubError::Other)?;
+        serializer.commit(len).map_err(PubError::Error)?;
+
+        // Finally, finish the packet and send it.
+        let (offset, packet) = serializer
+            .finalize(MessageType::Publish, pub_packet.fixed_header_flags())
+            .map_err(PubError::Error)?;
+        Ok((offset, packet))
+    }
+
+    pub fn pub_to_buffer<P: crate::publication::ToPayload>(
+        buf: &'a mut [u8],
+        pub_packet: &Pub<'a, P>,
+    ) -> Result<&'a [u8], PubError<P::Error>> {
+        let (_, packet) = Self::pub_to_buffer_meta(buf, pub_packet)?;
+        Ok(packet)
     }
 
     /// Encode an MQTT control packet into a buffer.
@@ -93,18 +171,8 @@ impl<'a> MqttSerializer<'a> {
         buf: &'a mut [u8],
         packet: &T,
     ) -> Result<&'a [u8], Error> {
-        let mut serializer = Self::new(buf);
-        packet.serialize(&mut serializer)?;
-        let packet = serializer.finalize(T::MESSAGE_TYPE, packet.fixed_header_flags())?;
+        let (_, packet) = Self::to_buffer_meta(buf, packet)?;
         Ok(packet)
-    }
-
-    /// Finish the packet without prepending the MQTT fixed header.
-    ///
-    /// # Returns
-    /// A slice representing the serialized packet without a fixed header.
-    pub fn finish_without_fixed_header(self) -> &'a [u8] {
-        &self.buf[MAX_FIXED_HEADER_SIZE..self.index]
     }
 
     /// Finalize the packet, prepending the MQTT fixed header.
@@ -115,7 +183,7 @@ impl<'a> MqttSerializer<'a> {
     ///
     /// # Returns
     /// A slice representing the serialized packet.
-    pub fn finalize(self, typ: MessageType, flags: u8) -> Result<&'a [u8], Error> {
+    pub fn finalize(self, typ: MessageType, flags: u8) -> Result<(usize, &'a [u8]), Error> {
         let len = self.index - MAX_FIXED_HEADER_SIZE;
 
         let mut buffer = VarintBuffer::new();
@@ -131,7 +199,8 @@ impl<'a> MqttSerializer<'a> {
         let header: u8 = *0u8.set_bits(4..8, typ as u8).set_bits(0..4, flags);
         self.buf[MAX_FIXED_HEADER_SIZE - buffer.data.len() - 1] = header;
 
-        Ok(&self.buf[MAX_FIXED_HEADER_SIZE - buffer.data.len() - 1..self.index])
+        let offset = MAX_FIXED_HEADER_SIZE - buffer.data.len() - 1;
+        Ok((offset, &self.buf[offset..self.index]))
     }
 
     /// Write data into the packet.
@@ -161,6 +230,27 @@ impl<'a> MqttSerializer<'a> {
         self.buf[self.index] = byte;
         self.index += 1;
 
+        Ok(())
+    }
+
+    /// Get the remaining buffer to serialize into directly.
+    ///
+    /// # Note
+    /// You must call `commit` after serializing.
+    pub fn remainder(&mut self) -> &mut [u8] {
+        &mut self.buf[self.index..]
+    }
+
+    /// Commit previously-serialized data into the buffer.
+    ///
+    /// # Args
+    /// * `len` - The number of bytes serialized.
+    pub fn commit(&mut self, len: usize) -> Result<(), Error> {
+        if self.buf.len() < (self.index + len) {
+            return Err(Error::InsufficientMemory);
+        }
+
+        self.index += len;
         Ok(())
     }
 }
