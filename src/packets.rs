@@ -1,6 +1,6 @@
 use crate::{
     reason_codes::ReasonCode,
-    types::{Properties, TopicFilter, Utf8String},
+    types::{Auth, Properties, TopicFilter, Utf8String},
     will::SerializedWill,
     QoS, Retain,
 };
@@ -22,6 +22,9 @@ pub struct Connect<'a> {
     /// an ID from the broker.
     pub client_id: Utf8String<'a>,
 
+    /// An optional authentication message used by the server.
+    pub auth: Option<&'a Auth>,
+
     /// An optional will message to be transmitted whenever the connection is lost.
     pub(crate) will: Option<SerializedWill<'a>>,
 
@@ -42,6 +45,11 @@ impl<'a> serde::Serialize for Connect<'a> {
             flags.set_bit(5, will.retained == Retain::Retained);
         }
 
+        if self.auth.is_some() {
+            flags.set_bit(6, true);
+            flags.set_bit(7, true);
+        }
+        
         let mut item = serializer.serialize_struct("Connect", 0)?;
         item.serialize_field("protocol_name", &Utf8String("MQTT"))?;
         item.serialize_field("protocol_version", &5u8)?;
@@ -49,9 +57,12 @@ impl<'a> serde::Serialize for Connect<'a> {
         item.serialize_field("keep_alive", &self.keep_alive)?;
         item.serialize_field("properties", &self.properties)?;
         item.serialize_field("client_id", &self.client_id)?;
-
         if let Some(will) = &self.will {
             item.serialize_field("will", will.contents)?;
+        item.serialize_field("will", &self.will)?;
+        if let Some(auth) = &self.auth {
+            item.serialize_field("user_name", &Utf8String(auth.user_name.as_str()))?;
+            item.serialize_field("password", &Utf8String(auth.password.as_str()))?;
         }
 
         item.end()
@@ -401,6 +412,7 @@ mod tests {
         let mut buffer: [u8; 900] = [0; 900];
         let connect: crate::packets::Connect<'_> = crate::packets::Connect {
             client_id: crate::types::Utf8String("ABC"),
+            auth: None,
             will: None,
             keep_alive: 10,
             properties: crate::types::Properties::Slice(&[]),
@@ -451,6 +463,7 @@ mod tests {
             keep_alive: 10,
             properties: crate::types::Properties::Slice(&[]),
             client_id: crate::types::Utf8String("ABC"),
+            auth: None,
             will: Some(will.serialize(&mut will_buff).unwrap()),
         };
 
