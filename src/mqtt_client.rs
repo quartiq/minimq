@@ -289,9 +289,9 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
         user_name: &str,
         password: &str,
     ) -> Result<(), Error<TcpStack::Error>> {
-        let auth = Auth { 
-            user_name: String::from_str(user_name).or(Err(Error::ProvidedClientIdTooLong))?, 
-            password: String::from_str(password).or(Err(Error::ProvidedClientIdTooLong))?, 
+        let auth = Auth {
+            user_name: String::from_str(user_name).or(Err(Error::ProvidedClientIdTooLong))?,
+            password: String::from_str(password).or(Err(Error::ProvidedClientIdTooLong))?,
         };
         self.auth = Some(auth);
         Ok(())
@@ -464,7 +464,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
             properties: Properties::Slice(&properties),
             client_id: Utf8String(self.sm.context().session_state.client_id.as_str()),
             auth: self.auth.as_ref(),
-            will: self.will.as_ref(),
+            will: self.will,
             clean_start: !self.sm.context().session_state.is_present(),
         })?;
 

@@ -93,11 +93,12 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
+          args: --all-features
       - name: cargo build release
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --release
+          args: --release --all-features
 
   test:
     runs-on: ubuntu-20.04
