@@ -60,6 +60,7 @@ impl<'a> serde::Serialize for Connect<'a> {
         if let Some(will) = &self.will {
             item.serialize_field("will", will.contents)?;
         }
+
         if let Some(auth) = &self.auth {
             item.serialize_field("user_name", &Utf8String(auth.user_name))?;
             item.serialize_field("password", &Utf8String(auth.password))?;

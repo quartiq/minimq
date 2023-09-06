@@ -70,30 +70,26 @@ impl<'a, Broker: crate::Broker> ConfigBuilder<'a, Broker> {
     /// * `user_name` - The user name
     /// * `password` - The password
     #[cfg(feature = "unsecure")]
-    pub fn set_auth(&mut self, user_name: &str, password: &str) -> Result<(), ProtocolError> {
+    pub fn set_auth(mut self, user_name: &str, password: &str) -> Result<Self, ProtocolError> {
         if self.auth.is_some() {
             return Err(ProtocolError::AuthAlreadySpecified);
         }
 
-        let user_name = {
-            let (username, tail) = self.buffer.split_at_mut(user_name.as_bytes().len());
-            username.copy_from_slice(user_name.as_bytes());
-            self.buffer = tail;
-            username
-        };
+        let (username_bytes, tail) = self.buffer.split_at_mut(user_name.as_bytes().len());
+        username_bytes.copy_from_slice(user_name.as_bytes());
+        self.buffer = tail;
 
-        let password = {
-            let (pass_word, tail) = self.buffer.split_at_mut(password.as_bytes().len());
-            pass_word.copy_from_slice(password.as_bytes());
-            self.buffer = tail;
-            pass_word
-        };
+        let (password_bytes, tail) = self.buffer.split_at_mut(password.as_bytes().len());
+        password_bytes.copy_from_slice(password.as_bytes());
+        self.buffer = tail;
 
         self.auth.replace(Auth {
-            user_name,
-            password,
+            // Note(unwrap): We are directly copying `str` types to these buffers, so we know they
+            // are valid utf8.
+            user_name: core::str::from_utf8(username_bytes).unwrap(),
+            password: core::str::from_utf8(password_bytes).unwrap(),
         });
-        Ok(())
+        Ok(self)
     }
 
     /// Specify a specific configuration for the session state buffer.
