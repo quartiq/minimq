@@ -8,8 +8,6 @@ use bit_field::BitField;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 
-use heapless::String;
-
 #[derive(Debug, PartialEq)]
 pub enum Properties<'a> {
     /// Properties ready for transmission are provided as a list of properties that will be later
@@ -192,10 +190,10 @@ impl<'de> serde::de::Deserialize<'de> for BinaryData<'de> {
     }
 }
 
-#[derive(Debug)]
-pub struct Auth {
-    pub user_name: String<64>,
-    pub password: String<64>,
+#[derive(Debug, Copy, Clone)]
+pub struct Auth<'a> {
+    pub user_name: &'a str,
+    pub password: &'a str,
 }
 
 /// A wrapper type for "UTF-8 Encoded Strings" as defined in the MQTT v5 specification.

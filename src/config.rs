@@ -1,4 +1,4 @@
-use crate::{will::SerializedWill, ProtocolError, Will};
+use crate::{types::Auth, will::SerializedWill, ProtocolError, Will};
 use core::convert::TryFrom;
 use embedded_time::duration::{Extensions, Milliseconds};
 use heapless::String;
@@ -25,6 +25,7 @@ pub(crate) struct Config<'a, Broker: crate::Broker> {
     pub(crate) client_id: String<64>,
     pub(crate) keepalive_interval: Milliseconds<u32>,
     pub(crate) downgrade_qos: bool,
+    pub(crate) auth: Option<Auth<'a>>,
 }
 
 /// Configuration specifying the operational state of the MQTT client.
@@ -39,6 +40,7 @@ pub struct ConfigBuilder<'a, Broker: crate::Broker> {
     client_id: String<64>,
     keepalive_interval: Milliseconds<u32>,
     downgrade_qos: bool,
+    auth: Option<Auth<'a>>,
 }
 
 impl<'a, Broker: crate::Broker> ConfigBuilder<'a, Broker> {
@@ -55,10 +57,39 @@ impl<'a, Broker: crate::Broker> ConfigBuilder<'a, Broker> {
             rx_config: None,
             tx_config: None,
             client_id: String::new(),
+            auth: None,
             keepalive_interval: 59_000.milliseconds(),
             downgrade_qos: false,
             will: None,
         }
+    }
+
+    /// Specify the authentication message used by the server.
+    ///
+    /// # Args
+    /// * `user_name` - The user name
+    /// * `password` - The password
+    #[cfg(feature = "unsecure")]
+    pub fn set_auth(mut self, user_name: &str, password: &str) -> Result<Self, ProtocolError> {
+        if self.auth.is_some() {
+            return Err(ProtocolError::AuthAlreadySpecified);
+        }
+
+        let (username_bytes, tail) = self.buffer.split_at_mut(user_name.as_bytes().len());
+        username_bytes.copy_from_slice(user_name.as_bytes());
+        self.buffer = tail;
+
+        let (password_bytes, tail) = self.buffer.split_at_mut(password.as_bytes().len());
+        password_bytes.copy_from_slice(password.as_bytes());
+        self.buffer = tail;
+
+        self.auth.replace(Auth {
+            // Note(unwrap): We are directly copying `str` types to these buffers, so we know they
+            // are valid utf8.
+            user_name: core::str::from_utf8(username_bytes).unwrap(),
+            password: core::str::from_utf8(password_bytes).unwrap(),
+        });
+        Ok(self)
     }
 
     /// Specify a specific configuration for the session state buffer.
@@ -213,6 +244,7 @@ impl<'a, Broker: crate::Broker> ConfigBuilder<'a, Broker> {
             rx_buffer: buffers[0].take().unwrap(),
             tx_buffer: buffers[1].take().unwrap(),
             state_buffer: buffers[2].take().unwrap(),
+            auth: self.auth,
         }
     }
 }
