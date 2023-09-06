@@ -284,14 +284,11 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     /// * `user_name` - The user name
     /// * `password` - The password
     #[cfg(feature = "unsecure")]
-    pub fn set_auth(
-        &mut self,
-        user_name: &str,
-        password: &str,
-    ) -> Result<(), Error<TcpStack::Error>> {
-        let auth = Auth { 
-            user_name: String::from_str(user_name).or(Err(Error::ProvidedClientIdTooLong))?, 
-            password: String::from_str(password).or(Err(Error::ProvidedClientIdTooLong))?, 
+    pub fn set_auth(&mut self, user_name: &str, password: &str) -> Result<(), ProtocolError> {
+        let auth = Auth {
+            user_name: String::from_str(user_name)
+                .or(Err(ProtocolError::ProvidedClientIdTooLong))?,
+            password: String::from_str(password).or(Err(ProtocolError::ProvidedClientIdTooLong))?,
         };
         self.auth = Some(auth);
         Ok(())
@@ -464,7 +461,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
             properties: Properties::Slice(&properties),
             client_id: Utf8String(self.sm.context().session_state.client_id.as_str()),
             auth: self.auth.as_ref(),
-            will: self.will.as_ref(),
+            will: self.will,
             clean_start: !self.sm.context().session_state.is_present(),
         })?;
 
