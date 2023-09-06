@@ -284,14 +284,11 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     /// * `user_name` - The user name
     /// * `password` - The password
     #[cfg(feature = "unsecure")]
-    pub fn set_auth(
-        &mut self,
-        user_name: &str,
-        password: &str,
-    ) -> Result<(), Error<TcpStack::Error>> {
+    pub fn set_auth(&mut self, user_name: &str, password: &str) -> Result<(), ProtocolError> {
         let auth = Auth {
-            user_name: String::from_str(user_name).or(Err(Error::ProvidedClientIdTooLong))?,
-            password: String::from_str(password).or(Err(Error::ProvidedClientIdTooLong))?,
+            user_name: String::from_str(user_name)
+                .or(Err(ProtocolError::ProvidedClientIdTooLong))?,
+            password: String::from_str(password).or(Err(ProtocolError::ProvidedClientIdTooLong))?,
         };
         self.auth = Some(auth);
         Ok(())
