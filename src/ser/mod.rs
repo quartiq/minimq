@@ -133,7 +133,7 @@ impl<'a> MqttSerializer<'a> {
 
     pub fn pub_to_buffer_meta<P: crate::publication::ToPayload>(
         buf: &'a mut [u8],
-        pub_packet: &Pub<'a, P>,
+        mut pub_packet: Pub<'_, P>,
     ) -> Result<(usize, &'a [u8]), PubError<P::Error>> {
         let mut serializer = crate::ser::MqttSerializer::new(buf);
         pub_packet
@@ -156,7 +156,7 @@ impl<'a> MqttSerializer<'a> {
 
     pub fn pub_to_buffer<P: crate::publication::ToPayload>(
         buf: &'a mut [u8],
-        pub_packet: &Pub<'a, P>,
+        pub_packet: Pub<'_, P>,
     ) -> Result<&'a [u8], PubError<P::Error>> {
         let (_, packet) = Self::pub_to_buffer_meta(buf, pub_packet)?;
         Ok(packet)

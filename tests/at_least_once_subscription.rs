@@ -50,7 +50,7 @@ fn main() -> std::io::Result<()> {
         if !published && mqtt.client().can_publish(QoS::AtLeastOnce) {
             mqtt.client()
                 .publish(
-                    Publication::new("Ping".as_bytes())
+                    Publication::new("Ping")
                         .topic("data")
                         .qos(QoS::AtLeastOnce)
                         .finish()

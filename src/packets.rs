@@ -284,7 +284,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -311,7 +311,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -363,7 +363,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -395,7 +395,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::pub_to_buffer(&mut buffer, &publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, publish).unwrap();
 
         assert_eq!(message, good_publish);
     }
