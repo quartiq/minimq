@@ -7,13 +7,13 @@ use crate::{
 
 pub trait ToPayload {
     type Error;
-    fn serialize(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error>;
+    fn serialize(self, buffer: &mut [u8]) -> Result<usize, Self::Error>;
 }
 
 impl<'a> ToPayload for &'a [u8] {
     type Error = ();
 
-    fn serialize(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
+    fn serialize(self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
         if buffer.len() < self.len() {
             return Err(());
         }
@@ -25,7 +25,7 @@ impl<'a> ToPayload for &'a [u8] {
 impl<'a> ToPayload for &'a str {
     type Error = ();
 
-    fn serialize(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
+    fn serialize(self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
         self.as_bytes().serialize(buffer)
     }
 }
@@ -33,31 +33,31 @@ impl<'a> ToPayload for &'a str {
 impl<const N: usize> ToPayload for [u8; N] {
     type Error = ();
 
-    fn serialize(&mut self, buffer: &mut [u8]) -> Result<usize, ()> {
+    fn serialize(self, buffer: &mut [u8]) -> Result<usize, ()> {
         (&self[..]).serialize(buffer)
     }
 }
 impl<const N: usize> ToPayload for &[u8; N] {
     type Error = ();
 
-    fn serialize(&mut self, buffer: &mut [u8]) -> Result<usize, ()> {
+    fn serialize(self, buffer: &mut [u8]) -> Result<usize, ()> {
         (&self[..]).serialize(buffer)
     }
 }
 
-pub struct DeferredPublication<E, F: FnMut(&mut [u8]) -> Result<usize, E>> {
+pub struct DeferredPublication<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> {
     func: F,
 }
 
-impl<E, F: FnMut(&mut [u8]) -> Result<usize, E>> DeferredPublication<E, F> {
+impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> DeferredPublication<E, F> {
     pub fn new<'a>(func: F) -> Publication<'a, Self> {
         Publication::new(Self { func })
     }
 }
 
-impl<E, F: FnMut(&mut [u8]) -> Result<usize, E>> ToPayload for DeferredPublication<E, F> {
+impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for DeferredPublication<E, F> {
     type Error = E;
-    fn serialize(&mut self, buffer: &mut [u8]) -> Result<usize, E> {
+    fn serialize(self, buffer: &mut [u8]) -> Result<usize, E> {
         (self.func)(buffer)
     }
 }

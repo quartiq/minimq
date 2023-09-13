@@ -133,7 +133,7 @@ impl<'a> MqttSerializer<'a> {
 
     pub fn pub_to_buffer_meta<P: crate::publication::ToPayload>(
         buf: &'a mut [u8],
-        mut pub_packet: Pub<'_, P>,
+        pub_packet: Pub<'_, P>,
     ) -> Result<(usize, &'a [u8]), PubError<P::Error>> {
         let mut serializer = crate::ser::MqttSerializer::new(buf);
         pub_packet
@@ -141,6 +141,7 @@ impl<'a> MqttSerializer<'a> {
             .map_err(PubError::Error)?;
 
         // Next, serialize the payload into the remaining buffer
+        let flags = pub_packet.fixed_header_flags();
         let len = pub_packet
             .payload
             .serialize(serializer.remainder())
@@ -149,7 +150,7 @@ impl<'a> MqttSerializer<'a> {
 
         // Finally, finish the packet and send it.
         let (offset, packet) = serializer
-            .finalize(MessageType::Publish, pub_packet.fixed_header_flags())
+            .finalize(MessageType::Publish, flags)
             .map_err(PubError::Error)?;
         Ok((offset, packet))
     }
