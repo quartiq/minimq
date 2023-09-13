@@ -148,7 +148,7 @@ where
 
     pub fn send_pub<P: crate::publication::ToPayload>(
         &mut self,
-        pub_packet: &Pub<'_, P>,
+        pub_packet: Pub<'_, P>,
     ) -> Result<&[u8], crate::PubError<TcpStack::Error, P::Error>> {
         // If there's an unfinished write pending, it's invalid to try to write new data. The
         // previous write must first be completed.

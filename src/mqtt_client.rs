@@ -410,13 +410,16 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
                 .replace(self.sm.context_mut().session_state.get_packet_identifier());
         }
 
-        let packet = self.network.send_pub(&publish)?;
+        let id = publish.packet_id;
+        let qos = publish.qos;
 
-        if let Some(id) = publish.packet_id {
+        let packet = self.network.send_pub(publish)?;
+
+        if let Some(id) = id {
             let context = self.sm.context_mut();
             context
                 .session_state
-                .handle_publish(publish.qos, id, packet)
+                .handle_publish(qos, id, packet)
                 .map_err(|e| Error::Minimq(e.into()))?;
             context.send_quota = context.send_quota.checked_sub(1).unwrap();
         }
