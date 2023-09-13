@@ -30,13 +30,6 @@ impl<'a> ToPayload for &'a str {
     }
 }
 
-impl<const N: usize> ToPayload for [u8; N] {
-    type Error = ();
-
-    fn serialize(self, buffer: &mut [u8]) -> Result<usize, ()> {
-        (&self[..]).serialize(buffer)
-    }
-}
 impl<const N: usize> ToPayload for &[u8; N] {
     type Error = ();
 
@@ -45,6 +38,12 @@ impl<const N: usize> ToPayload for &[u8; N] {
     }
 }
 
+/// A publication where the payload is serialized directly into the transmission buffer in the
+/// future.
+///
+/// # Note
+/// This is "deferred" because the closure will only be called once the publication is actually
+/// sent.
 pub struct DeferredPublication<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> {
     func: F,
 }
