@@ -2,7 +2,7 @@
 
 This document describes the changes to Minimq between releases.
 
-# [Unreleased]
+# [0.8.0] - 2023-11-01
 
 ## Changed
 * [breaking] Const generics for message size and allowable in-flight messages have been removed.
@@ -140,7 +140,7 @@ keep-alive interval
 
 * Initial library release and publish to crates.io
 
-[Unreleased]: https://github.com/quartiq/minimq/compare/0.7.0...HEAD
+[0.8.0]: https://github.com/quartiq/minimq/releases/tag/0.8.0
 [0.7.0]: https://github.com/quartiq/minimq/releases/tag/0.7.0
 [0.6.2]: https://github.com/quartiq/minimq/releases/tag/0.6.2
 [0.6.1]: https://github.com/quartiq/minimq/releases/tag/0.6.1
