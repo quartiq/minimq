@@ -2,6 +2,11 @@
 
 This document describes the changes to Minimq between releases.
 
+# [Unreleased]
+
+## Fixed
+* Fixed an issue where a corrupted mqtt header length could result in a crash
+
 # [0.8.0] - 2023-11-01
 
 ## Changed

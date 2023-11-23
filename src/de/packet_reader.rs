@@ -27,7 +27,11 @@ impl<'a> PacketReader<'a> {
             self.read_bytes + 1
         };
 
-        Ok(&mut self.buffer[self.read_bytes..end])
+        if end <= self.buffer.len() {
+            Ok(&mut self.buffer[self.read_bytes..end])
+        } else {
+            Err(Error::MalformedPacket)
+        }
     }
 
     pub fn commit(&mut self, count: usize) {
@@ -83,5 +87,19 @@ impl<'a> PacketReader<'a> {
         self.reset();
 
         ReceivedPacket::from_buffer(&self.buffer[..packet_length])
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::PacketReader;
+    #[test]
+    fn dont_panic_on_bad_data() {
+        let mut buffer: [u8; 4] = [0x20, 0x99, 0x00, 0x00];
+        let mut packet_reader = PacketReader::new(&mut buffer);
+        packet_reader.commit(4);
+        packet_reader
+            .receive_buffer()
+            .expect_err("parsed packet with invalid length");
     }
 }
