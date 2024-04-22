@@ -379,8 +379,8 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     /// If the client is not yet connected to the broker, the message will be silently ignored.
     ///
     /// # Args
-    /// * `publish` - The publication to generate. See [Publication] for a builder pattern to
-    /// generate a message.
+    /// * `publish` - The publication to generate. See [crate::Publication] for a builder pattern
+    /// to generate a message.
     pub fn publish<P: crate::publication::ToPayload>(
         &mut self,
         mut publish: Pub<'_, P>,
@@ -738,8 +738,8 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     /// topic, message, and list of proprties (in that order).
     ///
     /// # Returns
-    /// Ok(Option<result>) - During normal operation, a <result> will optionally be returned to the
-    /// user software if a value was returned from the `f` closure. If the closure was not
+    /// `Ok(Option<result>)` - During normal operation, a `result` will optionally be returned to
+    /// the user software if a value was returned from the `f` closure. If the closure was not
     /// executed, `None` is returned. Note that `None` may be returned even if MQTT packets were
     /// processed.
     ///

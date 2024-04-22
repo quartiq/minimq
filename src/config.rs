@@ -95,8 +95,8 @@ impl<'a, Broker: crate::Broker> ConfigBuilder<'a, Broker> {
     /// Specify a specific configuration for the session state buffer.
     ///
     /// # Note
-    /// The session state buffer is used for publications greater than [QoS::AtMostOnce]. If these
-    /// messages are unused, you can specify [BufferConfig::Exactly(0)].
+    /// The session state buffer is used for publications greater than [crate::QoS::AtMostOnce]. If
+    /// these messages are unused, you can specify [BufferConfig::Exactly(0)].
     ///
     /// # Args
     /// * `config` - The configuration for the size of the session state buffer.
@@ -144,8 +144,8 @@ impl<'a, Broker: crate::Broker> ConfigBuilder<'a, Broker> {
         self
     }
 
-    /// Specify if publication [QoS] should be automatically downgraded to the maximum supported by
-    /// the server if they exceed the server [QoS] maximum.
+    /// Specify if publication [crate::QoS] should be automatically downgraded to the maximum
+    /// supported by the server if they exceed the server [crate::QoS] maximum.
     pub fn autodowngrade_qos(mut self) -> Self {
         self.downgrade_qos = true;
         self

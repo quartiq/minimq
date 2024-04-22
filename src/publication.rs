@@ -132,7 +132,7 @@ impl<'a, P: ToPayload> Publication<'a, P> {
     ///
     /// # Note
     /// The received message properties are parsed for both [Property::CorrelationData] and
-    /// [PropertyResponseTopic].
+    /// [Property::ResponseTopic].
     ///
     /// * If correlation data is found, it is automatically appended to the
     /// publication properties.
