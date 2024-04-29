@@ -2,10 +2,11 @@
 
 This document describes the changes to Minimq between releases.
 
-# [Unreleased]
+# [0.9.0] - 2024-04-29
 
 ## Fixed
 * Fixed an issue where a corrupted mqtt header length could result in a crash
+* [breaking] `embedded-nal` bumped
 
 # [0.8.0] - 2023-11-01
 
@@ -145,6 +146,7 @@ keep-alive interval
 
 * Initial library release and publish to crates.io
 
+[0.8.0]: https://github.com/quartiq/minimq/releases/tag/0.9.0
 [0.8.0]: https://github.com/quartiq/minimq/releases/tag/0.8.0
 [0.7.0]: https://github.com/quartiq/minimq/releases/tag/0.7.0
 [0.6.2]: https://github.com/quartiq/minimq/releases/tag/0.6.2
