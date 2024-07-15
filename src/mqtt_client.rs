@@ -260,12 +260,7 @@ impl<E> From<sm::Error<MinimqError>> for Error<E> {
 }
 
 /// The client that can be used for interacting with the MQTT broker.
-pub struct MqttClient<
-    'buf,
-    TcpStack: TcpClientStack,
-    Clock: embedded_time::Clock,
-    Broker: crate::Broker,
-> {
+pub struct MqttClient<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker> {
     sm: sm::StateMachine<ClientContext<'buf, Clock>>,
     network: InterfaceHolder<'buf, TcpStack>,
     will: Option<SerializedWill<'buf>>,
@@ -673,12 +668,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
 /// # Note
 /// To connect and maintain an MQTT connection, the `Minimq::poll()` method must be called
 /// regularly.
-pub struct Minimq<'buf, TcpStack, Clock, Broker>
-where
-    TcpStack: TcpClientStack,
-    Clock: embedded_time::Clock,
-    Broker: crate::Broker,
-{
+pub struct Minimq<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker> {
     client: MqttClient<'buf, TcpStack, Clock, Broker>,
     packet_reader: PacketReader<'buf>,
 }

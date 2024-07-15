@@ -16,7 +16,7 @@ pub enum BufferConfig {
 }
 
 #[derive(Debug)]
-pub(crate) struct Config<'a, Broker: crate::Broker> {
+pub(crate) struct Config<'a, Broker> {
     pub(crate) broker: Broker,
     pub(crate) rx_buffer: &'a mut [u8],
     pub(crate) tx_buffer: &'a mut [u8],
@@ -30,7 +30,7 @@ pub(crate) struct Config<'a, Broker: crate::Broker> {
 
 /// Configuration specifying the operational state of the MQTT client.
 #[derive(Debug)]
-pub struct ConfigBuilder<'a, Broker: crate::Broker> {
+pub struct ConfigBuilder<'a, Broker> {
     buffer: &'a mut [u8],
     broker: Broker,
     rx_config: Option<BufferConfig>,
