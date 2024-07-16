@@ -73,7 +73,7 @@ impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for DeferredPublicat
 /// It is expected that the user provide a topic either by directly specifying a publication topic
 /// in [Publication::topic], or by parsing a topic from the [Property::ResponseTopic] property
 /// contained within received properties by using the [Publication::reply] API.
-pub struct Publication<'a, P: ToPayload> {
+pub struct Publication<'a, P> {
     topic: Option<&'a str>,
     properties: Properties<'a>,
     qos: QoS,
