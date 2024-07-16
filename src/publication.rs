@@ -44,17 +44,17 @@ impl<const N: usize> ToPayload for &[u8; N] {
 /// # Note
 /// This is "deferred" because the closure will only be called once the publication is actually
 /// sent.
-pub struct DeferredPublication<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> {
+pub struct DeferredPublication<F> {
     func: F,
 }
 
-impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> DeferredPublication<E, F> {
+impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> DeferredPublication<F> {
     pub fn new<'a>(func: F) -> Publication<'a, Self> {
         Publication::new(Self { func })
     }
 }
 
-impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for DeferredPublication<E, F> {
+impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for DeferredPublication<F> {
     type Error = E;
     fn serialize(self, buffer: &mut [u8]) -> Result<usize, E> {
         (self.func)(buffer)
@@ -73,7 +73,7 @@ impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for DeferredPublicat
 /// It is expected that the user provide a topic either by directly specifying a publication topic
 /// in [Publication::topic], or by parsing a topic from the [Property::ResponseTopic] property
 /// contained within received properties by using the [Publication::reply] API.
-pub struct Publication<'a, P: ToPayload> {
+pub struct Publication<'a, P> {
     topic: Option<&'a str>,
     properties: Properties<'a>,
     qos: QoS,

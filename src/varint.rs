@@ -38,7 +38,7 @@ impl VarintWriter for VarintBuffer {
 
 struct VarintVisitor;
 
-struct VarintParser<'de, T: serde::de::SeqAccess<'de>> {
+struct VarintParser<'de, T> {
     seq: T,
     _data: core::marker::PhantomData<&'de ()>,
 }

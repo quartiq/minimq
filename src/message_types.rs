@@ -43,7 +43,7 @@ impl<'a> ControlPacket for ConnAck<'a> {
     const MESSAGE_TYPE: MessageType = MessageType::ConnAck;
 }
 
-impl<'a, P: crate::publication::ToPayload> Pub<'a, P> {
+impl<'a, P> Pub<'a, P> {
     pub fn fixed_header_flags(&self) -> u8 {
         *0u8.set_bits(1..=2, self.qos as u8)
             .set_bit(0, self.retain == Retain::Retained)

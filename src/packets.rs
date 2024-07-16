@@ -88,7 +88,7 @@ pub struct ConnAck<'a> {
 
 /// An MQTT PUBLISH packet, containing data to be sent or received.
 #[derive(Serialize)]
-pub struct Pub<'a, P: crate::publication::ToPayload> {
+pub struct Pub<'a, P> {
     /// The topic that the message was received on.
     pub topic: Utf8String<'a>,
 
@@ -115,7 +115,7 @@ pub struct Pub<'a, P: crate::publication::ToPayload> {
     pub dup: bool,
 }
 
-impl<'a, P: crate::publication::ToPayload> core::fmt::Debug for Pub<'a, P> {
+impl<'a, P> core::fmt::Debug for Pub<'a, P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Pub")
             .field("topic", &self.topic)
