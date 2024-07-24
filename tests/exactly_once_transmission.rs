@@ -29,13 +29,7 @@ fn main() -> std::io::Result<()> {
         if mqtt.client().is_connected() && !published && mqtt.client().can_publish(QoS::ExactlyOnce)
         {
             mqtt.client()
-                .publish(
-                    Publication::new("Ping".as_bytes())
-                        .topic("data")
-                        .qos(QoS::ExactlyOnce)
-                        .finish()
-                        .unwrap(),
-                )
+                .publish(Publication::new("data", b"Ping").qos(QoS::ExactlyOnce))
                 .unwrap();
             log::info!("Publishing message");
             published = true;

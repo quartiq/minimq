@@ -40,13 +40,7 @@ fn main() -> std::io::Result<()> {
 
     // 2. Send a QoS::AtLeastOnce message
     mqtt.client()
-        .publish(
-            Publication::new("Ping".as_bytes())
-                .topic("test")
-                .qos(QoS::ExactlyOnce)
-                .finish()
-                .unwrap(),
-        )
+        .publish(Publication::new("test", b"Ping").qos(QoS::ExactlyOnce))
         .unwrap();
 
     // Force a disconnect from the broker.

@@ -2,6 +2,12 @@
 
 This document describes the changes to Minimq between releases.
 
+# Unreleased
+
+## Changed
+* The `Publication::finish()` API was removed in favor of a new `Publication::respond()` API for
+constructing replies to previously received messages.
+
 # [0.9.0] - 2024-04-29
 
 ## Fixed
@@ -146,7 +152,7 @@ keep-alive interval
 
 * Initial library release and publish to crates.io
 
-[0.8.0]: https://github.com/quartiq/minimq/releases/tag/0.9.0
+[0.9.0]: https://github.com/quartiq/minimq/releases/tag/0.9.0
 [0.8.0]: https://github.com/quartiq/minimq/releases/tag/0.8.0
 [0.7.0]: https://github.com/quartiq/minimq/releases/tag/0.7.0
 [0.6.2]: https://github.com/quartiq/minimq/releases/tag/0.6.2

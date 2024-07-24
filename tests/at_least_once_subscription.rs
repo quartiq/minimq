@@ -49,13 +49,7 @@ fn main() -> std::io::Result<()> {
 
         if !published && mqtt.client().can_publish(QoS::AtLeastOnce) {
             mqtt.client()
-                .publish(
-                    Publication::new("Ping")
-                        .topic("data")
-                        .qos(QoS::AtLeastOnce)
-                        .finish()
-                        .unwrap(),
-                )
+                .publish(Publication::new("data", "Ping").qos(QoS::AtLeastOnce))
                 .unwrap();
             log::info!("Publishing message");
             published = true;

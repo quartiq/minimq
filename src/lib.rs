@@ -52,8 +52,7 @@
 //!         match topic {
 //!             "topic" => {
 //!                println!("{:?}", message);
-//!                let response = Publication::new(message).topic("echo").finish().unwrap();
-//!                client.publish(response).unwrap();
+//!                client.publish(Publication::new("echo", message)).unwrap();
 //!             },
 //!             topic => println!("Unknown topic: {}", topic),
 //!         };

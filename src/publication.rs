@@ -1,7 +1,6 @@
 use crate::{
-    packets::Pub,
     properties::Property,
-    types::{BinaryData, Properties, Utf8String},
+    types::{BinaryData, Properties},
     ProtocolError, QoS, Retain,
 };
 
@@ -49,8 +48,15 @@ pub struct DeferredPublication<F> {
 }
 
 impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> DeferredPublication<F> {
-    pub fn new<'a>(func: F) -> Publication<'a, Self> {
-        Publication::new(Self { func })
+    pub fn new<'a>(topic: &'a str, func: F) -> Publication<'a, Self> {
+        Publication::new(topic, Self { func })
+    }
+
+    pub fn respond<'a>(
+        received_properties: &'a Properties<'a>,
+        func: F,
+    ) -> Result<Publication<'a, Self>, ProtocolError> {
+        Publication::respond(received_properties, Self { func })
     }
 }
 
@@ -74,20 +80,48 @@ impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for DeferredPublicat
 /// in [Publication::topic], or by parsing a topic from the [Property::ResponseTopic] property
 /// contained within received properties by using the [Publication::reply] API.
 pub struct Publication<'a, P> {
-    topic: Option<&'a str>,
-    properties: Properties<'a>,
-    qos: QoS,
-    payload: P,
-    retain: Retain,
+    pub(crate) topic: &'a str,
+    pub(crate) properties: Properties<'a>,
+    pub(crate) qos: QoS,
+    pub(crate) payload: P,
+    pub(crate) retain: Retain,
 }
 
 impl<'a, P: ToPayload> Publication<'a, P> {
+    /// Generate the publication as a reply to some other received message.
+    ///
+    /// # Note
+    /// The received message properties are parsed for both [Property::CorrelationData] and
+    /// [Property::ResponseTopic].
+    ///
+    /// * If correlation data is found, it is automatically appended to the
+    /// publication properties.
+    ///
+    /// * If a response topic is identified, the message topic will be
+    /// configured for it, which will override any previously-specified topic.
+    pub fn respond(
+        received_properties: &'a Properties<'a>,
+        payload: P,
+    ) -> Result<Self, ProtocolError> {
+        let Some(response_topic) = received_properties.into_iter().find_map(|p| {
+            if let Ok(Property::ResponseTopic(topic)) = p {
+                Some(topic.0)
+            } else {
+                None
+            }
+        }) else {
+            return Err(ProtocolError::NoTopic);
+        };
+
+        Ok(Self::new(response_topic, payload))
+    }
+
     /// Construct a new publication with a payload.
-    pub fn new(payload: P) -> Self {
+    pub fn new(topic: &'a str, payload: P) -> Self {
         Self {
             payload,
             qos: QoS::AtMostOnce,
-            topic: None,
+            topic,
             properties: Properties::Slice(&[]),
             retain: Retain::NotRetained,
         }
@@ -105,16 +139,6 @@ impl<'a, P: ToPayload> Publication<'a, P> {
         self
     }
 
-    /// Specify the publication topic for this message.
-    ///
-    /// # Note
-    /// If this is called after [Publication::reply] determines a response topic, the response
-    /// topic will be overridden.
-    pub fn topic(mut self, topic: &'a str) -> Self {
-        self.topic.replace(topic);
-        self
-    }
-
     /// Specify properties associated with this publication.
     pub fn properties(mut self, properties: &'a [Property<'a>]) -> Self {
         self.properties = match self.properties {
@@ -126,42 +150,6 @@ impl<'a, P: ToPayload> Publication<'a, P> {
             _ => unimplemented!(),
         };
         self
-    }
-
-    /// Generate the publication as a reply to some other received message.
-    ///
-    /// # Note
-    /// The received message properties are parsed for both [Property::CorrelationData] and
-    /// [Property::ResponseTopic].
-    ///
-    /// * If correlation data is found, it is automatically appended to the
-    /// publication properties.
-    ///
-    /// * If a response topic is identified, the message topic will be
-    /// configured for it, which will override any previously-specified topic.
-    pub fn reply(mut self, received_properties: &'a Properties<'a>) -> Self {
-        if let Some(response_topic) = received_properties.into_iter().find_map(|p| {
-            if let Ok(Property::ResponseTopic(topic)) = p {
-                Some(topic.0)
-            } else {
-                None
-            }
-        }) {
-            self.topic.replace(response_topic);
-        }
-
-        // Next, copy over any correlation data to the outbound properties.
-        if let Some(correlation_data) = received_properties.into_iter().find_map(|p| {
-            if let Ok(Property::CorrelationData(data)) = p {
-                Some(data.0)
-            } else {
-                None
-            }
-        }) {
-            self.correlate(correlation_data)
-        } else {
-            self
-        }
     }
 
     /// Include correlation data to the message
@@ -183,22 +171,5 @@ impl<'a, P: ToPayload> Publication<'a, P> {
         };
 
         self
-    }
-
-    /// Generate the final publication.
-    ///
-    /// # Returns
-    /// The message to be published if a publication topic was specified. If no publication topic
-    /// was identified, an error is returned.
-    pub fn finish(self) -> Result<Pub<'a, P>, ProtocolError> {
-        Ok(Pub {
-            topic: Utf8String(self.topic.ok_or(ProtocolError::NoTopic)?),
-            properties: self.properties,
-            packet_id: None,
-            payload: self.payload,
-            retain: self.retain,
-            qos: self.qos,
-            dup: false,
-        })
     }
 }

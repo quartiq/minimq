@@ -2,6 +2,7 @@ use crate::{
     de::{received_packet::ReceivedPacket, PacketReader},
     network_manager::InterfaceHolder,
     packets::{ConnAck, Connect, PingReq, Pub, PubAck, PubComp, PubRec, PubRel, SubAck, Subscribe},
+    publication::Publication,
     reason_codes::ReasonCode,
     session_state::SessionState,
     types::{Auth, Properties, TopicFilter, Utf8String},
@@ -374,16 +375,18 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     /// If the client is not yet connected to the broker, the message will be silently ignored.
     ///
     /// # Args
-    /// * `publish` - The publication to generate. See [crate::Publication] for a builder pattern
+    /// * `publish` - The publication to generate.
     /// to generate a message.
     pub fn publish<P: crate::publication::ToPayload>(
         &mut self,
-        mut publish: Pub<'_, P>,
+        publish: Publication<'_, P>,
     ) -> Result<(), crate::PubError<TcpStack::Error, P::Error>> {
         // If we are not yet connected to the broker, we can't transmit a message.
         if !self.is_connected() {
             return Ok(());
         }
+
+        let mut publish: Pub<'_, P> = publish.into();
 
         if let Some(max) = &self.sm.context().max_qos {
             if self.downgrade_qos && publish.qos > *max {
