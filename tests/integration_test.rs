@@ -31,10 +31,7 @@ fn main() -> std::io::Result<()> {
             .poll(|client, topic, payload, properties| {
                 log::info!("{} < {}", topic, core::str::from_utf8(payload).unwrap());
 
-                if let Ok(response) = Publication::new("Pong".as_bytes())
-                    .reply(properties)
-                    .finish()
-                {
+                if let Ok(response) = Publication::respond(properties, b"Pong") {
                     client.publish(response).unwrap();
                 }
 
@@ -63,20 +60,14 @@ fn main() -> std::io::Result<()> {
         } else if !client.subscriptions_pending() && !published {
             println!("PUBLISH request");
             let properties = [Property::ResponseTopic(Utf8String("response"))];
-            let publication = Publication::new(b"Ping")
-                .topic("request")
-                .properties(&properties)
-                .finish()
-                .unwrap();
+            let publication = Publication::new("request", b"Ping").properties(&properties);
 
             client.publish(publication).unwrap();
 
-            let publication = Publication::new(b"Ping")
-                .topic("request")
+            let publication = Publication::new("request", b"Ping")
                 .properties(&properties)
-                .qos(QoS::AtLeastOnce)
-                .finish()
-                .unwrap();
+                .qos(QoS::AtLeastOnce);
+
             client.publish(publication).unwrap();
 
             // The message cannot be ack'd until the next poll call

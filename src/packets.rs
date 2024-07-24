@@ -1,4 +1,5 @@
 use crate::{
+    publication::Publication,
     reason_codes::ReasonCode,
     types::{Auth, Properties, TopicFilter, Utf8String},
     will::SerializedWill,
@@ -126,6 +127,20 @@ impl<'a, P> core::fmt::Debug for Pub<'a, P> {
             .field("dup", &self.dup)
             .field("payload", &"<deferred>")
             .finish()
+    }
+}
+
+impl<'a, P> From<Publication<'a, P>> for Pub<'a, P> {
+    fn from(publication: Publication<'a, P>) -> Self {
+        Self {
+            topic: Utf8String(publication.topic),
+            properties: publication.properties,
+            packet_id: None,
+            payload: publication.payload,
+            retain: publication.retain,
+            qos: publication.qos,
+            dup: false,
+        }
     }
 }
 

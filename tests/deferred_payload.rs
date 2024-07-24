@@ -23,11 +23,7 @@ fn main() -> std::io::Result<()> {
 
     assert!(matches!(
         mqtt.client().publish(
-            DeferredPublication::new(|_buf| { Err("Oops!") })
-                .topic("data")
-                .qos(QoS::ExactlyOnce)
-                .finish()
-                .unwrap(),
+            DeferredPublication::new("data", |_buf| { Err("Oops!") }).qos(QoS::ExactlyOnce)
         ),
         Err(minimq::PubError::Serialization("Oops!"))
     ));
