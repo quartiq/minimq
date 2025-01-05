@@ -6,7 +6,8 @@
 //! stack to be used to transmit buffers that may be stored internally in other structs without
 //! violating Rust's borrow rules.
 use crate::{message_types::ControlPacket, packets::Pub};
-use embedded_nal::{nb, SocketAddr, TcpClientStack, TcpError};
+use core::net::SocketAddr;
+use embedded_nal::{nb, TcpClientStack, TcpError};
 use serde::Serialize;
 
 use crate::{Error, ProtocolError};
