@@ -13,6 +13,7 @@ readme = "README.md"
 categories = ["embedded", "no-std", "database", "encoding"]
 keywords = ["mqtt", "embedded", "client"]
 license = "MIT"
+rust-version = "1.77.0"
 
 [dependencies]
 bit_field = "0.10.0"

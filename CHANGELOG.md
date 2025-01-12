@@ -8,6 +8,7 @@ This document describes the changes to Minimq between releases.
 * The `Publication::finish()` API was removed in favor of a new `Publication::respond()` API for
 constructing replies to previously received messages.
 * [breaking] `embedded-nal` bumped. Now `core::net::SocketAddr` and related ip types are used.
+  MSRV becomes 1.77.0.
 
 # [0.9.0] - 2024-04-29
 
