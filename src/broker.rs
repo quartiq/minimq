@@ -1,5 +1,8 @@
 use crate::{warn, MQTT_INSECURE_DEFAULT_PORT};
-use core::{convert::TryFrom, net::{IpAddr, Ipv4Addr, SocketAddr}};
+use core::{
+    convert::TryFrom,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+};
 use embedded_nal::{nb, AddrType, Dns};
 
 /// A type that allows us to (eventually) determine the broker address.
