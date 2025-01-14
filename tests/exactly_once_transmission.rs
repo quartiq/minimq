@@ -1,6 +1,6 @@
 use minimq::{Minimq, Publication, QoS};
 
-use embedded_nal::{self, IpAddr, Ipv4Addr};
+use core::net::{IpAddr, Ipv4Addr};
 use std_embedded_time::StandardClock;
 
 #[test]
