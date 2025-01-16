@@ -35,4 +35,4 @@ unsecure = []
 log = "0.4"
 env_logger = "0.10"
 std-embedded-time = "0.1"
-std-embedded-nal = { git = "https://gitlab.com/ryan-summers/std-embedded-nal", branch = "feature/0.8" }
+std-embedded-nal = "0.4.0"
