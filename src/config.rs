@@ -253,11 +253,12 @@ impl<'a, Broker: crate::Broker> ConfigBuilder<'a, Broker> {
 mod tests {
     use super::*;
     use crate::broker::IpBroker;
+    use core::net::IpAddr;
 
     #[test]
     pub fn basic_config() {
         let mut buffer = [0; 30];
-        let localhost: embedded_nal::IpAddr = "127.0.0.1".parse().unwrap();
+        let localhost: IpAddr = "127.0.0.1".parse().unwrap();
         let builder: ConfigBuilder<IpBroker> = ConfigBuilder::new(localhost.into(), &mut buffer);
 
         let config = builder.build();
@@ -269,7 +270,7 @@ mod tests {
     #[test]
     pub fn without_session_state() {
         let mut buffer = [0; 30];
-        let localhost: embedded_nal::IpAddr = "127.0.0.1".parse().unwrap();
+        let localhost: IpAddr = "127.0.0.1".parse().unwrap();
         let builder: ConfigBuilder<IpBroker> = ConfigBuilder::new(localhost.into(), &mut buffer)
             .session_state(BufferConfig::Exactly(0));
 
@@ -282,7 +283,7 @@ mod tests {
     #[test]
     pub fn with_exact_sizes() {
         let mut buffer = [0; 30];
-        let localhost: embedded_nal::IpAddr = "127.0.0.1".parse().unwrap();
+        let localhost: IpAddr = "127.0.0.1".parse().unwrap();
         let builder: ConfigBuilder<IpBroker> = ConfigBuilder::new(localhost.into(), &mut buffer)
             .session_state(BufferConfig::Exactly(8))
             .rx_buffer(BufferConfig::Exactly(4))
@@ -297,7 +298,7 @@ mod tests {
     #[test]
     pub fn with_max() {
         let mut buffer = [0; 30];
-        let localhost: embedded_nal::IpAddr = "127.0.0.1".parse().unwrap();
+        let localhost: IpAddr = "127.0.0.1".parse().unwrap();
         let builder: ConfigBuilder<IpBroker> = ConfigBuilder::new(localhost.into(), &mut buffer)
             .session_state(BufferConfig::Maximum(8));
 
@@ -310,7 +311,7 @@ mod tests {
     #[test]
     pub fn with_min() {
         let mut buffer = [0; 30];
-        let localhost: embedded_nal::IpAddr = "127.0.0.1".parse().unwrap();
+        let localhost: IpAddr = "127.0.0.1".parse().unwrap();
         let builder: ConfigBuilder<IpBroker> = ConfigBuilder::new(localhost.into(), &mut buffer)
             .session_state(BufferConfig::Minimum(20));
 

@@ -1,7 +1,7 @@
 use embedded_nal::{nb, TcpClientStack};
 use std::cell::RefCell;
 use std::io::{Error, ErrorKind, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TcpHandle {
@@ -76,8 +76,8 @@ impl TcpSocket {
         Self { stream: None }
     }
 
-    fn connect(&mut self, remote: embedded_nal::SocketAddr) -> Result<(), Error> {
-        let embedded_nal::IpAddr::V4(addr) = remote.ip() else {
+    fn connect(&mut self, remote: SocketAddr) -> Result<(), Error> {
+        let IpAddr::V4(addr) = remote.ip() else {
             return Err(Error::new(ErrorKind::Other, "Only IPv4 supported"));
         };
         let remote = SocketAddr::new(addr.octets().into(), remote.port());
@@ -109,7 +109,7 @@ impl<'a> TcpClientStack for MitmStack<'a> {
     fn connect(
         &mut self,
         socket: &mut Self::TcpSocket,
-        remote: embedded_nal::SocketAddr,
+        remote: SocketAddr,
     ) -> nb::Result<(), Self::Error> {
         let index = self
             .sockets

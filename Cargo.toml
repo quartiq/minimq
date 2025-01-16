@@ -13,6 +13,7 @@ readme = "README.md"
 categories = ["embedded", "no-std", "database", "encoding"]
 keywords = ["mqtt", "embedded", "client"]
 license = "MIT"
+rust-version = "1.77.0"
 
 [dependencies]
 bit_field = "0.10.0"
@@ -23,7 +24,7 @@ embedded-time = "0.12"
 varint-rs = {version = "2.2", default-features = false }
 serde = { version = "1", features = ["derive"], default-features = false }
 smlang = "0.6.0"
-embedded-nal = "0.8"
+embedded-nal = "0.9"
 
 [features]
 default = []
@@ -34,4 +35,4 @@ unsecure = []
 log = "0.4"
 env_logger = "0.10"
 std-embedded-time = "0.1"
-std-embedded-nal = { git = "https://gitlab.com/ryan-summers/std-embedded-nal", branch = "feature/0.8" }
+std-embedded-nal = "0.4.0"
