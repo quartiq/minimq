@@ -31,7 +31,7 @@
 //! // or QoS::ExactlyOnce has not been completed (PUBCOMP).
 //! // Connect to a broker at localhost - Use a client ID of "test".
 //! let mut buffer = [0; 256];
-//! let localhost: embedded_nal::IpAddr = "127.0.0.1".parse().unwrap();
+//! let localhost: std::net::IpAddr = "127.0.0.1".parse().unwrap();
 //! let mut mqtt: Minimq<'_, _, _, minimq::broker::IpBroker> = Minimq::new(
 //!         std_embedded_nal::Stack::default(),
 //!         std_embedded_time::StandardClock::default(),
