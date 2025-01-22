@@ -95,25 +95,34 @@ impl<'a, P: ToPayload> Publication<'a, P> {
     /// [Property::ResponseTopic].
     ///
     /// * If correlation data is found, it is automatically appended to the
-    /// publication properties.
+    ///   publication properties.
     ///
     /// * If a response topic is identified, the message topic will be
-    /// configured for it, which will override any previously-specified topic.
+    ///   configured for it, which will override any previously-specified topic.
     pub fn respond(
         received_properties: &'a Properties<'a>,
         payload: P,
     ) -> Result<Self, ProtocolError> {
-        let Some(response_topic) = received_properties.into_iter().find_map(|p| {
-            if let Ok(Property::ResponseTopic(topic)) = p {
-                Some(topic.0)
-            } else {
-                None
-            }
-        }) else {
-            return Err(ProtocolError::NoTopic);
-        };
+        let response_topic = received_properties
+            .into_iter()
+            .flatten()
+            .find_map(|p| {
+                if let Property::ResponseTopic(topic) = p {
+                    Some(topic.0)
+                } else {
+                    None
+                }
+            })
+            .ok_or(ProtocolError::NoTopic)?;
 
-        Ok(Self::new(response_topic, payload))
+        let publication = Self::new(response_topic, payload);
+
+        for p in received_properties.into_iter().flatten() {
+            if let Property::CorrelationData(data) = p {
+                return Ok(publication.correlate(data.0));
+            }
+        }
+        Ok(publication)
     }
 
     /// Construct a new publication with a payload.
