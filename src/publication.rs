@@ -9,7 +9,7 @@ pub trait ToPayload {
     fn serialize(self, buffer: &mut [u8]) -> Result<usize, Self::Error>;
 }
 
-impl<'a> ToPayload for &'a [u8] {
+impl ToPayload for &[u8] {
     type Error = ();
 
     fn serialize(self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
@@ -21,7 +21,7 @@ impl<'a> ToPayload for &'a [u8] {
     }
 }
 
-impl<'a> ToPayload for &'a str {
+impl ToPayload for &str {
     type Error = ();
 
     fn serialize(self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
@@ -37,30 +37,24 @@ impl<const N: usize> ToPayload for &[u8; N] {
     }
 }
 
-/// A publication where the payload is serialized directly into the transmission buffer in the
+/// A payload that is serialized directly into the transmission buffer in the
 /// future.
 ///
 /// # Note
 /// This is "deferred" because the closure will only be called once the publication is actually
 /// sent.
-pub struct DeferredPublication<F> {
+pub struct Deferred<F> {
     func: F,
 }
 
-impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> DeferredPublication<F> {
-    pub fn new<'a>(topic: &'a str, func: F) -> Publication<'a, Self> {
-        Publication::new(topic, Self { func })
-    }
-
-    pub fn respond<'a>(
-        received_properties: &'a Properties<'a>,
-        func: F,
-    ) -> Result<Publication<'a, Self>, ProtocolError> {
-        Publication::respond(received_properties, Self { func })
+impl<F> Deferred<F> {
+    /// Create a new deferred payload.
+    pub fn new(func: F) -> Self {
+        Self { func }
     }
 }
 
-impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for DeferredPublication<F> {
+impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for Deferred<F> {
     type Error = E;
     fn serialize(self, buffer: &mut [u8]) -> Result<usize, E> {
         (self.func)(buffer)
@@ -87,7 +81,7 @@ pub struct Publication<'a, P> {
     pub(crate) retain: Retain,
 }
 
-impl<'a, P: ToPayload> Publication<'a, P> {
+impl<'a, P> Publication<'a, P> {
     /// Generate the publication as a reply to some other received message.
     ///
     /// # Note
@@ -98,8 +92,9 @@ impl<'a, P: ToPayload> Publication<'a, P> {
     ///   publication properties.
     ///
     /// * If a response topic is identified, the message topic will be
-    ///   configured for it, which will override any previously-specified topic.
+    ///   configured for it, which will override the default topic.
     pub fn respond(
+        default_topic: Option<&'a str>,
         received_properties: &'a Properties<'a>,
         payload: P,
     ) -> Result<Self, ProtocolError> {
@@ -113,6 +108,7 @@ impl<'a, P: ToPayload> Publication<'a, P> {
                     None
                 }
             })
+            .or(default_topic)
             .ok_or(ProtocolError::NoTopic)?;
 
         let publication = Self::new(response_topic, payload);
