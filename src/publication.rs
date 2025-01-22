@@ -37,27 +37,10 @@ impl<const N: usize> ToPayload for &[u8; N] {
     }
 }
 
-/// A payload that is serialized directly into the transmission buffer in the
-/// future.
-///
-/// # Note
-/// This is "deferred" because the closure will only be called once the publication is actually
-/// sent.
-pub struct Deferred<F> {
-    func: F,
-}
-
-impl<F> Deferred<F> {
-    /// Create a new deferred payload.
-    pub fn new(func: F) -> Self {
-        Self { func }
-    }
-}
-
-impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for Deferred<F> {
+impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for F {
     type Error = E;
     fn serialize(self, buffer: &mut [u8]) -> Result<usize, E> {
-        (self.func)(buffer)
+        self(buffer)
     }
 }
 

@@ -1,4 +1,4 @@
-use minimq::{Deferred, Minimq, Publication, QoS};
+use minimq::{Minimq, Publication, QoS};
 
 use core::net::{IpAddr, Ipv4Addr};
 use std_embedded_time::StandardClock;
@@ -23,8 +23,7 @@ fn main() -> std::io::Result<()> {
 
     assert!(matches!(
         mqtt.client().publish(
-            Publication::new("data", Deferred::new(|_buf: &mut [u8]| Err("Oops!")))
-                .qos(QoS::ExactlyOnce)
+            Publication::new("data", |_buf: &mut [u8]| Err("Oops!")).qos(QoS::ExactlyOnce)
         ),
         Err(minimq::PubError::Serialization("Oops!"))
     ));
