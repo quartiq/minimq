@@ -7,6 +7,7 @@ This document describes the changes to Minimq between releases.
 ## Changed
 * The `Publication::finish()` API was removed in favor of a new `Publication::respond()` API for
 constructing replies to previously received messages.
+* `DeferredPublication` has been removed: pass a `FnOnce(&mut [u8])` as payload.
 * [breaking] `embedded-nal` bumped. Now `core::net::SocketAddr` and related ip types are used.
   MSRV becomes 1.77.0.
 

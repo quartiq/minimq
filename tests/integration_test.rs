@@ -31,7 +31,7 @@ fn main() -> std::io::Result<()> {
             .poll(|client, topic, payload, properties| {
                 log::info!("{} < {}", topic, core::str::from_utf8(payload).unwrap());
 
-                if let Ok(response) = Publication::respond(properties, b"Pong") {
+                if let Ok(response) = Publication::respond(None, properties, b"Pong") {
                     client.publish(response).unwrap();
                 }
 

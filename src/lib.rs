@@ -81,7 +81,7 @@ mod will;
 pub use broker::Broker;
 pub use config::ConfigBuilder;
 pub use properties::Property;
-pub use publication::{DeferredPublication, Publication};
+pub use publication::Publication;
 pub use reason_codes::ReasonCode;
 pub use will::Will;
 
