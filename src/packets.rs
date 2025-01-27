@@ -33,7 +33,7 @@ pub struct Connect<'a> {
     pub clean_start: bool,
 }
 
-impl<'a> serde::Serialize for Connect<'a> {
+impl serde::Serialize for Connect<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut flags: u8 = 0;
         flags.set_bit(1, self.clean_start);
@@ -116,7 +116,7 @@ pub struct Pub<'a, P> {
     pub dup: bool,
 }
 
-impl<'a, P> core::fmt::Debug for Pub<'a, P> {
+impl<P> core::fmt::Debug for Pub<'_, P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Pub")
             .field("topic", &self.topic)
@@ -242,7 +242,7 @@ pub struct Reason<'a> {
     reason: Option<ReasonData<'a>>,
 }
 
-impl<'a> From<ReasonCode> for Reason<'a> {
+impl From<ReasonCode> for Reason<'_> {
     fn from(code: ReasonCode) -> Self {
         Self {
             reason: Some(ReasonData {
@@ -253,7 +253,7 @@ impl<'a> From<ReasonCode> for Reason<'a> {
     }
 }
 
-impl<'a> Reason<'a> {
+impl Reason<'_> {
     /// Get the reason code of the packet.
     pub fn code(&self) -> ReasonCode {
         self.reason

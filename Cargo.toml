@@ -2,7 +2,7 @@
 name = "minimq"
 version = "0.9.0"
 authors = ["Ryan Summers <ryan.summers@vertigo-designs.com>", "Max Rottenkolber <max@mr.gy>"]
-edition = "2018"
+edition = "2021"
 
 description = "A minimal MQTT5 client designed for no_std platforms"
 homepage = "https://github.com/quartiq/minimq"

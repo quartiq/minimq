@@ -61,7 +61,7 @@ impl serde::Serialize for ReasonCode {
 
 struct ReasonCodeVisitor;
 
-impl<'de> serde::de::Visitor<'de> for ReasonCodeVisitor {
+impl serde::de::Visitor<'_> for ReasonCodeVisitor {
     type Value = ReasonCode;
 
     fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {

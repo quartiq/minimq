@@ -173,7 +173,7 @@ where
     }
 }
 
-impl<'a, Clock> sm::StateMachineContext for ClientContext<'a, Clock>
+impl<Clock> sm::StateMachineContext for ClientContext<'_, Clock>
 where
     Clock: embedded_time::Clock,
 {
@@ -376,7 +376,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     ///
     /// # Args
     /// * `publish` - The publication to generate.
-    /// to generate a message.
+    ///   to generate a message.
     pub fn publish<P: crate::publication::ToPayload>(
         &mut self,
         publish: Publication<'_, P>,
@@ -683,7 +683,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     ///
     /// # Args
     /// * `broker` - The broker to connect to. See [crate::broker::NamedBroker] and
-    /// [crate::broker::IpBroker].
+    ///   [crate::broker::IpBroker].
     /// * `client_id` The client ID to use for communicating with the broker. If empty, rely on the
     ///   broker to automatically assign a client ID.
     /// * `network_stack` - The network stack to use for communication.
@@ -728,7 +728,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
     ///
     /// # Args
     /// * `f` - A closure to process any received messages. The closure should accept the client,
-    /// topic, message, and list of proprties (in that order).
+    ///   topic, message, and list of proprties (in that order).
     ///
     /// # Returns
     /// `Ok(Option<result>)` - During normal operation, a `result` will optionally be returned to

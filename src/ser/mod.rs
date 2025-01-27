@@ -256,7 +256,7 @@ impl<'a> MqttSerializer<'a> {
     }
 }
 
-impl<'a> serde::Serializer for &mut MqttSerializer<'a> {
+impl serde::Serializer for &mut MqttSerializer<'_> {
     type Ok = ();
     type Error = Error;
 
@@ -420,7 +420,7 @@ impl<'a> serde::Serializer for &mut MqttSerializer<'a> {
     }
 }
 
-impl<'a> serde::ser::SerializeStruct for &'a mut MqttSerializer<'_> {
+impl serde::ser::SerializeStruct for &mut MqttSerializer<'_> {
     type Ok = ();
     type Error = Error;
 
@@ -437,7 +437,7 @@ impl<'a> serde::ser::SerializeStruct for &'a mut MqttSerializer<'_> {
     }
 }
 
-impl<'a> serde::ser::SerializeSeq for &'a mut MqttSerializer<'_> {
+impl serde::ser::SerializeSeq for &mut MqttSerializer<'_> {
     type Ok = ();
     type Error = Error;
 
@@ -450,7 +450,7 @@ impl<'a> serde::ser::SerializeSeq for &'a mut MqttSerializer<'_> {
     }
 }
 
-impl<'a> serde::ser::SerializeTuple for &'a mut MqttSerializer<'_> {
+impl serde::ser::SerializeTuple for &mut MqttSerializer<'_> {
     type Ok = ();
     type Error = Error;
 
@@ -463,7 +463,7 @@ impl<'a> serde::ser::SerializeTuple for &'a mut MqttSerializer<'_> {
     }
 }
 
-impl<'a> serde::ser::SerializeTupleStruct for &'a mut MqttSerializer<'_> {
+impl serde::ser::SerializeTupleStruct for &mut MqttSerializer<'_> {
     type Ok = ();
     type Error = Error;
 
@@ -476,7 +476,7 @@ impl<'a> serde::ser::SerializeTupleStruct for &'a mut MqttSerializer<'_> {
     }
 }
 
-impl<'a> serde::ser::SerializeTupleVariant for &'a mut MqttSerializer<'_> {
+impl serde::ser::SerializeTupleVariant for &mut MqttSerializer<'_> {
     type Ok = ();
     type Error = Error;
 
@@ -489,7 +489,7 @@ impl<'a> serde::ser::SerializeTupleVariant for &'a mut MqttSerializer<'_> {
     }
 }
 
-impl<'a> serde::ser::SerializeMap for &'a mut MqttSerializer<'_> {
+impl serde::ser::SerializeMap for &mut MqttSerializer<'_> {
     type Ok = ();
     type Error = Error;
 
@@ -506,7 +506,7 @@ impl<'a> serde::ser::SerializeMap for &'a mut MqttSerializer<'_> {
     }
 }
 
-impl<'a> serde::ser::SerializeStructVariant for &'a mut MqttSerializer<'_> {
+impl serde::ser::SerializeStructVariant for &mut MqttSerializer<'_> {
     type Ok = ();
     type Error = Error;
 
