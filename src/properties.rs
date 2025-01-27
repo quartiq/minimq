@@ -50,7 +50,7 @@ pub(crate) enum PropertyIdentifier {
 
 struct PropertyIdVisitor;
 
-impl<'de> serde::de::Visitor<'de> for PropertyIdVisitor {
+impl serde::de::Visitor<'_> for PropertyIdVisitor {
     type Value = PropertyIdentifier;
 
     fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
@@ -243,7 +243,7 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Property<'a> {
     }
 }
 
-impl<'a> serde::Serialize for Property<'a> {
+impl serde::Serialize for Property<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut serializer = serializer.serialize_seq(None)?;
 
@@ -331,7 +331,7 @@ impl<'a> From<&Property<'a>> for PropertyIdentifier {
     }
 }
 
-impl<'a> Property<'a> {
+impl Property<'_> {
     pub(crate) fn size(&self) -> usize {
         let identifier: PropertyIdentifier = self.into();
         let identifier_length = Varint(identifier as u32).len();

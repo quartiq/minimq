@@ -25,7 +25,7 @@ pub enum Properties<'a> {
     },
 }
 
-impl<'a> Properties<'a> {
+impl Properties<'_> {
     /// The length in bytes of the serialized properties.
     pub fn size(&self) -> usize {
         // Properties in MQTTv5 must be prefixed with a variable-length integer denoting the size
@@ -97,7 +97,7 @@ impl<'a> core::iter::IntoIterator for &'a Properties<'a> {
     }
 }
 
-impl<'a> serde::Serialize for Properties<'a> {
+impl serde::Serialize for Properties<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut item = serializer.serialize_struct("Properties", 0)?;
         item.serialize_field("_len", &Varint(self.size() as u32))?;
@@ -152,7 +152,7 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Properties<'a> {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BinaryData<'a>(pub &'a [u8]);
 
-impl<'a> serde::Serialize for BinaryData<'a> {
+impl serde::Serialize for BinaryData<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::Error;
 
@@ -203,7 +203,7 @@ pub struct Auth<'a> {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Utf8String<'a>(pub &'a str);
 
-impl<'a> serde::Serialize for Utf8String<'a> {
+impl serde::Serialize for Utf8String<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::Error;
 

@@ -48,7 +48,7 @@ impl<'a, Broker: crate::Broker> ConfigBuilder<'a, Broker> {
     ///
     /// # Args
     /// * `buffer` - Memory used by the MQTT client. This memory is used for the will, the message
-    /// receive buffer, the transmission buffer, and the client session state.
+    ///   receive buffer, the transmission buffer, and the client session state.
     pub fn new(broker: Broker, buffer: &'a mut [u8]) -> Self {
         Self {
             broker,
@@ -138,7 +138,7 @@ impl<'a, Broker: crate::Broker> ConfigBuilder<'a, Broker> {
     ///
     /// # Args
     /// * `interval` - The keep-alive interval in seconds. A ping will be transmitted if no other
-    /// messages are sent within 50% of the keep-alive interval.
+    ///   messages are sent within 50% of the keep-alive interval.
     pub fn keepalive_interval(mut self, seconds: u16) -> Self {
         self.keepalive_interval = Milliseconds(seconds as u32 * 1000);
         self

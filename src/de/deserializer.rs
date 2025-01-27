@@ -153,7 +153,7 @@ impl<'a> MqttDeserializer<'a> {
     }
 }
 
-impl<'a> varint_rs::VarintReader for MqttDeserializer<'a> {
+impl varint_rs::VarintReader for MqttDeserializer<'_> {
     type Error = Error;
 
     fn read(&mut self) -> Result<u8, Error> {
@@ -161,7 +161,7 @@ impl<'a> varint_rs::VarintReader for MqttDeserializer<'a> {
     }
 }
 
-impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut MqttDeserializer<'de> {
+impl<'de> serde::de::Deserializer<'de> for &'_ mut MqttDeserializer<'de> {
     type Error = Error;
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
@@ -408,7 +408,7 @@ impl<'a, 'de: 'a> serde::de::SeqAccess<'de> for SeqAccess<'a, 'de> {
     }
 }
 
-impl<'a, 'de> serde::de::VariantAccess<'de> for &'a mut MqttDeserializer<'de> {
+impl<'de> serde::de::VariantAccess<'de> for &'_ mut MqttDeserializer<'de> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<(), Error> {
@@ -436,7 +436,7 @@ impl<'a, 'de> serde::de::VariantAccess<'de> for &'a mut MqttDeserializer<'de> {
     }
 }
 
-impl<'a, 'de> serde::de::EnumAccess<'de> for &'a mut MqttDeserializer<'de> {
+impl<'de> serde::de::EnumAccess<'de> for &'_ mut MqttDeserializer<'de> {
     type Error = Error;
     type Variant = Self;
 

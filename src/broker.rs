@@ -29,7 +29,7 @@ impl<R, const T: usize> NamedBroker<R, T> {
     /// # Args
     /// * `broker` - The domain name of the broker, such as `broker.example.com`
     /// * `resolver` - A [embedded_nal::Dns] resolver to resolve the broker domain name to an IP
-    /// address.
+    ///   address.
     pub fn new(broker: &str, resolver: R) -> Result<Self, &str> {
         let addr: Ipv4Addr = broker.parse().unwrap_or(Ipv4Addr::UNSPECIFIED);
 
