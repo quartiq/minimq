@@ -23,7 +23,7 @@ log = {version = "0.4", optional = true}
 embedded-time = "0.12"
 varint-rs = {version = "2.2", default-features = false }
 serde = { version = "1", features = ["derive"], default-features = false }
-smlang = "0.6.0"
+smlang = "0.8.0"
 embedded-nal = "0.9"
 
 [features]

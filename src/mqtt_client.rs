@@ -30,17 +30,17 @@ mod sm {
         transitions: {
             *Disconnected + TcpConnected = Restart,
             Restart + SentConnect = Establishing,
-            Establishing + Connected(ConnAck<'a>) [ handle_connack ] = Active,
+            Establishing + Connected(ConnAck<'a>) / handle_connack = Active,
 
             Active + SendTimeout = Disconnected,
             _ + ProtocolError = Disconnected,
 
-            Active + ControlPacket(ReceivedPacket<'a>) [handle_packet] = Active,
-            Active + SentSubscribe(u16) [handle_subscription] = Active,
+            Active + ControlPacket(ReceivedPacket<'a>) / handle_packet = Active,
+            Active + SentSubscribe(u16) / handle_subscription = Active,
 
             _ + TcpDisconnect = Disconnected
         },
-        custom_guard_error: true,
+        custom_error: true,
     }
 }
 
@@ -176,16 +176,16 @@ impl<Clock> sm::StateMachineContext for ClientContext<'_, Clock>
 where
     Clock: embedded_time::Clock,
 {
-    type GuardError = MinimqError;
+    type Error = MinimqError;
 
-    fn handle_subscription(&mut self, id: &u16) -> Result<(), Self::GuardError> {
+    fn handle_subscription(&mut self, id: u16) -> Result<(), Self::Error> {
         self.pending_subscriptions
-            .push(*id)
+            .push(id)
             .map_err(|_| ProtocolError::BufferSize)?;
         Ok(())
     }
 
-    fn handle_packet(&mut self, packet: &ReceivedPacket<'_>) -> Result<(), Self::GuardError> {
+    fn handle_packet(&mut self, packet: ReceivedPacket<'_>) -> Result<(), Self::Error> {
         match &packet {
             ReceivedPacket::SubAck(ack) => self.handle_suback(ack)?,
             ReceivedPacket::PingResp => self.register_ping_response(),
@@ -204,7 +204,7 @@ where
         Ok(())
     }
 
-    fn handle_connack(&mut self, acknowledge: &ConnAck<'_>) -> Result<(), Self::GuardError> {
+    fn handle_connack(&mut self, acknowledge: ConnAck<'_>) -> Result<(), Self::Error> {
         acknowledge.reason_code.as_result()?;
 
         // Reset the session state upon connection with a broker that doesn't have a session state
@@ -253,8 +253,8 @@ where
 impl<E> From<sm::Error<MinimqError>> for Error<E> {
     fn from(error: sm::Error<MinimqError>) -> Self {
         match error {
-            sm::Error::GuardFailed(err) => Error::Minimq(err),
-            sm::Error::InvalidEvent => Error::NotReady,
+            sm::Error::ActionFailed(err) | sm::Error::GuardFailed(err) => Error::Minimq(err),
+            sm::Error::InvalidEvent | sm::Error::TransitionsFailed => Error::NotReady,
         }
     }
 }
