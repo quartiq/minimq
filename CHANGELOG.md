@@ -1,10 +1,15 @@
+<!-- markdownlint-disable MD024 -->
 # Changelog
 
-This document describes the changes to Minimq between releases.
+All notable changes to this project will be documented in this file.
 
-# Unreleased
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.10.0](https://github.com/quartiq/minimq/compare/v0.9.0...v0.10.0) - 2025-01-27
 
 ## Changed
+
 * The `Publication::finish()` API was removed in favor of a new `Publication::respond()` API for
 constructing replies to previously received messages.
 * `DeferredPublication` has been removed: pass a `FnOnce(&mut [u8])` as payload.
@@ -14,34 +19,37 @@ constructing replies to previously received messages.
 # [0.9.0] - 2024-04-29
 
 ## Fixed
+
 * Fixed an issue where a corrupted mqtt header length could result in a crash
 * [breaking] `embedded-nal` bumped
 
 # [0.8.0] - 2023-11-01
 
 ## Changed
+
 * [breaking] Const generics for message size and allowable in-flight messages have been removed.
   Instead, the user now supplies an RX buffer, a TX buffer, and a session state buffer.
- * Setup-only configuration APIs such as `set_will()` and `set_keepalive_interval()` have been moved
+* Setup-only configuration APIs such as `set_will()` and `set_keepalive_interval()` have been moved
  to a new `Config` structure that is supplied to the `Minimq::new()` constructor to simplify the
  client.
 * Added a new `correlate()` API to publication builder to easily add correlation data.
 
-
 ## Added
+
 * Support for subscribing at `QoS::ExactlyOnce`
 * Support for downgrading the `QoS` to the maximum permitted by the server
 * Brokers may now be provided using domain-name syntax or static IP addresses.
 
 ## Fixed
+
 * Fixed an issue where PubComp was serialized with an incorrect control code
 * Fixed an issue where some response control packets would be improperly serialized
 * The client now respects the server max packet reception
 
-
 # [0.7.0] - 2023-06-22
 
 ## Fixed
+
 * [breaking] Embedded-nal version updated to 0.7
 * Fixed an issue where the MQTT client would become permanently inoperable when the broker
   disconnected under certain conditions.
@@ -49,17 +57,20 @@ constructing replies to previously received messages.
 # [0.6.2] - 2023-04-05
 
 ## Fixed
+
 * `UserProperty` now properly serializes key-then-value. Serialization order was previously
   unintentionally inverted.
 
 # [0.6.1] - 2022-11-03
 
 ## Fixed
+
 * `PubAck` can now be deserialized when no properties are present, but a reason code is specified.
 
 # [0.6.0] - 2022-11-03
 
 ## Added
+
 * Allow configuration of non-default broker port numbers
 * Support added for QoS::ExactlyOnce transmission
 * `poll()` now supports returning from the closure. An `Option::Some()` will be generated whenever
@@ -72,6 +83,7 @@ constructing replies to previously received messages.
   messages.
 
 ## Changed
+
 * [breaking] The client is no longer publicly exposed, and is instead accessible via `Minimq::client()`
 * Single MQTT packets are now processed per `Minimq::poll()` execution, reducing stack usage.
 * [breaking] External crate is now used for `varint` encoding. Varints changed to u32 format.
@@ -85,6 +97,7 @@ constructing replies to previously received messages.
   the `Publication` builder utility.
 
 ## Fixed
+
 * All unacknowledged messages will be guaranteed to be retransmitted upon connection with the
 broker.
 * The `ReceiveMaximum` property is now sent in the connection request to the broker
@@ -92,11 +105,13 @@ broker.
 # [0.5.3] - 2022-02-14
 
 ## Added
+
 * Property comparison now implements PartialEq
 
 # [0.5.2] - 2021-12-14
 
 ## Fixed
+
 * Made `mqtt_client` module public to correct documentation
 * Partial packet writes no longer cause the connection to the broker to break down.
   [#74](https://github.com/quartiq/minimq/issues/74)
@@ -104,6 +119,7 @@ broker.
 # [0.5.1] - 2021-12-07
 
 ## Fixed
+
 * Fixed an issue where the keepalive interval could not be set properly. See
   [#69](https://github.com/quartiq/minimq/issues/69).
 * Fixed an issue where the keepalive interval was not set properly. See
@@ -112,6 +128,7 @@ broker.
 # [0.5.0] - 2021-12-06
 
 ## Added
+
 * Support for the `Will` message specification.
 * [breaking] Adding `retained` flag to `publish()` to allow messages to be published in a retained
   manner.
