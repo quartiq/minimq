@@ -18,7 +18,7 @@ rust-version = "1.77.0"
 [dependencies]
 bit_field = "0.10.0"
 num_enum = { version = "0.7", default-features = false }
-heapless = { version = "0.7", features = ["serde"] }
+heapless = { version = "0.8", features = ["serde"] }
 log = {version = "0.4", optional = true}
 embedded-time = "0.12"
 varint-rs = {version = "2.2", default-features = false }
@@ -33,6 +33,6 @@ unsecure = []
 
 [dev-dependencies]
 log = "0.4"
-env_logger = "0.10"
+env_logger = "0.11"
 std-embedded-time = "0.1"
 std-embedded-nal = "0.4.0"

@@ -23,7 +23,6 @@ use heapless::String;
 use core::str::FromStr;
 
 mod sm {
-
     use crate::{de::received_packet::ReceivedPacket, packets::ConnAck};
     use smlang::statemachine;
 
