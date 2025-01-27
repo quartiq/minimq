@@ -1,7 +1,11 @@
 [package]
 name = "minimq"
-version = "0.9.0"
-authors = ["Ryan Summers <ryan.summers@vertigo-designs.com>", "Max Rottenkolber <max@mr.gy>"]
+version = "0.10.0"
+authors = [
+    "Ryan Summers <ryan.summers@vertigo-designs.com>",
+    "Max Rottenkolber <max@mr.gy>",
+    "Robert Jördens <rj@quartiq.de>",
+]
 edition = "2021"
 
 description = "A minimal MQTT5 client designed for no_std platforms"
@@ -19,9 +23,9 @@ rust-version = "1.77.0"
 bit_field = "0.10.0"
 num_enum = { version = "0.7", default-features = false }
 heapless = { version = "0.8", features = ["serde"] }
-log = {version = "0.4", optional = true}
+log = { version = "0.4", optional = true }
 embedded-time = "0.12"
-varint-rs = {version = "2.2", default-features = false }
+varint-rs = { version = "2.2", default-features = false }
 serde = { version = "1", features = ["derive"], default-features = false }
 smlang = "0.8.0"
 embedded-nal = "0.9"

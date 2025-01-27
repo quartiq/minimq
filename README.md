@@ -5,8 +5,8 @@
 
 Minimq provides a minimal MQTTv5 client and message parsing for the MQTT version 5 protocol. It
 leverages the [`embedded-nal`](https://github.com/rust-embedded-community/embedded-nal) to operate
-on top of any TCP stack implementation and is actively used with both
-[`smoltcp`](https://github.com/smoltcp-rs/smoltcp) and and the W5500 hardware network stack.
+on top of any TCP stack implementation and is actively used with `std-embedded-nal`,
+[`smoltcp`](https://github.com/smoltcp-rs/smoltcp), and the W5500 hardware network stack.
 
 Minimq provides a simple, `no_std` interface to connect to an MQTT broker to publish messages and
 subscribe to topics.
@@ -15,6 +15,7 @@ subscribe to topics.
 
 Minimq supports all of the fundamental operations of MQTT, such as message subscription and
 publication. Below is a detailed list of features, indicating what aspects are supported:
+
 * Publication at all quality-of-service levels (at-most-once, at-least-once, and exactly-once)
 * Retained messages
 * Connection will messages
@@ -31,6 +32,7 @@ Minimq also provides convenient APIs to implement request-response interfaces ov
 the `ResponseTopic` and `CorrelationData` properties for in-bound and out-bound messages.
 
 ### Smoltcp Support
+
 If using `smoltcp`, check out the [`smoltcp-nal`](https://github.com/quartiq/smoltcp-nal) to quickly
 create an interface that can be used by Minimq.
 
