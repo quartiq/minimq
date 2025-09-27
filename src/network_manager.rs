@@ -36,13 +36,13 @@ where
         }
     }
 
-    pub fn socket_was_closed(&mut self) -> bool {
-        let was_closed = self.connection_died;
-        if was_closed {
-            self.pending_write.take();
-        }
+    pub fn socket_was_closed(&self) -> bool {
+        self.connection_died
+    }
+
+    pub fn reset(&mut self) {
+        self.pending_write.take();
         self.connection_died = false;
-        was_closed
     }
 
     /// Determine if there is a pending packet write that needs to be completed.

@@ -489,6 +489,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
 
     fn update(&mut self) -> Result<(), Error<TcpStack::Error>> {
         if self.network.socket_was_closed() {
+            self.network.reset();
             info!("Handling closed socket");
             self.sm.process_event(Events::TcpDisconnect).unwrap();
             self.network.allocate_socket()?;
@@ -780,6 +781,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
                 if received > 0 {
                     debug!("Received {} bytes", received);
                 } else {
+                    self.client.update()?;
                     return Ok(None);
                 }
             }
@@ -787,6 +789,7 @@ impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate:
             let packet = self.packet_reader.received_packet()?;
             info!("Received {:?}", packet);
             if let Some(result) = self.client.handle_packet(packet, &mut f)? {
+                self.client.update()?;
                 return Ok(Some(result));
             }
         }
