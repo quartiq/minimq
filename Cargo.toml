@@ -6,23 +6,21 @@ authors = [
     "Max Rottenkolber <max@mr.gy>",
     "Robert Jördens <rj@quartiq.de>",
 ]
-edition = "2021"
-
-description = "A minimal MQTT5 client designed for no_std platforms"
+edition = "2024"
+description = "An MQTT5 client"
 homepage = "https://github.com/quartiq/minimq"
 repository = "https://github.com/quartiq/minimq"
 documentation = "https://docs.rs/minimq"
-
 readme = "README.md"
 categories = ["embedded", "no-std", "database", "encoding"]
 keywords = ["mqtt", "embedded", "client"]
 license = "MIT"
-rust-version = "1.77.0"
+rust-version = "1.85.0"
 
 [dependencies]
 bit_field = "0.10.0"
 num_enum = { version = "0.7", default-features = false }
-heapless = { version = "0.8", features = ["serde"] }
+heapless = { version = "0.8" }
 log = { version = "0.4", optional = true }
 embedded-time = "0.12"
 varint-rs = { version = "2.2", default-features = false }
@@ -32,7 +30,7 @@ embedded-nal = "0.9"
 
 [features]
 default = []
-logging = ["log"]
+logging = ["dep:log"]
 unsecure = []
 
 [dev-dependencies]
