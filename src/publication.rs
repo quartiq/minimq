@@ -1,7 +1,7 @@
 use crate::{
+    ProtocolError, QoS, Retain,
     properties::Property,
     types::{BinaryData, Properties},
-    ProtocolError, QoS, Retain,
 };
 
 pub trait ToPayload {

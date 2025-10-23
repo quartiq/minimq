@@ -1,8 +1,8 @@
 use crate::packets::PubRel;
 /// This module represents the session state of an MQTT communication session.
 use crate::{
-    network_manager::InterfaceHolder, reason_codes::ReasonCode, republication::RepublicationBuffer,
-    Error, ProtocolError, QoS,
+    Error, ProtocolError, QoS, network_manager::InterfaceHolder, reason_codes::ReasonCode,
+    republication::RepublicationBuffer,
 };
 use embedded_nal::TcpClientStack;
 use heapless::{String, Vec};
@@ -138,9 +138,7 @@ impl<'a> SessionState<'a> {
 
     /// Check if a server packet ID is in use.
     pub fn server_packet_id_in_use(&self, id: u16) -> bool {
-        self.pending_server_packet_ids
-            .iter()
-            .any(|&inflight_id| inflight_id == id)
+        self.pending_server_packet_ids.contains(&id)
     }
 
     /// Register a server packet ID as being in use.

@@ -1,6 +1,6 @@
 use minimq::{
-    types::{SubscriptionOptions, TopicFilter},
     Minimq, Publication, QoS,
+    types::{SubscriptionOptions, TopicFilter},
 };
 
 use core::net::{IpAddr, Ipv4Addr};

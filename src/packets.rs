@@ -1,9 +1,9 @@
 use crate::{
+    QoS, Retain,
     publication::Publication,
     reason_codes::ReasonCode,
     types::{Auth, Properties, TopicFilter, Utf8String},
     will::SerializedWill,
-    QoS, Retain,
 };
 use bit_field::BitField;
 use serde::{Deserialize, Serialize};

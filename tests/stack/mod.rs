@@ -1,4 +1,4 @@
-use embedded_nal::{nb, TcpClientStack};
+use embedded_nal::{TcpClientStack, nb};
 use std::cell::RefCell;
 use std::io::{Error, ErrorKind, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream};

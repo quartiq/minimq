@@ -2,7 +2,7 @@
 //!
 //! This module provides wrapper methods and serde functionality for MQTT-specified data types.
 use crate::{
-    de::deserializer::MqttDeserializer, properties::Property, varint::Varint, ProtocolError, QoS,
+    ProtocolError, QoS, de::deserializer::MqttDeserializer, properties::Property, varint::Varint,
 };
 use bit_field::BitField;
 use serde::ser::SerializeStruct;

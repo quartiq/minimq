@@ -1,4 +1,4 @@
-use crate::{types::Auth, will::SerializedWill, ProtocolError, Will};
+use crate::{ProtocolError, Will, types::Auth, will::SerializedWill};
 use core::convert::TryFrom;
 use embedded_time::duration::{Extensions, Milliseconds};
 use heapless::String;

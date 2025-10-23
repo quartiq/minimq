@@ -1,5 +1,6 @@
 use crate::{
-    de::{received_packet::ReceivedPacket, PacketReader},
+    ConfigBuilder, Error, MinimqError, Property, ProtocolError, QoS,
+    de::{PacketReader, received_packet::ReceivedPacket},
     network_manager::InterfaceHolder,
     packets::{ConnAck, Connect, PingReq, Pub, PubAck, PubComp, PubRec, PubRel, SubAck, Subscribe},
     publication::Publication,
@@ -7,13 +8,13 @@ use crate::{
     session_state::SessionState,
     types::{Auth, Properties, TopicFilter, Utf8String},
     will::SerializedWill,
-    ConfigBuilder, Error, MinimqError, Property, ProtocolError, QoS, {debug, error, info, warn},
+    {debug, error, info, warn},
 };
 
 use core::convert::{TryFrom, TryInto};
 use embedded_time::{
-    duration::{Milliseconds, Seconds},
     Instant,
+    duration::{Milliseconds, Seconds},
 };
 
 use embedded_nal::TcpClientStack;

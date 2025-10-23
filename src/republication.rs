@@ -1,8 +1,8 @@
-use crate::packets::PubRel;
 use crate::Error;
+use crate::packets::PubRel;
 use crate::{
-    network_manager::InterfaceHolder, reason_codes::ReasonCode, ring_buffer::RingBuffer,
-    ProtocolError,
+    ProtocolError, network_manager::InterfaceHolder, reason_codes::ReasonCode,
+    ring_buffer::RingBuffer,
 };
 use core::convert::TryInto;
 use heapless::Deque;

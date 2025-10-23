@@ -7,7 +7,7 @@
 //! violating Rust's borrow rules.
 use crate::{message_types::ControlPacket, packets::Pub};
 use core::net::SocketAddr;
-use embedded_nal::{nb, TcpClientStack, TcpError};
+use embedded_nal::{TcpClientStack, TcpError, nb};
 use serde::Serialize;
 
 use crate::{Error, ProtocolError};

@@ -1,4 +1,4 @@
-use minimq::{types::Utf8String, Minimq, Property, Publication, QoS, Will};
+use minimq::{Minimq, Property, Publication, QoS, Will, types::Utf8String};
 
 use core::net::{IpAddr, Ipv4Addr};
 use std_embedded_time::StandardClock;

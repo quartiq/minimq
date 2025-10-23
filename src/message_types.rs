@@ -1,9 +1,9 @@
 use crate::{
+    Retain,
     packets::{
         ConnAck, Connect, Disconnect, PingReq, PingResp, Pub, PubAck, PubComp, PubRec, PubRel,
         SubAck, Subscribe,
     },
-    Retain,
 };
 use bit_field::BitField;
 use num_enum::TryFromPrimitive;

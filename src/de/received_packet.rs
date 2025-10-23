@@ -1,8 +1,8 @@
 use crate::{
+    ProtocolError, QoS, Retain,
     message_types::MessageType,
     packets::{ConnAck, Disconnect, Pub, PubAck, PubComp, PubRec, PubRel, SubAck},
     varint::Varint,
-    ProtocolError, QoS, Retain,
 };
 
 use super::deserializer::MqttDeserializer;

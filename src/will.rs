@@ -1,8 +1,8 @@
 use crate::{
+    ProtocolError, QoS, Retain,
     properties::{Property, PropertyIdentifier},
     types::{BinaryData, Properties, Utf8String},
     varint::Varint,
-    ProtocolError, QoS, Retain,
 };
 
 use serde::Serialize;

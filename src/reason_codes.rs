@@ -96,11 +96,7 @@ impl<T, E: Into<ReasonCode>> From<Result<T, E>> for ReasonCode {
 
 impl From<ReasonCode> for Result<(), ReasonCode> {
     fn from(code: ReasonCode) -> Result<(), ReasonCode> {
-        if code.success() {
-            Ok(())
-        } else {
-            Err(code)
-        }
+        if code.success() { Ok(()) } else { Err(code) }
     }
 }
 
