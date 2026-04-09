@@ -1,4 +1,4 @@
-use crate::{Broker, OwnedWill, ProtocolError, Will, types::Auth};
+use crate::{Broker, OwnedWill, ProtocolError, Will, types::Auth, will::WillSpec};
 use embassy_time::Duration;
 use heapless::String;
 
@@ -39,8 +39,7 @@ pub enum ConfigError {
 pub struct Config<'a> {
     pub(crate) broker: Broker<'a>,
     pub(crate) buffers: Buffers<'a>,
-    pub(crate) will: Option<Will<'a>>,
-    pub(crate) owned_will: Option<OwnedWill<'a>>,
+    pub(crate) will: Option<WillSpec<'a>>,
     pub(crate) client_id: String<64>,
     pub(crate) keepalive_interval: Duration,
     pub(crate) downgrade_qos: bool,
@@ -51,8 +50,7 @@ pub struct Config<'a> {
 pub struct ConfigBuilder<'a> {
     broker: Broker<'a>,
     buffers: Buffers<'a>,
-    will: Option<Will<'a>>,
-    owned_will: Option<OwnedWill<'a>>,
+    will: Option<WillSpec<'a>>,
     client_id: String<64>,
     keepalive_interval: Duration,
     downgrade_qos: bool,
@@ -65,7 +63,6 @@ impl<'a> ConfigBuilder<'a> {
             broker,
             buffers,
             will: None,
-            owned_will: None,
             client_id: String::new(),
             auth: None,
             keepalive_interval: Duration::from_secs(59),
@@ -118,15 +115,15 @@ impl<'a> ConfigBuilder<'a> {
         if self.will.is_some() {
             return Err(ProtocolError::WillAlreadySpecified);
         }
-        self.will = Some(will);
+        self.will = Some(WillSpec::Borrowed(will));
         Ok(self)
     }
 
     pub fn owned_will(mut self, will: OwnedWill<'a>) -> Result<Self, ProtocolError> {
-        if self.will.is_some() || self.owned_will.is_some() {
+        if self.will.is_some() {
             return Err(ProtocolError::WillAlreadySpecified);
         }
-        self.owned_will = Some(will);
+        self.will = Some(WillSpec::Owned(will));
         Ok(self)
     }
 
@@ -135,7 +132,6 @@ impl<'a> ConfigBuilder<'a> {
             broker: self.broker,
             buffers: self.buffers,
             will: self.will,
-            owned_will: self.owned_will,
             client_id: self.client_id,
             keepalive_interval: self.keepalive_interval,
             downgrade_qos: self.downgrade_qos,

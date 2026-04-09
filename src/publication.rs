@@ -1,8 +1,6 @@
-use crate::{
-    ProtocolError, QoS, Retain,
-    properties::Property,
-    types::{BinaryData, Properties},
-};
+use crate::properties::Property;
+use crate::types::{BinaryData, Properties};
+use crate::{ProtocolError, QoS, Retain};
 use heapless::{String, Vec};
 
 pub trait ToPayload {
@@ -106,7 +104,6 @@ impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for F {
     }
 }
 
-/// MQTT publication builder.
 pub struct Publication<'a, P> {
     pub(crate) topic: &'a str,
     pub(crate) properties: Properties<'a>,
@@ -116,7 +113,6 @@ pub struct Publication<'a, P> {
 }
 
 impl<'a, P> Publication<'a, P> {
-    /// Build a reply publication from inbound properties.
     pub fn respond(
         default_topic: Option<&'a str>,
         received_properties: &'a Properties<'a>,
@@ -145,7 +141,6 @@ impl<'a, P> Publication<'a, P> {
         Ok(publication)
     }
 
-    /// Construct a new publication with a payload.
     pub fn new(topic: &'a str, payload: P) -> Self {
         Self {
             payload,

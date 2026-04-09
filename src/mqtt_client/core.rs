@@ -1,10 +1,9 @@
+use crate::de::{PacketReader, received_packet::ReceivedPacket};
+use crate::packets::{Connect, PingReq, Pub, PubAck, PubComp, PubRec, PubRel, Subscribe};
+use crate::types::{Auth, Properties, TopicFilter, Utf8String};
+use crate::will::WillSpec;
 use crate::{
-    Broker, Config, Error, Property, ProtocolError, PubError, QoS, ReasonCode,
-    de::{PacketReader, received_packet::ReceivedPacket},
-    debug, info,
-    packets::{Connect, PingReq, Pub, PubAck, PubComp, PubRec, PubRel, Subscribe},
-    types::{Auth, Properties, TopicFilter, Utf8String},
-    will::{OwnedWill, Will},
+    Broker, Config, Error, Property, ProtocolError, PubError, QoS, ReasonCode, debug, info,
 };
 use core::convert::TryFrom;
 use embassy_time::{Duration, Instant};
@@ -239,8 +238,7 @@ pub(super) struct Core<'buf> {
     packet_reader: PacketReader<'buf>,
     tx_buffer: &'buf mut [u8],
     session: SessionState<'buf>,
-    will: Option<Will<'buf>>,
-    owned_will: Option<OwnedWill<'buf>>,
+    will: Option<WillSpec<'buf>>,
     auth: Option<Auth<'buf>>,
     downgrade_qos: bool,
     keep_alive_interval: Duration,
@@ -260,7 +258,6 @@ impl<'buf> Core<'buf> {
             broker,
             buffers,
             will,
-            owned_will,
             client_id,
             keepalive_interval,
             downgrade_qos,
@@ -273,7 +270,6 @@ impl<'buf> Core<'buf> {
             tx_buffer: buffers.tx,
             session: SessionState::new(client_id, buffers.inflight),
             will,
-            owned_will,
             auth,
             downgrade_qos,
             keep_alive_interval: keepalive_interval,
@@ -338,11 +334,7 @@ impl<'buf> Core<'buf> {
             Property::SessionExpiryInterval(u32::MAX),
             Property::ReceiveMaximum(self.session.pending_server_packet_ids.capacity() as u16),
         ];
-        let owned_will = self.owned_will.clone();
-        let will = self
-            .will
-            .clone()
-            .or_else(|| owned_will.as_ref().map(Will::from));
+        let will = self.will.clone();
 
         write_packet(
             self.tx_buffer,
@@ -352,7 +344,7 @@ impl<'buf> Core<'buf> {
                 properties: Properties::Slice(&properties),
                 client_id: Utf8String(client_id.as_str()),
                 auth: self.auth,
-                will,
+                will: will.as_ref().map(WillSpec::as_will),
                 clean_start: !self.session.had_state,
             },
         )

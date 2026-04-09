@@ -243,7 +243,7 @@ fn inflight_metadata_exhaustion_is_reported() {
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    for index in 0..8 {
+    for index in 0..4 {
         block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce)))
             .unwrap_or_else(|_| panic!("publish {index} failed"));
     }

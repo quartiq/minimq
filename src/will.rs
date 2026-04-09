@@ -6,6 +6,12 @@ use crate::{
 use heapless::String;
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) enum WillSpec<'a> {
+    Borrowed(Will<'a>),
+    Owned(OwnedWill<'a>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Will<'a> {
     topic: &'a str,
     data: &'a [u8],
@@ -29,7 +35,6 @@ impl<'a> Will<'a> {
         data: &'a [u8],
         properties: &'a [Property<'a>],
     ) -> Result<Self, ProtocolError> {
-        // Check that the input properties are valid for a will.
         for property in properties {
             match property.into() {
                 PropertyIdentifier::WillDelayInterval
@@ -117,6 +122,15 @@ impl<'a> From<&'a OwnedWill<'a>> for Will<'a> {
             qos: will.qos,
             retained: will.retained,
             properties: will.properties,
+        }
+    }
+}
+
+impl<'a> WillSpec<'a> {
+    pub(crate) fn as_will(&'a self) -> Will<'a> {
+        match self {
+            Self::Borrowed(will) => will.clone(),
+            Self::Owned(will) => will.into(),
         }
     }
 }
