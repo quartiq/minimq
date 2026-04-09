@@ -129,7 +129,6 @@ pub enum Error {
     SessionReset,
     Protocol(ProtocolError),
     Transport(ErrorKind),
-    State,
 }
 
 impl From<ProtocolError> for Error {

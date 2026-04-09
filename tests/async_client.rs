@@ -403,6 +403,9 @@ fn inbound_publish_exposes_response_helpers() {
     let target = message.response_target().unwrap();
     assert_eq!(target.topic(), "reply/topic");
     assert_eq!(target.correlation_data(), Some(&b"abc"[..]));
+    let owned_via_message = message.reply_owned::<64, 8>().unwrap().unwrap();
+    assert_eq!(owned_via_message.topic(), "reply/topic");
+    assert_eq!(owned_via_message.correlation_data(), Some(&b"abc"[..]));
 
     let reply = message.reply("ok").unwrap().qos(QoS::AtLeastOnce);
     let owned = target.to_owned::<64, 8>().unwrap();
