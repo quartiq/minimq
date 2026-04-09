@@ -4,7 +4,7 @@ use crate::{
     debug, info,
     packets::{Connect, PingReq, Pub, PubAck, PubComp, PubRec, PubRel, Subscribe},
     types::{Auth, Properties, TopicFilter, Utf8String},
-    will::Will,
+    will::{OwnedWill, Will},
 };
 use core::convert::TryFrom;
 use embassy_time::{Duration, Instant};
@@ -14,10 +14,10 @@ use heapless::{String, Vec};
 use super::InboundPublish;
 
 const PING_TIMEOUT_MS: u64 = 5_000;
-const MAX_OUTBOUND: usize = 16;
-const MAX_INBOUND_QOS2: usize = 16;
-const MAX_PENDING_SUBSCRIPTIONS: usize = 32;
-const MAX_PENDING_PUBREL: usize = 16;
+const MAX_OUTBOUND: usize = 4;
+const MAX_INBOUND_QOS2: usize = 4;
+const MAX_PENDING_SUBSCRIPTIONS: usize = 4;
+const MAX_PENDING_PUBREL: usize = 4;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(super) enum State {
@@ -235,11 +235,12 @@ impl<'a> SessionState<'a> {
 
 #[derive(Debug)]
 pub(super) struct Core<'buf> {
-    broker: Broker,
+    broker: Broker<'buf>,
     packet_reader: PacketReader<'buf>,
     tx_buffer: &'buf mut [u8],
     session: SessionState<'buf>,
     will: Option<Will<'buf>>,
+    owned_will: Option<OwnedWill<'buf>>,
     auth: Option<Auth<'buf>>,
     downgrade_qos: bool,
     keep_alive_interval: Duration,
@@ -259,6 +260,7 @@ impl<'buf> Core<'buf> {
             broker,
             buffers,
             will,
+            owned_will,
             client_id,
             keepalive_interval,
             downgrade_qos,
@@ -271,6 +273,7 @@ impl<'buf> Core<'buf> {
             tx_buffer: buffers.tx,
             session: SessionState::new(client_id, buffers.inflight),
             will,
+            owned_will,
             auth,
             downgrade_qos,
             keep_alive_interval: keepalive_interval,
@@ -285,12 +288,16 @@ impl<'buf> Core<'buf> {
         }
     }
 
-    pub(super) fn broker(&self) -> &Broker {
+    pub(super) fn broker(&self) -> &Broker<'_> {
         &self.broker
     }
 
     pub(super) fn is_connected(&self) -> bool {
         self.state == State::Active
+    }
+
+    pub(super) fn had_state(&self) -> bool {
+        self.session.had_state
     }
 
     pub(super) fn subscriptions_pending(&self) -> bool {
@@ -331,22 +338,28 @@ impl<'buf> Core<'buf> {
             Property::SessionExpiryInterval(u32::MAX),
             Property::ReceiveMaximum(self.session.pending_server_packet_ids.capacity() as u16),
         ];
+        let owned_will = self.owned_will.clone();
+        let will = self
+            .will
+            .clone()
+            .or_else(|| owned_will.as_ref().map(Will::from));
 
-        self.write_packet(
+        write_packet(
+            self.tx_buffer,
             connection,
             &Connect {
                 keep_alive: self.keepalive_seconds(),
                 properties: Properties::Slice(&properties),
                 client_id: Utf8String(client_id.as_str()),
                 auth: self.auth,
-                will: self.will.clone(),
+                will,
                 clean_start: !self.session.had_state,
             },
         )
         .await?;
 
         self.state = State::Establishing;
-        self.next_ping = Some(Instant::now() + self.keep_alive_interval / 2);
+        self.next_ping = None;
         self.ping_timeout = None;
         Ok(())
     }

@@ -16,7 +16,7 @@ pub struct Session<'a, 'buf, C: Connector> {
     core: Core<'buf>,
     connector: &'a C,
     connection: Option<C::Connection<'a>>,
-    connected_once: bool,
+    pending_activation: Option<bool>,
 }
 
 impl<'a, 'buf, C> Session<'a, 'buf, C>
@@ -28,7 +28,7 @@ where
             core: Core::new(config),
             connector,
             connection: None,
-            connected_once: false,
+            pending_activation: None,
         }
     }
 
@@ -53,10 +53,7 @@ where
         topics: &[TopicFilter<'_>],
         properties: &[Property<'_>],
     ) -> Result<(), Error> {
-        let activated = self.ensure_connected().await?;
-        if activated {
-            self.connected_once = true;
-        }
+        let _ = self.ensure_connected().await?;
         let mut connection = self.take_connection()?;
         let result = self
             .core
@@ -73,10 +70,7 @@ where
     where
         P: crate::publication::ToPayload,
     {
-        let activated = self.ensure_connected().await.map_err(PubError::Error)?;
-        if activated {
-            self.connected_once = true;
-        }
+        let _ = self.ensure_connected().await.map_err(PubError::Error)?;
         let mut connection = self.take_connection().map_err(PubError::Error)?;
         let result = self.core.publish(&mut connection, publication).await;
         self.connection = Some(connection);
@@ -84,25 +78,23 @@ where
     }
 
     pub async fn poll(&mut self) -> Result<Event<'_>, Error> {
-        let reconnected = self.ensure_connected().await?;
-        if reconnected {
-            return Ok(if self.connected_once {
-                Event::Reconnected
-            } else {
-                self.connected_once = true;
+        let _ = self.ensure_connected().await?;
+        if let Some(first_connect) = self.pending_activation.take() {
+            return Ok(if first_connect {
                 Event::Connected
+            } else {
+                Event::Reconnected
             });
         }
 
-        let now = Instant::now();
-        match self.step(now).await? {
+        match self.step().await? {
             Some(inbound) => Ok(Event::Inbound(inbound)),
             None => Ok(Event::Idle),
         }
     }
 
-    async fn ensure_connected(&mut self) -> Result<bool, Error> {
-        let mut reconnected = false;
+    async fn ensure_connected(&mut self) -> Result<Option<bool>, Error> {
+        let mut activated = None;
         loop {
             if self.core.state == State::Disconnected {
                 self.core.reset_reader();
@@ -110,25 +102,27 @@ where
             }
 
             if self.connection.is_none() {
+                let first_connect = !self.core.had_state();
                 let connection = self.connector.connect(self.core.broker()).await?;
                 self.connection = Some(connection);
                 let mut connection = self.take_connection()?;
                 let result = self.core.connect(&mut connection).await;
                 self.connection = Some(connection);
                 result?;
-                reconnected = true;
+                activated = Some(first_connect);
+                self.pending_activation = activated;
             }
 
             if self.core.is_connected() {
-                return Ok(reconnected);
+                return Ok(activated);
             }
 
-            let now = Instant::now();
-            let _ = self.step(now).await?;
+            let _ = self.step().await?;
         }
     }
 
-    async fn step(&mut self, now: Instant) -> Result<Option<InboundPublish<'_>>, Error> {
+    async fn step(&mut self) -> Result<Option<InboundPublish<'_>>, Error> {
+        let now = Instant::now();
         {
             let mut connection = self.take_connection()?;
             let result = self.core.maintain(&mut connection, now).await;
@@ -143,24 +137,24 @@ where
 
         if let Some(deadline) = self.core.next_deadline() {
             let mut connection = self.take_connection()?;
-            let read = self.core.read(&mut connection, now);
-            let result = match select(read, Timer::at(deadline)).await {
-                Either::First(result) => match result {
-                    Ok(result) => result,
-                    Err(Error::Transport(ErrorKind::TimedOut | ErrorKind::Interrupted)) => {
+            let result =
+                match select(self.core.read(&mut connection, now), Timer::at(deadline)).await {
+                    Either::First(result) => match result {
+                        Ok(result) => result,
+                        Err(Error::Transport(ErrorKind::TimedOut | ErrorKind::Interrupted)) => {
+                            self.connection = Some(connection);
+                            return Ok(None);
+                        }
+                        Err(err) => {
+                            self.connection = Some(connection);
+                            return Err(err);
+                        }
+                    },
+                    Either::Second(_) => {
                         self.connection = Some(connection);
                         return Ok(None);
                     }
-                    Err(err) => {
-                        self.connection = Some(connection);
-                        return Err(err);
-                    }
-                },
-                Either::Second(_) => {
-                    self.connection = Some(connection);
-                    return Ok(None);
-                }
-            };
+                };
             self.connection = Some(connection);
             return Ok(result);
         }

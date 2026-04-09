@@ -11,7 +11,7 @@ pub trait Connector {
     where
         Self: 'a;
 
-    async fn connect<'a>(&'a self, broker: &Broker) -> Result<Self::Connection<'a>, Error>;
+    async fn connect<'a>(&'a self, broker: &Broker<'_>) -> Result<Self::Connection<'a>, Error>;
 }
 
 impl<T> Connector for &T
@@ -24,7 +24,7 @@ where
     where
         Self: 'a;
 
-    async fn connect<'a>(&'a self, broker: &Broker) -> Result<Self::Connection<'a>, Error> {
+    async fn connect<'a>(&'a self, broker: &Broker<'_>) -> Result<Self::Connection<'a>, Error> {
         (*self).connect(broker).await
     }
 }
@@ -50,7 +50,7 @@ where
     where
         Self: 'a;
 
-    async fn connect<'a>(&'a self, broker: &Broker) -> Result<Self::Connection<'a>, Error> {
+    async fn connect<'a>(&'a self, broker: &Broker<'_>) -> Result<Self::Connection<'a>, Error> {
         let Broker::SocketAddr(addr) = broker else {
             return Err(Error::Transport(embedded_io_async::ErrorKind::Unsupported));
         };
@@ -89,13 +89,13 @@ where
     where
         Self: 'a;
 
-    async fn connect<'a>(&'a self, broker: &Broker) -> Result<Self::Connection<'a>, Error> {
+    async fn connect<'a>(&'a self, broker: &Broker<'_>) -> Result<Self::Connection<'a>, Error> {
         let addr = match broker {
             Broker::SocketAddr(addr) => *addr,
             Broker::Hostname { host, port } => {
                 let ip = self
                     .dns
-                    .get_host_by_name(host.as_str(), self.addr_type.clone())
+                    .get_host_by_name(host, self.addr_type.clone())
                     .await
                     .map_err(|_| Error::Transport(embedded_io_async::ErrorKind::Other))?;
                 SocketAddr::new(ip, *port)
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn hostname_requires_dns_error() {
-        let broker = Broker::hostname("broker", MQTT_INSECURE_DEFAULT_PORT).unwrap();
+        let broker = Broker::hostname("broker", MQTT_INSECURE_DEFAULT_PORT);
         let connector = TcpConnector::new(NeverStack);
         let result = crate::tests::block_on(async { connector.connect(&broker).await });
         assert!(matches!(
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn dns_connector_maps_dns_errors() {
-        let broker = Broker::hostname("broker", MQTT_INSECURE_DEFAULT_PORT).unwrap();
+        let broker = Broker::hostname("broker", MQTT_INSECURE_DEFAULT_PORT);
         let connector = DnsTcpConnector::new(NeverStack, NeverDns, AddrType::IPv4);
         let result = crate::tests::block_on(async { connector.connect(&broker).await });
         assert!(matches!(result, Err(Error::Transport(ErrorKind::Other))));

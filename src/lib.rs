@@ -22,7 +22,7 @@ pub use mqtt_client::{Event, InboundPublish, Session};
 pub use properties::Property;
 pub use publication::{OwnedResponseTarget, Publication, ResponseTarget};
 pub use reason_codes::ReasonCode;
-pub use will::Will;
+pub use will::{OwnedWill, Will};
 
 pub use de::Error as DeError;
 pub use embedded_io_async;

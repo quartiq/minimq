@@ -154,7 +154,7 @@ fn unique_topic() -> String {
     format!("minimq/test/{nanos}")
 }
 
-fn config(broker: Broker, client_id: &str) -> minimq::Config<'static> {
+fn config<'a>(broker: Broker<'a>, client_id: &str) -> minimq::Config<'a> {
     let rx = Box::leak(Box::new([0; 1024]));
     let tx = Box::leak(Box::new([0; 1024]));
     let inflight = Box::leak(Box::new([0; 1024]));
@@ -164,8 +164,8 @@ fn config(broker: Broker, client_id: &str) -> minimq::Config<'static> {
         .build()
 }
 
-fn poll_until_ready<C>(
-    session: &mut Session<'_, 'static, C>,
+fn poll_until_ready<'a, C>(
+    session: &mut Session<'_, 'a, C>,
     want_inbound: bool,
 ) -> Option<(String, Vec<u8>, QoS)>
 where
@@ -191,9 +191,9 @@ where
     panic!("timed out waiting for broker activity");
 }
 
-fn assert_roundtrip<C>(
-    subscriber: &mut Session<'_, 'static, C>,
-    publisher: &mut Session<'_, 'static, C>,
+fn assert_roundtrip<'a, C>(
+    subscriber: &mut Session<'_, 'a, C>,
+    publisher: &mut Session<'_, 'a, C>,
     topic: &str,
     payload: &[u8],
 ) where
@@ -256,13 +256,9 @@ fn real_broker_qos1_roundtrip_over_dns_connector() {
     let broker = Broker::hostname(
         &host,
         socket_broker().map(|addr| addr.port()).unwrap_or(1883),
-    )
-    .unwrap();
-    let connector = DnsTcpConnector::new(StdStack::new(IO_TIMEOUT), StdDns, AddrType::IPv4);
-    let mut subscriber = Session::new(
-        config(broker.clone(), &unique_client_id("dns-sub")),
-        &connector,
     );
+    let connector = DnsTcpConnector::new(StdStack::new(IO_TIMEOUT), StdDns, AddrType::IPv4);
+    let mut subscriber = Session::new(config(broker, &unique_client_id("dns-sub")), &connector);
     let mut publisher = Session::new(config(broker, &unique_client_id("dns-pub")), &connector);
     let topic = unique_topic();
 

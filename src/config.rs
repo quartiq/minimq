@@ -1,4 +1,4 @@
-use crate::{Broker, ProtocolError, Will, types::Auth};
+use crate::{Broker, OwnedWill, ProtocolError, Will, types::Auth};
 use embassy_time::Duration;
 use heapless::String;
 
@@ -37,21 +37,22 @@ pub enum ConfigError {
 
 #[derive(Debug)]
 pub struct Config<'a> {
-    pub(crate) broker: Broker,
+    pub(crate) broker: Broker<'a>,
     pub(crate) buffers: Buffers<'a>,
     pub(crate) will: Option<Will<'a>>,
+    pub(crate) owned_will: Option<OwnedWill<'a>>,
     pub(crate) client_id: String<64>,
     pub(crate) keepalive_interval: Duration,
     pub(crate) downgrade_qos: bool,
     pub(crate) auth: Option<Auth<'a>>,
 }
 
-/// Configuration specifying the operational state of the MQTT client.
 #[derive(Debug)]
 pub struct ConfigBuilder<'a> {
-    broker: Broker,
+    broker: Broker<'a>,
     buffers: Buffers<'a>,
     will: Option<Will<'a>>,
+    owned_will: Option<OwnedWill<'a>>,
     client_id: String<64>,
     keepalive_interval: Duration,
     downgrade_qos: bool,
@@ -59,11 +60,12 @@ pub struct ConfigBuilder<'a> {
 }
 
 impl<'a> ConfigBuilder<'a> {
-    pub fn new(broker: Broker, buffers: Buffers<'a>) -> Self {
+    pub fn new(broker: Broker<'a>, buffers: Buffers<'a>) -> Self {
         Self {
             broker,
             buffers,
             will: None,
+            owned_will: None,
             client_id: String::new(),
             auth: None,
             keepalive_interval: Duration::from_secs(59),
@@ -72,7 +74,7 @@ impl<'a> ConfigBuilder<'a> {
     }
 
     pub fn from_buffer_layout(
-        broker: Broker,
+        broker: Broker<'a>,
         buffer: &'a mut [u8],
         layout: BufferLayout,
     ) -> Result<Self, ConfigError> {
@@ -120,11 +122,20 @@ impl<'a> ConfigBuilder<'a> {
         Ok(self)
     }
 
+    pub fn owned_will(mut self, will: OwnedWill<'a>) -> Result<Self, ProtocolError> {
+        if self.will.is_some() || self.owned_will.is_some() {
+            return Err(ProtocolError::WillAlreadySpecified);
+        }
+        self.owned_will = Some(will);
+        Ok(self)
+    }
+
     pub fn build(self) -> Config<'a> {
         Config {
             broker: self.broker,
             buffers: self.buffers,
             will: self.will,
+            owned_will: self.owned_will,
             client_id: self.client_id,
             keepalive_interval: self.keepalive_interval,
             downgrade_qos: self.downgrade_qos,

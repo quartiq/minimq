@@ -106,18 +106,7 @@ impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for F {
     }
 }
 
-/// Builder pattern for generating MQTT publications.
-///
-/// # Note
-/// By default, messages are constructed with:
-/// * A QoS setting of [QoS::AtMostOnce]
-/// * No properties
-/// * No destination topic
-/// * Retention set to [Retain::NotRetained]
-///
-/// It is expected that the user provide a topic either by directly specifying a publication topic
-/// in [Publication::topic], or by parsing a topic from the [Property::ResponseTopic] property
-/// contained within received properties by using the [Publication::reply] API.
+/// MQTT publication builder.
 pub struct Publication<'a, P> {
     pub(crate) topic: &'a str,
     pub(crate) properties: Properties<'a>,
@@ -127,17 +116,7 @@ pub struct Publication<'a, P> {
 }
 
 impl<'a, P> Publication<'a, P> {
-    /// Generate the publication as a reply to some other received message.
-    ///
-    /// # Note
-    /// The received message properties are parsed for both [Property::CorrelationData] and
-    /// [Property::ResponseTopic].
-    ///
-    /// * If correlation data is found, it is automatically appended to the
-    ///   publication properties.
-    ///
-    /// * If a response topic is identified, the message topic will be
-    ///   configured for it, which will override the default topic.
+    /// Build a reply publication from inbound properties.
     pub fn respond(
         default_topic: Option<&'a str>,
         received_properties: &'a Properties<'a>,
@@ -185,19 +164,16 @@ impl<'a, P> Publication<'a, P> {
         &self.properties
     }
 
-    /// Specify the [QoS] of the publication. By default, the QoS is set to [QoS::AtMostOnce].
     pub fn qos(mut self, qos: QoS) -> Self {
         self.qos = qos;
         self
     }
 
-    /// Specify that this message should be [Retain::Retained].
     pub fn retain(mut self) -> Self {
         self.retain = Retain::Retained;
         self
     }
 
-    /// Specify properties associated with this publication.
     pub fn properties(mut self, properties: &'a [Property<'a>]) -> Self {
         self.properties = match self.properties {
             Properties::Slice(_) => Properties::Slice(properties),
@@ -210,13 +186,6 @@ impl<'a, P> Publication<'a, P> {
         self
     }
 
-    /// Include correlation data to the message
-    ///
-    /// # Note
-    /// This will override any existing correlation data in the message.
-    ///
-    /// # Args
-    /// * `data` - The data composing the correlation data.
     pub fn correlate(mut self, data: &'a [u8]) -> Self {
         self.properties = match self.properties {
             Properties::Slice(properties) | Properties::CorrelatedSlice { properties, .. } => {

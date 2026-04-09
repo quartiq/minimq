@@ -86,7 +86,7 @@ impl Connector for MockConnector {
     type Error = ErrorKind;
     type Connection<'a> = MockConnection;
 
-    async fn connect<'a>(&'a self, _broker: &Broker) -> Result<Self::Connection<'a>, Error> {
+    async fn connect<'a>(&'a self, _broker: &Broker<'_>) -> Result<Self::Connection<'a>, Error> {
         self.connections
             .borrow_mut()
             .pop_front()
@@ -190,6 +190,10 @@ fn publish_connects_session_on_demand() {
     let mut session = Session::new(config(), &connector);
     block_on(session.publish(Publication::new("data", b"payload").qos(QoS::AtLeastOnce))).unwrap();
     assert!(session.is_connected());
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
 }
 
 #[test]
@@ -239,7 +243,7 @@ fn inflight_metadata_exhaustion_is_reported() {
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    for index in 0..16 {
+    for index in 0..8 {
         block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce)))
             .unwrap_or_else(|_| panic!("publish {index} failed"));
     }
