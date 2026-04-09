@@ -6,6 +6,8 @@ pub trait Timer {
     /// Current monotonic time in milliseconds.
     fn now(&mut self) -> Result<u64, Self::Error>;
 
-    /// Sleep until the provided monotonic deadline.
+    /// Sleep until the provided monotonic deadline in milliseconds.
+    ///
+    /// Implementations may wake after the requested deadline.
     async fn sleep_until(&mut self, deadline_ms: u64) -> Result<(), Self::Error>;
 }

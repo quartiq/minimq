@@ -865,6 +865,7 @@ pub enum RunnerError<Connect, Io, Time> {
     Connect(Connect),
     Network(Error<Io>),
     Timer(Time),
+    State,
 }
 
 impl<Connect, Io, Time> From<Error<Io>> for RunnerError<Connect, Io, Time> {
@@ -886,6 +887,21 @@ impl<Connect, Io, Time, Serialization> From<RunnerError<Connect, Io, Time>>
         Self::Runner(value)
     }
 }
+
+#[derive(Debug)]
+pub struct PollOutcome<'a> {
+    pub inbound: Option<InboundPublish<'a>>,
+    pub reconnected: bool,
+}
+
+type RunnerResult<C, T, V> = Result<
+    V,
+    RunnerError<
+        <C as Connector>::ConnectError,
+        <C as Connector>::IoError,
+        <T as Timer>::Error,
+    >,
+>;
 
 pub struct Runner<'a, 'buf, C: Connector, T, const N: usize = 253> {
     client: &'a mut MqttClient<'buf, N>,
@@ -916,13 +932,16 @@ where
         &mut self,
         topics: &[TopicFilter<'_>],
         properties: &[Property<'_>],
-    ) -> Result<(), RunnerError<C::ConnectError, C::IoError, T::Error>> {
+    ) -> RunnerResult<C, T, ()> {
         self.ensure_connected().await?;
-        let connection = self.connection.as_mut().expect("connection established");
-        self.client
-            .subscribe(connection, topics, properties)
+        let mut connection = self.take_connection()?;
+        let result = self
+            .client
+            .subscribe(&mut connection, topics, properties)
             .await
-            .map_err(Into::into)
+            .map_err(Into::into);
+        self.connection = Some(connection);
+        result
     }
 
     pub async fn publish<P>(
@@ -933,24 +952,31 @@ where
         P: crate::publication::ToPayload,
     {
         self.ensure_connected().await?;
-        let connection = self.connection.as_mut().expect("connection established");
-        self.client
-            .publish(connection, publication)
+        let mut connection = self.take_connection().map_err(RunnerPubError::Runner)?;
+        let result = self
+            .client
+            .publish(&mut connection, publication)
             .await
-            .map_err(RunnerPubError::Publish)
+            .map_err(RunnerPubError::Publish);
+        self.connection = Some(connection);
+        result
     }
 
     pub async fn poll(
         &mut self,
-    ) -> Result<Option<InboundPublish<'_>>, RunnerError<C::ConnectError, C::IoError, T::Error>> {
-        self.ensure_connected().await?;
+    ) -> RunnerResult<C, T, PollOutcome<'_>> {
+        let reconnected = self.ensure_connected().await?;
         let now = self.timer.now().map_err(RunnerError::Timer)?;
-        self.read_or_wait(now).await
+        Ok(PollOutcome {
+            inbound: self.read_or_wait(now).await?,
+            reconnected,
+        })
     }
 
     async fn ensure_connected(
         &mut self,
-    ) -> Result<(), RunnerError<C::ConnectError, C::IoError, T::Error>> {
+    ) -> RunnerResult<C, T, bool> {
+        let mut reconnected = false;
         loop {
             if self.client.state == ClientState::Disconnected {
                 self.connection = None;
@@ -964,12 +990,15 @@ where
                     .await
                     .map_err(RunnerError::Connect)?;
                 self.connection = Some(connection);
-                let connection = self.connection.as_mut().expect("connection inserted");
-                self.client.connect(connection, now).await?;
+                let mut connection = self.take_connection()?;
+                let result = self.client.connect(&mut connection, now).await;
+                self.connection = Some(connection);
+                result?;
+                reconnected = true;
             }
 
             if self.client.is_connected() {
-                return Ok(());
+                return Ok(reconnected);
             }
 
             let now = self.timer.now().map_err(RunnerError::Timer)?;
@@ -980,11 +1009,12 @@ where
     async fn read_or_wait(
         &mut self,
         now: u64,
-    ) -> Result<Option<InboundPublish<'_>>, RunnerError<C::ConnectError, C::IoError, T::Error>>
-    {
+    ) -> RunnerResult<C, T, Option<InboundPublish<'_>>> {
         {
-            let connection = self.connection.as_mut().expect("connection established");
-            self.client.maintain(connection, now).await?;
+            let mut connection = self.take_connection()?;
+            let result = self.client.maintain(&mut connection, now).await;
+            self.connection = Some(connection);
+            result?;
         }
 
         if self.client.state == ClientState::Disconnected {
@@ -993,22 +1023,33 @@ where
         }
 
         let next_message = if let Some(deadline) = self.client.next_deadline() {
-            let connection = self.connection.as_mut().expect("connection established");
-            let read = self.client.read(connection, now);
+            let mut connection = self.take_connection()?;
+            let read = self.client.read(&mut connection, now);
             let sleep = self.timer.sleep_until(deadline);
-            match select2(read, sleep).await {
+            let result = match select2(read, sleep).await {
                 Either::Left(result) => result?,
                 Either::Right(result) => {
+                    self.connection = Some(connection);
                     result.map_err(RunnerError::Timer)?;
                     return Ok(None);
                 }
-            }
+            };
+            self.connection = Some(connection);
+            result
         } else {
-            let connection = self.connection.as_mut().expect("connection established");
-            self.client.read(connection, now).await?
+            let mut connection = self.take_connection()?;
+            let result = self.client.read(&mut connection, now).await?;
+            self.connection = Some(connection);
+            result
         };
 
         Ok(next_message)
+    }
+
+    fn take_connection(
+        &mut self,
+    ) -> RunnerResult<C, T, C::Connection<'a>> {
+        self.connection.take().ok_or(RunnerError::State)
     }
 }
 

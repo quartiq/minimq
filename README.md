@@ -52,8 +52,12 @@ If a single shared byte slab is still convenient for a target, use `BufferLayout
 fallible helper instead of building layout assumptions into the client API.
 
 `Runner` owns the live transport connection. Call `poll()` to drive reconnect, keepalive, and
-inbound message delivery, and call `publish()` / `subscribe()` on the runner after the borrowed
-inbound message has been dropped.
+inbound message delivery. It returns a `PollOutcome` with:
+
+* `inbound` for the next received publish, if any
+* `reconnected` when this call established or re-established an active session
+
+Call `publish()` / `subscribe()` on the runner after the borrowed inbound message has been dropped.
 
 ## Examples
 

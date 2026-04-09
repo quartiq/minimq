@@ -402,7 +402,7 @@ fn runner_allows_publish_after_message_borrow_is_dropped() {
 
     {
         let message = loop {
-            if let Some(message) = block_on(runner.poll()).unwrap() {
+            if let Some(message) = block_on(runner.poll()).unwrap().inbound {
                 break message;
             }
         };
@@ -435,4 +435,19 @@ fn runner_reconnects_after_write_error() {
     ));
 
     block_on(runner.publish(Publication::new("reply", b"ok").qos(QoS::AtLeastOnce))).unwrap();
+}
+
+#[test]
+fn runner_poll_reports_reconnect() {
+    let mut connection = MockConnection::default();
+    connection.push_rx(&connack());
+
+    let connector = MockConnector::new(connection);
+    let mut timer = MockTimer::default();
+    let mut client = client();
+    let mut runner = Runner::new(&mut client, &connector, &mut timer);
+
+    let outcome = block_on(runner.poll()).unwrap();
+    assert!(outcome.reconnected);
+    assert!(outcome.inbound.is_none());
 }

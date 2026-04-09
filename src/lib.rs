@@ -19,7 +19,7 @@ mod will;
 
 pub use broker::Broker;
 pub use config::{BufferLayout, Buffers, Config, ConfigBuilder, ConfigError};
-pub use mqtt_client::{InboundPublish, MqttClient, Runner, RunnerError, RunnerPubError};
+pub use mqtt_client::{InboundPublish, MqttClient, PollOutcome, Runner, RunnerError, RunnerPubError};
 pub use properties::Property;
 pub use publication::Publication;
 pub use reason_codes::ReasonCode;
