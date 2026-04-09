@@ -135,7 +135,7 @@ impl<'a, P> Publication<'a, P> {
                 correlation,
                 properties,
             },
-            _ => unimplemented!(),
+            Properties::DataBlock(_) => Properties::Slice(properties),
         };
         self
     }
@@ -155,7 +155,10 @@ impl<'a, P> Publication<'a, P> {
                     correlation: Property::CorrelationData(BinaryData(data)),
                 }
             }
-            _ => unimplemented!(),
+            Properties::DataBlock(_) => Properties::CorrelatedSlice {
+                properties: &[],
+                correlation: Property::CorrelationData(BinaryData(data)),
+            },
         };
 
         self

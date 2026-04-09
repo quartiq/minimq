@@ -2,25 +2,15 @@ use crate::{
     ProtocolError, QoS, Retain,
     properties::{Property, PropertyIdentifier},
     types::{BinaryData, Properties, Utf8String},
-    varint::Varint,
 };
 
-use serde::Serialize;
-
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Will<'a> {
     topic: &'a str,
     data: &'a [u8],
     qos: QoS,
     retained: Retain,
     properties: &'a [Property<'a>],
-}
-
-#[derive(Serialize)]
-struct WillMessage<'a> {
-    properties: Properties<'a>,
-    topic: Utf8String<'a>,
-    data: BinaryData<'a>,
 }
 
 impl<'a> Will<'a> {
@@ -58,37 +48,6 @@ impl<'a> Will<'a> {
         })
     }
 
-    /// Serialize the will contents into a flattened, borrowed buffer.
-    pub(crate) fn serialize<'b>(
-        &self,
-        buf: &'b mut [u8],
-    ) -> Result<SerializedWill<'b>, crate::ser::Error> {
-        let message = WillMessage {
-            topic: Utf8String(self.topic),
-            properties: Properties::Slice(self.properties),
-            data: BinaryData(self.data),
-        };
-
-        let mut serializer = crate::ser::MqttSerializer::new_without_header(buf);
-        message.serialize(&mut serializer)?;
-        Ok(SerializedWill {
-            qos: self.qos,
-            retained: self.retained,
-            contents: serializer.finish(),
-        })
-    }
-
-    /// Precalculate the length of the serialized will.
-    pub(crate) fn serialized_len(&self) -> usize {
-        let prop_len = {
-            let prop_size = Properties::Slice(self.properties).size();
-            Varint(prop_size as u32).len() + prop_size
-        };
-        let topic_len = self.topic.len() + core::mem::size_of::<u16>();
-        let payload_len = self.data.len() + core::mem::size_of::<u16>();
-        topic_len + payload_len + prop_len
-    }
-
     /// Specify the will as a retained message.
     pub fn retained(mut self) -> Self {
         self.retained = Retain::Retained;
@@ -103,12 +62,24 @@ impl<'a> Will<'a> {
         self.qos = qos;
         self
     }
+
+    pub(crate) fn retained_flag(&self) -> Retain {
+        self.retained
+    }
+
+    pub(crate) fn qos_level(&self) -> QoS {
+        self.qos
+    }
 }
 
-/// A will where the topic, properties, and contents have already been serialized.
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub(crate) struct SerializedWill<'a> {
-    pub(crate) qos: QoS,
-    pub(crate) retained: Retain,
-    pub(crate) contents: &'a [u8],
+impl serde::Serialize for Will<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+
+        let mut item = serializer.serialize_struct("Will", 0)?;
+        item.serialize_field("properties", &Properties::Slice(self.properties))?;
+        item.serialize_field("topic", &Utf8String(self.topic))?;
+        item.serialize_field("data", &BinaryData(self.data))?;
+        item.end()
+    }
 }

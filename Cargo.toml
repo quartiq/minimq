@@ -23,10 +23,11 @@ num_enum = { version = "0.7", default-features = false }
 heapless = { version = "0.8" }
 log = { version = "0.4", optional = true }
 embedded-time = "0.12"
+embedded-io-async = "0.7"
+embedded-nal-async = "0.9"
 varint-rs = { version = "2.2", default-features = false }
 serde = { version = "1", features = ["derive"], default-features = false }
 smlang = "0.8.0"
-embedded-nal = "0.9"
 
 [features]
 default = []
@@ -37,4 +38,3 @@ unsecure = []
 log = "0.4"
 env_logger = "0.11"
 std-embedded-time = "0.1"
-std-embedded-nal = "0.4.0"

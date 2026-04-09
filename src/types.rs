@@ -47,8 +47,24 @@ impl Properties<'_> {
 
 /// Used to progressively iterate across binary property blocks, deserializing them along the way.
 pub struct PropertiesIter<'a> {
-    props: &'a [u8],
-    index: usize,
+    inner: PropertiesIterInner<'a>,
+}
+
+enum PropertiesIterInner<'a> {
+    DataBlock {
+        props: &'a [u8],
+        index: usize,
+    },
+    Slice {
+        props: &'a [Property<'a>],
+        index: usize,
+    },
+    Correlated {
+        correlation: Property<'a>,
+        yielded_correlation: bool,
+        props: &'a [Property<'a>],
+        index: usize,
+    },
 }
 
 impl<'a> PropertiesIter<'a> {
@@ -66,16 +82,39 @@ impl<'a> core::iter::Iterator for PropertiesIter<'a> {
     type Item = Result<Property<'a>, ProtocolError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.props.len() {
-            return None;
-        }
+        match &mut self.inner {
+            PropertiesIterInner::DataBlock { props, index } => {
+                if *index >= props.len() {
+                    return None;
+                }
 
-        // Progressively deserialize properties and yield them.
-        let mut deserializer = MqttDeserializer::new(&self.props[self.index..]);
-        let property =
-            Property::deserialize(&mut deserializer).map_err(ProtocolError::Deserialization);
-        self.index += deserializer.deserialized_bytes();
-        Some(property)
+                let mut deserializer = MqttDeserializer::new(&props[*index..]);
+                let property = Property::deserialize(&mut deserializer)
+                    .map_err(ProtocolError::Deserialization);
+                *index += deserializer.deserialized_bytes();
+                Some(property)
+            }
+            PropertiesIterInner::Slice { props, index } => {
+                let property = props.get(*index).copied()?;
+                *index += 1;
+                Some(Ok(property))
+            }
+            PropertiesIterInner::Correlated {
+                correlation,
+                yielded_correlation,
+                props,
+                index,
+            } => {
+                if !*yielded_correlation {
+                    *yielded_correlation = true;
+                    return Some(Ok(*correlation));
+                }
+
+                let property = props.get(*index).copied()?;
+                *index += 1;
+                Some(Ok(property))
+            }
+        }
     }
 }
 
@@ -84,15 +123,27 @@ impl<'a> core::iter::IntoIterator for &'a Properties<'a> {
     type IntoIter = PropertiesIter<'a>;
 
     fn into_iter(self) -> PropertiesIter<'a> {
-        if let Properties::DataBlock(data) = self {
-            PropertiesIter {
-                props: data,
-                index: 0,
-            }
-        } else {
-            // Iterating over other property types is not implemented. The user may instead iterate
-            // through slices directly.
-            unimplemented!()
+        match self {
+            Properties::DataBlock(data) => PropertiesIter {
+                inner: PropertiesIterInner::DataBlock {
+                    props: data,
+                    index: 0,
+                },
+            },
+            Properties::Slice(props) => PropertiesIter {
+                inner: PropertiesIterInner::Slice { props, index: 0 },
+            },
+            Properties::CorrelatedSlice {
+                correlation,
+                properties,
+            } => PropertiesIter {
+                inner: PropertiesIterInner::Correlated {
+                    correlation: *correlation,
+                    yielded_correlation: false,
+                    props: properties,
+                    index: 0,
+                },
+            },
         }
     }
 }
@@ -181,6 +232,34 @@ impl<'de> serde::de::Visitor<'de> for BinaryDataVisitor {
 
     fn visit_borrowed_bytes<E: serde::de::Error>(self, data: &'de [u8]) -> Result<Self::Value, E> {
         Ok(BinaryData(data))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use heapless::Vec as HVec;
+
+    #[test]
+    fn iterate_slice_properties() {
+        let props = [Property::ReceiveMaximum(2), Property::MaximumQoS(1)];
+        let properties = Properties::Slice(&props);
+        let values: HVec<_, 4> = (&properties).into_iter().collect();
+        let expected: HVec<_, 4> = HVec::from_slice(&[Ok(props[0]), Ok(props[1])]).unwrap();
+        assert_eq!(values, expected);
+    }
+
+    #[test]
+    fn iterate_correlated_properties() {
+        let props = [Property::ReceiveMaximum(2)];
+        let correlation = Property::CorrelationData(BinaryData(b"abc"));
+        let properties = Properties::CorrelatedSlice {
+            correlation,
+            properties: &props,
+        };
+        let values: HVec<_, 4> = (&properties).into_iter().collect();
+        let expected: HVec<_, 4> = HVec::from_slice(&[Ok(correlation), Ok(props[0])]).unwrap();
+        assert_eq!(values, expected);
     }
 }
 

@@ -1,800 +1,1032 @@
 use crate::{
-    ConfigBuilder, Error, MinimqError, Property, ProtocolError, QoS,
+    Broker, Config, Error, MinimqError, Property, ProtocolError, PubError, QoS, ReasonCode, Retain,
     de::{PacketReader, received_packet::ReceivedPacket},
-    network_manager::InterfaceHolder,
-    packets::{ConnAck, Connect, PingReq, Pub, PubAck, PubComp, PubRec, PubRel, SubAck, Subscribe},
+    debug, info,
+    packets::{Connect, PingReq, Pub, PubAck, PubComp, PubRec, PubRel, Subscribe},
     publication::Publication,
-    reason_codes::ReasonCode,
-    session_state::SessionState,
+    timer::Timer,
+    transport::{Connector, Either},
     types::{Auth, Properties, TopicFilter, Utf8String},
-    will::SerializedWill,
-    {debug, error, info, warn},
+    will::Will,
 };
+use core::{convert::TryFrom, future::poll_fn, pin::pin, task::Poll};
+use embedded_io_async::{ErrorType, Read, Write};
+use embedded_time::duration::Milliseconds;
+use heapless::{String, Vec};
 
-use core::convert::{TryFrom, TryInto};
-use embedded_time::{
-    Instant,
-    duration::{Milliseconds, Seconds},
-};
+const PING_TIMEOUT_MS: u64 = 5_000;
+const MAX_OUTBOUND: usize = 16;
+const MAX_INBOUND_QOS2: usize = 16;
+const MAX_PENDING_SUBSCRIPTIONS: usize = 32;
+const MAX_PENDING_PUBREL: usize = 16;
 
-use embedded_nal::TcpClientStack;
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum ClientState {
+    Disconnected,
+    Establishing,
+    Active,
+}
 
-use heapless::String;
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct PendingPubrel {
+    packet_id: u16,
+    reason: ReasonCode,
+}
 
-use core::str::FromStr;
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct OutboundPublish {
+    packet_id: u16,
+    qos: QoS,
+    offset: usize,
+    len: usize,
+}
 
-mod sm {
-    use crate::{de::received_packet::ReceivedPacket, packets::ConnAck};
-    use smlang::statemachine;
+#[derive(Debug)]
+struct InflightStore<'a> {
+    buf: &'a mut [u8],
+    used: usize,
+    entries: Vec<OutboundPublish, MAX_OUTBOUND>,
+    pending_pubrel: Vec<PendingPubrel, MAX_PENDING_PUBREL>,
+    replay_pending: bool,
+}
 
-    statemachine! {
-        transitions: {
-            *Disconnected + TcpConnected = Restart,
-            Restart + SentConnect = Establishing,
-            Establishing + Connected(ConnAck<'a>) / handle_connack = Active,
+impl<'a> InflightStore<'a> {
+    fn new(buf: &'a mut [u8]) -> Self {
+        Self {
+            buf,
+            used: 0,
+            entries: Vec::new(),
+            pending_pubrel: Vec::new(),
+            replay_pending: false,
+        }
+    }
 
-            Active + SendTimeout = Disconnected,
-            _ + ProtocolError = Disconnected,
+    fn clear(&mut self) {
+        self.used = 0;
+        self.entries.clear();
+        self.pending_pubrel.clear();
+        self.replay_pending = false;
+    }
 
-            Active + ControlPacket(ReceivedPacket<'a>) / handle_packet = Active,
-            Active + SentSubscribe(u16) / handle_subscription = Active,
+    fn pending_transactions(&self) -> bool {
+        !self.entries.is_empty() || !self.pending_pubrel.is_empty()
+    }
 
-            _ + TcpDisconnect = Disconnected
-        },
-        custom_error: true,
+    fn metadata_full(&self) -> bool {
+        self.entries.is_full()
+    }
+
+    fn max_send_quota(&self) -> u16 {
+        MAX_OUTBOUND.min(MAX_PENDING_PUBREL) as u16
+    }
+
+    fn can_publish(&mut self, max_tx_size: usize) -> bool {
+        self.compact();
+        self.entries.len() < self.entries.capacity()
+            && self.buf.len().saturating_sub(self.used) >= max_tx_size
+    }
+
+    fn push_publish(
+        &mut self,
+        packet_id: u16,
+        qos: QoS,
+        packet: &[u8],
+    ) -> Result<(), ProtocolError> {
+        if self.entries.is_full() {
+            return Err(ProtocolError::InflightMetadataExhausted);
+        }
+        self.compact();
+        if self.buf.len().saturating_sub(self.used) < packet.len() {
+            return Err(ProtocolError::BufferSize);
+        }
+
+        let offset = self.used;
+        self.buf[offset..offset + packet.len()].copy_from_slice(packet);
+        self.used += packet.len();
+        self.entries
+            .push(OutboundPublish {
+                packet_id,
+                qos,
+                offset,
+                len: packet.len(),
+            })
+            .map_err(|_| ProtocolError::InflightMetadataExhausted)?;
+        Ok(())
+    }
+
+    fn remove_publish(&mut self, packet_id: u16) -> Result<OutboundPublish, ProtocolError> {
+        let position = self
+            .entries
+            .iter()
+            .position(|entry| entry.packet_id == packet_id)
+            .ok_or(ProtocolError::BadIdentifier)?;
+        let entry = self.entries.swap_remove(position);
+        self.compact();
+        Ok(entry)
+    }
+
+    fn queue_pubrel(&mut self, packet_id: u16, reason: ReasonCode) -> Result<(), ProtocolError> {
+        self.pending_pubrel
+            .push(PendingPubrel { packet_id, reason })
+            .map_err(|_| ProtocolError::InflightMetadataExhausted)
+    }
+
+    fn remove_pubrel(&mut self, packet_id: u16) -> Result<(), ProtocolError> {
+        let position = self
+            .pending_pubrel
+            .iter()
+            .position(|pending| pending.packet_id == packet_id)
+            .ok_or(ProtocolError::BadIdentifier)?;
+        self.pending_pubrel.swap_remove(position);
+        Ok(())
+    }
+
+    fn republish_packets(&self) -> impl Iterator<Item = &[u8]> {
+        self.entries
+            .iter()
+            .map(|entry| &self.buf[entry.offset..entry.offset + entry.len])
+    }
+
+    fn pending_pubrels(&self) -> impl Iterator<Item = PendingPubrel> + '_ {
+        self.pending_pubrel.iter().copied()
+    }
+
+    fn mark_reconnect_pending(&mut self) {
+        self.replay_pending = self.pending_transactions();
+    }
+
+    fn replay_pending(&self) -> bool {
+        self.replay_pending
+    }
+
+    fn finish_replay(&mut self) {
+        self.replay_pending = false;
+    }
+
+    fn compact(&mut self) {
+        self.entries.sort_unstable_by_key(|entry| entry.offset);
+
+        let mut cursor = 0;
+        for entry in self.entries.iter_mut() {
+            if entry.offset != cursor {
+                self.buf
+                    .copy_within(entry.offset..entry.offset + entry.len, cursor);
+                entry.offset = cursor;
+            }
+            cursor += entry.len;
+        }
+        self.used = cursor;
     }
 }
 
-use sm::{Events, StateMachine, States};
+#[derive(Debug)]
+struct SessionState<'a> {
+    client_id: String<64>,
+    packet_id: u16,
+    outbound: InflightStore<'a>,
+    pending_server_packet_ids: Vec<u16, MAX_INBOUND_QOS2>,
+    had_state: bool,
+    was_reset: bool,
+}
 
-/// The default duration to wait for a ping response from the broker.
-const PING_TIMEOUT: Seconds = Seconds(5);
+impl<'a> SessionState<'a> {
+    fn new(client_id: String<64>, inflight: &'a mut [u8]) -> Self {
+        Self {
+            client_id,
+            packet_id: 1,
+            outbound: InflightStore::new(inflight),
+            pending_server_packet_ids: Vec::new(),
+            had_state: false,
+            was_reset: false,
+        }
+    }
 
-struct ClientContext<'a, Clock: embedded_time::Clock> {
-    session_state: SessionState<'a>,
+    fn register_connected(&mut self) {
+        self.had_state = true;
+    }
+
+    fn reset(&mut self) {
+        self.was_reset = self.had_state;
+        self.had_state = false;
+        self.packet_id = 1;
+        self.outbound.clear();
+        self.pending_server_packet_ids.clear();
+    }
+
+    fn take_reset(&mut self) -> bool {
+        let reset = self.was_reset;
+        self.was_reset = false;
+        reset
+    }
+
+    fn next_packet_id(&mut self) -> u16 {
+        let packet_id = self.packet_id;
+        self.packet_id = if self.packet_id == u16::MAX {
+            1
+        } else {
+            self.packet_id + 1
+        };
+        packet_id
+    }
+
+    fn handshakes_pending(&self) -> bool {
+        !self.pending_server_packet_ids.is_empty() || self.outbound.pending_transactions()
+    }
+}
+
+#[derive(Debug)]
+pub struct InboundPublish<'a> {
+    pub topic: &'a str,
+    pub payload: &'a [u8],
+    pub properties: Properties<'a>,
+    pub retain: Retain,
+    pub qos: QoS,
+}
+
+#[derive(Debug)]
+pub struct MqttClient<'buf, const N: usize = 253> {
+    broker: Broker<N>,
+    packet_reader: PacketReader<'buf>,
+    tx_buffer: &'buf mut [u8],
+    session: SessionState<'buf>,
+    will: Option<Will<'buf>>,
+    auth: Option<Auth<'buf>>,
+    downgrade_qos: bool,
+    keep_alive_interval: Milliseconds<u32>,
     send_quota: u16,
     max_send_quota: u16,
     maximum_packet_size: Option<u32>,
-    keep_alive_interval: Milliseconds<u32>,
-    pending_subscriptions: heapless::Vec<u16, 32>,
-
-    ping_timeout: Option<Instant<Clock>>,
-    next_ping: Option<Instant<Clock>>,
     max_qos: Option<QoS>,
-    clock: Clock,
+    pending_subscriptions: Vec<u16, MAX_PENDING_SUBSCRIPTIONS>,
+    state: ClientState,
+    next_ping: Option<u64>,
+    ping_timeout: Option<u64>,
 }
 
-impl<'a, Clock> ClientContext<'a, Clock>
-where
-    Clock: embedded_time::Clock,
-{
-    pub fn new(
-        clock: Clock,
-        session_state: SessionState<'a>,
-        keepalive: Milliseconds<u32>,
-    ) -> Self {
+impl<'buf, const N: usize> MqttClient<'buf, N> {
+    pub fn new(config: Config<'buf, N>) -> Self {
+        let Config {
+            broker,
+            buffers,
+            will,
+            client_id,
+            keepalive_interval,
+            downgrade_qos,
+            auth,
+        } = config;
+
         Self {
-            session_state,
+            broker,
+            packet_reader: PacketReader::new(buffers.rx),
+            tx_buffer: buffers.tx,
+            session: SessionState::new(client_id, buffers.inflight),
+            will,
+            auth,
+            downgrade_qos,
+            keep_alive_interval: keepalive_interval,
             send_quota: u16::MAX,
             max_send_quota: u16::MAX,
-            pending_subscriptions: heapless::Vec::new(),
-            clock,
-            ping_timeout: None,
-            next_ping: None,
-            max_qos: None,
-            keep_alive_interval: keepalive,
             maximum_packet_size: None,
+            max_qos: None,
+            pending_subscriptions: Vec::new(),
+            state: ClientState::Disconnected,
+            next_ping: None,
+            ping_timeout: None,
         }
     }
 
-    pub fn handle_suback(
+    pub fn broker(&self) -> &Broker<N> {
+        &self.broker
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.state == ClientState::Active
+    }
+
+    pub fn subscriptions_pending(&self) -> bool {
+        !self.pending_subscriptions.is_empty()
+    }
+
+    pub fn pending_messages(&self) -> bool {
+        self.session.handshakes_pending()
+    }
+
+    pub fn can_publish(&mut self, qos: QoS) -> bool {
+        if self.state != ClientState::Active {
+            return false;
+        }
+        if qos != QoS::AtMostOnce && self.send_quota == 0 {
+            return false;
+        }
+        self.session.outbound.can_publish(self.tx_buffer.len())
+    }
+
+    pub fn next_deadline(&self) -> Option<u64> {
+        match (self.next_ping, self.ping_timeout) {
+            (Some(ping), Some(timeout)) => Some(ping.min(timeout)),
+            (Some(ping), None) => Some(ping),
+            (None, Some(timeout)) => Some(timeout),
+            (None, None) => None,
+        }
+    }
+
+    pub async fn connect<C>(
         &mut self,
-        subscribe_acknowledge: &SubAck<'_>,
-    ) -> Result<(), ProtocolError> {
-        match self
-            .pending_subscriptions
-            .iter()
-            .position(|v| *v == subscribe_acknowledge.packet_identifier)
-        {
-            None => {
-                error!("Got bad suback: {:?}", subscribe_acknowledge);
-                return Err(ProtocolError::BadIdentifier);
-            }
-            Some(index) => self.pending_subscriptions.swap_remove(index),
-        };
+        connection: &mut C,
+        now_ms: u64,
+    ) -> Result<(), Error<C::Error>>
+    where
+        C: Read + Write + ErrorType,
+    {
+        let client_id = self.session.client_id.clone();
+        let properties = [
+            Property::MaximumPacketSize(self.packet_reader.buffer.len() as u32),
+            Property::SessionExpiryInterval(u32::MAX),
+            Property::ReceiveMaximum(self.session.pending_server_packet_ids.capacity() as u16),
+        ];
 
-        for &code in subscribe_acknowledge.codes.iter() {
-            ReasonCode::from(code).as_result()?;
-        }
+        self.write_packet(
+            connection,
+            &Connect {
+                keep_alive: self.keepalive_seconds(),
+                properties: Properties::Slice(&properties),
+                client_id: Utf8String(client_id.as_str()),
+                auth: self.auth,
+                will: self.will,
+                clean_start: !self.session.had_state,
+            },
+        )
+        .await?;
 
-        Ok(())
-    }
-
-    /// Called whenever an active connection has been made with a broker.
-    pub fn register_connection(&mut self) -> Result<(), embedded_time::clock::Error> {
-        self.session_state.register_connected();
+        self.state = ClientState::Establishing;
+        self.next_ping = Some(now_ms + u64::from(self.keep_alive_interval.0 / 2));
         self.ping_timeout = None;
-
-        // The next ping should be sent out in half the keep-alive interval from now.
-        self.next_ping
-            .replace(self.clock.try_now()? + self.keep_alive_interval / 2);
-
         Ok(())
     }
 
-    /// Callback function to register a PingResp packet reception.
-    pub fn register_ping_response(&mut self) {
-        // Take the current timeout to remove it.
-        let timeout = self.ping_timeout.take();
-
-        // If there was no timeout to begin with, log the spurious ping response.
-        if timeout.is_none() {
-            warn!("Got unexpected ping response");
-        }
-    }
-
-    /// Check if a pending ping is currently overdue.
-    pub fn ping_is_overdue(&mut self) -> Result<bool, embedded_time::clock::Error> {
-        let now = self.clock.try_now()?;
-        Ok(self
-            .ping_timeout
-            .map(|timeout| now > timeout)
-            .unwrap_or(false))
-    }
-
-    /// Check if a ping is currently due for transmission.
-    pub fn ping_is_due(&mut self) -> Result<bool, embedded_time::clock::Error> {
-        // If there's already a ping being transmitted, another can't be due.
-        if self.ping_timeout.is_some() {
-            return Ok(false);
-        }
-
-        let now = self.clock.try_now()?;
-
-        let Some(ping_deadline) = self.next_ping else {
-            return Ok(false);
-        };
-        // Update the next ping deadline if the ping is due.
-        if now > ping_deadline {
-            // The next ping should be sent out in half the keep-alive interval from now.
-            self.next_ping.replace(now + self.keep_alive_interval / 2);
-            self.ping_timeout.replace(now + PING_TIMEOUT);
-        }
-
-        Ok(now > ping_deadline)
-    }
-
-    /// Get the keep-alive interval as an integer number of seconds.
-    ///
-    /// # Note
-    /// If no keep-alive interval is specified, zero is returned.
-    pub fn keepalive_interval(&self) -> u16 {
-        (self.keep_alive_interval.0 / 1000) as u16
-    }
-}
-
-impl<Clock> sm::StateMachineContext for ClientContext<'_, Clock>
-where
-    Clock: embedded_time::Clock,
-{
-    type Error = MinimqError;
-
-    fn handle_subscription(&mut self, id: u16) -> Result<(), Self::Error> {
-        self.pending_subscriptions
-            .push(id)
-            .map_err(|_| ProtocolError::BufferSize)?;
-        Ok(())
-    }
-
-    fn handle_packet(&mut self, packet: ReceivedPacket<'_>) -> Result<(), Self::Error> {
-        match &packet {
-            ReceivedPacket::SubAck(ack) => self.handle_suback(ack)?,
-            ReceivedPacket::PingResp => self.register_ping_response(),
-            ReceivedPacket::PubComp(comp) => {
-                self.send_quota = self.send_quota.saturating_add(1).min(self.max_send_quota);
-                self.session_state.handle_pubcomp(comp.packet_id)?;
-            }
-            ReceivedPacket::PubAck(ack) => {
-                // No matter the status code the message is considered acknowledged at this point
-                self.send_quota = self.send_quota.saturating_add(1).min(self.max_send_quota);
-                self.session_state.remove_packet(ack.packet_identifier)?;
-            }
-            _ => return Err(ProtocolError::UnsupportedPacket.into()),
-        }
-
-        Ok(())
-    }
-
-    fn handle_connack(&mut self, acknowledge: ConnAck<'_>) -> Result<(), Self::Error> {
-        acknowledge.reason_code.as_result()?;
-
-        // Reset the session state upon connection with a broker that doesn't have a session state
-        // saved for us.
-        if !acknowledge.session_present {
-            self.session_state.reset();
-            self.pending_subscriptions.clear();
-        }
-
-        // If the server doesn't specify a send quota, assume it's 65535 as required by the spec
-        // section 3.2.2.3.3 - this value is not part of the session state and is reset for each
-        // connection.
-        self.send_quota = u16::MAX;
-        self.max_send_quota = u16::MAX;
-        self.max_qos = None;
-
-        for property in acknowledge.properties.into_iter() {
-            match property? {
-                Property::MaximumPacketSize(size) => {
-                    self.maximum_packet_size.replace(size);
-                }
-                Property::AssignedClientIdentifier(id) => {
-                    self.session_state.client_id =
-                        String::from_str(id.0).or(Err(ProtocolError::ProvidedClientIdTooLong))?;
-                }
-                Property::ServerKeepAlive(keep_alive) => {
-                    self.keep_alive_interval = Milliseconds(keep_alive as u32 * 1000);
-                }
-                Property::ReceiveMaximum(max) => {
-                    self.send_quota = max.max(self.session_state.max_send_quota());
-                    self.max_send_quota = max.max(self.session_state.max_send_quota());
-                }
-                Property::MaximumQoS(max) => {
-                    self.max_qos = Some(QoS::try_from(max).map_err(|_| ProtocolError::WrongQos)?);
-                }
-                _prop => info!("Ignoring property: {:?}", _prop),
-            };
-        }
-
-        self.register_connection()?;
-
-        Ok(())
-    }
-}
-
-impl<E> From<sm::Error<MinimqError>> for Error<E> {
-    fn from(error: sm::Error<MinimqError>) -> Self {
-        match error {
-            sm::Error::ActionFailed(err) | sm::Error::GuardFailed(err) => Error::Minimq(err),
-            sm::Error::InvalidEvent | sm::Error::TransitionsFailed => Error::NotReady,
-        }
-    }
-}
-
-/// The client that can be used for interacting with the MQTT broker.
-pub struct MqttClient<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker> {
-    sm: sm::StateMachine<ClientContext<'buf, Clock>>,
-    network: InterfaceHolder<'buf, TcpStack>,
-    will: Option<SerializedWill<'buf>>,
-    auth: Option<Auth<'buf>>,
-    downgrade_qos: bool,
-    broker: Broker,
-    max_packet_size: usize,
-}
-
-impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate::Broker>
-    MqttClient<'buf, TcpStack, Clock, Broker>
-{
-    /// Subscribe to a topic.
-    ///
-    /// # Note
-    /// A subscription is not maintained across a disconnection with the broker. In the case of MQTT
-    /// disconnections, topics will need to be subscribed to again.
-    ///
-    /// The subscription will not be completed immediately. Call
-    /// `MqttClient::subscriptions_pending()` to check for subscriptions being completed.
-    ///
-    /// # Args
-    /// * `topics` - A list of [`TopicFilter`]s to subscribe to.
-    /// * `properties` - A list of properties to attach to the subscription request. May be empty.
-    pub fn subscribe(
+    pub async fn subscribe<C>(
         &mut self,
+        connection: &mut C,
         topics: &[TopicFilter<'_>],
         properties: &[Property<'_>],
-    ) -> Result<(), Error<TcpStack::Error>> {
-        if !self.is_connected() {
-            return Err(Error::NotReady);
+    ) -> Result<(), Error<C::Error>>
+    where
+        C: Read + Write + ErrorType,
+    {
+        if self.state != ClientState::Active {
+            return Err(ProtocolError::NotConnected.into());
         }
 
-        // We can't subscribe if there's a pending write in the network.
-        if self.network.has_pending_write() {
-            return Err(Error::NotReady);
-        }
-
-        let packet_id = self.sm.context_mut().session_state.get_packet_identifier();
-
-        self.network.send_packet(&Subscribe {
-            packet_id,
-            properties: Properties::Slice(properties),
-            topics,
+        let packet_id = self.session.next_packet_id();
+        self.write_packet(
+            connection,
+            &Subscribe {
+                packet_id,
+                properties: Properties::Slice(properties),
+                topics,
+            },
+        )
+        .await?;
+        self.pending_subscriptions.push(packet_id).map_err(|_| {
+            Error::Minimq(MinimqError::Protocol(
+                ProtocolError::InflightMetadataExhausted,
+            ))
         })?;
-
-        self.sm.process_event(Events::SentSubscribe(packet_id))?;
-
         Ok(())
     }
 
-    /// Check if any subscriptions have not yet been completed.
-    ///
-    /// # Returns
-    /// True if any subscriptions are waiting for confirmation from the broker.
-    pub fn subscriptions_pending(&self) -> bool {
-        !self.sm.context().pending_subscriptions.is_empty()
-    }
-
-    /// Determine if the client has established a connection with the broker.
-    ///
-    /// # Returns
-    /// True if the client is connected to the broker.
-    pub fn is_connected(&mut self) -> bool {
-        matches!(self.sm.state(), &States::Active)
-    }
-
-    /// Get the count of messages currently being processed across the connection
-    ///
-    /// # Returns
-    /// The number of messages where handshakes have not fully completed. This includes both
-    /// in-bound messages from the server at [QoS::ExactlyOnce] and out-bound messages at
-    /// [QoS::AtLeastOnce] or [QoS::ExactlyOnce].
-    pub fn pending_messages(&self) -> bool {
-        self.sm.context().session_state.handshakes_pending()
-    }
-
-    /// Determine if the client is able to process publish requests.
-    ///
-    /// # Args
-    /// * `qos` - The QoS level to check publish capabilities of.
-    ///
-    /// # Returns
-    /// True if the client is able to publish at the requested QoS.
-    pub fn can_publish(&self, qos: QoS) -> bool {
-        // We cannot publish if there's a pending write in the network stack. That message must be
-        // completed first.
-        if self.network.has_pending_write() {
-            return false;
-        }
-
-        // If we are still republishing, indicate that we cannot publish.
-        if self.sm.context().session_state.repub.is_republishing() {
-            return false;
-        }
-
-        // If the server cannot handle another message with this quality of service, we can't send
-        // one.
-        if qos != QoS::AtMostOnce && self.sm.context().send_quota == 0 {
-            return false;
-        }
-
-        // Otherwise, we can only send the message if we have the space for it in the session
-        // state.
-        self.sm.context().session_state.can_publish(qos)
-    }
-
-    /// Publish a message over MQTT.
-    ///
-    /// # Note
-    /// If the client is not yet connected to the broker, the message will be silently ignored.
-    ///
-    /// # Args
-    /// * `publish` - The publication to generate.
-    ///   to generate a message.
-    pub fn publish<P: crate::publication::ToPayload>(
+    pub async fn publish<C, P>(
         &mut self,
+        connection: &mut C,
         publish: Publication<'_, P>,
-    ) -> Result<(), crate::PubError<TcpStack::Error, P::Error>> {
-        // If we are not yet connected to the broker, we can't transmit a message.
-        if !self.is_connected() {
-            return Ok(());
+    ) -> Result<(), PubError<C::Error, P::Error>>
+    where
+        C: Read + Write + ErrorType,
+        P: crate::publication::ToPayload,
+    {
+        if self.state != ClientState::Active {
+            return Err(PubError::Error(Error::Minimq(MinimqError::Protocol(
+                ProtocolError::NotConnected,
+            ))));
         }
 
         let mut publish: Pub<'_, P> = publish.into();
-
-        if let Some(max) = &self.sm.context().max_qos {
-            if self.downgrade_qos && publish.qos > *max {
-                publish.qos = *max
+        if let Some(max_qos) = self.max_qos {
+            if self.downgrade_qos && publish.qos > max_qos {
+                publish.qos = max_qos;
             }
+        }
+
+        if publish.qos > QoS::AtMostOnce && self.session.outbound.metadata_full() {
+            return Err(PubError::Error(Error::Minimq(MinimqError::Protocol(
+                ProtocolError::InflightMetadataExhausted,
+            ))));
         }
 
         if !self.can_publish(publish.qos) {
-            return Err(crate::PubError::Error(Error::NotReady));
+            return Err(PubError::Error(Error::NotReady));
         }
 
+        let qos = publish.qos;
+        publish.packet_id = (publish.qos > QoS::AtMostOnce).then(|| self.session.next_packet_id());
         publish.dup = false;
 
-        // If QoS 0 the ID will be ignored
-        publish.packet_id.take();
-        if publish.qos > QoS::AtMostOnce {
-            publish
-                .packet_id
-                .replace(self.sm.context_mut().session_state.get_packet_identifier());
-        }
-
-        let id = publish.packet_id;
-        let qos = publish.qos;
-
-        let packet = self.network.send_pub(publish)?;
-
-        if let Some(id) = id {
-            let context = self.sm.context_mut();
-            context
-                .session_state
-                .handle_publish(qos, id, packet)
-                .map_err(|e| Error::Minimq(e.into()))?;
-            context.send_quota = context.send_quota.checked_sub(1).unwrap();
-        }
-
-        Ok(())
-    }
-
-    fn handle_restart(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        let properties = [
-            // Tell the broker our maximum packet size.
-            Property::MaximumPacketSize(self.max_packet_size as u32),
-            // The session does not expire.
-            Property::SessionExpiryInterval(u32::MAX),
-            Property::ReceiveMaximum(
-                self.sm
-                    .context()
-                    .session_state
-                    .receive_maximum()
-                    .try_into()
-                    .unwrap_or(u16::MAX),
-            ),
-        ];
-
-        self.network.send_packet(&Connect {
-            keep_alive: self.sm.context().keepalive_interval(),
-            properties: Properties::Slice(&properties),
-            client_id: Utf8String(self.sm.context().session_state.client_id.as_str()),
-            auth: self.auth,
-            will: self.will,
-            clean_start: !self.sm.context().session_state.is_present(),
-        })?;
-
-        self.sm.process_event(Events::SentConnect)?;
-
-        Ok(())
-    }
-
-    fn handle_active(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        if self.sm.context_mut().ping_is_overdue()? {
-            warn!("Ping overdue. Trigging send timeout reset");
-            self.sm.process_event(Events::SendTimeout).unwrap();
-        }
-
-        while !self.network.has_pending_write() {
-            if !self
-                .sm
-                .context_mut()
-                .session_state
-                .next_pending_republication(&mut self.network)?
-            {
-                break;
+        let packet_id = publish.packet_id;
+        let tx_ptr = self.tx_buffer.as_ptr() as usize;
+        let (packet_offset, packet_len) = {
+            let packet = match self.serialize_publish(publish) {
+                Ok(packet) => packet,
+                Err(PubError::Serialization(err)) => return Err(PubError::Serialization(err)),
+                Err(PubError::Error(err)) => {
+                    return Err(PubError::Error(match err {
+                        Error::Minimq(err) => Error::Minimq(err),
+                        Error::NotReady => Error::NotReady,
+                        Error::SessionReset => Error::SessionReset,
+                        Error::Network(_) => unreachable!(),
+                    }));
+                }
+            };
+            if let Err(err) = connection.write_all(packet).await {
+                self.handle_disconnect();
+                return Err(PubError::Error(Error::Network(err)));
             }
+            if let Err(err) = connection.flush().await {
+                self.handle_disconnect();
+                return Err(PubError::Error(Error::Network(err)));
+            }
+            let offset = packet.as_ptr() as usize - tx_ptr;
+            (offset, packet.len())
+        };
+
+        if let Some(packet_id) = packet_id {
+            let packet = &self.tx_buffer[packet_offset..packet_offset + packet_len];
+            self.session
+                .outbound
+                .push_publish(packet_id, qos, packet)
+                .map_err(|err| PubError::Error(err.into()))?;
+            self.send_quota = self.send_quota.saturating_sub(1);
         }
 
-        // If there's a pending write, we can't send a ping no matter if it is due. This is
-        // intentionally done before checking if a ping is due, since we wouldn't be able to send
-        // the ping otherwise.
-        if self.network.has_pending_write() {
+        Ok(())
+    }
+
+    pub async fn maintain<C>(
+        &mut self,
+        connection: &mut C,
+        now_ms: u64,
+    ) -> Result<(), Error<C::Error>>
+    where
+        C: Read + Write + ErrorType,
+    {
+        if self.state != ClientState::Active {
             return Ok(());
         }
 
-        if self.sm.context_mut().ping_is_due()? {
-            // Note: If we fail to serialize or write the packet, the ping timeout timer is still
-            // running, so we will recover the TCP connection in the future.
-            self.network.send_packet(&PingReq {})?;
+        if self
+            .ping_timeout
+            .map(|deadline| now_ms > deadline)
+            .unwrap_or(false)
+        {
+            self.handle_disconnect();
+            return Ok(());
         }
 
-        Ok(())
-    }
-
-    fn update(&mut self) -> Result<(), Error<TcpStack::Error>> {
-        if self.network.socket_was_closed() {
-            info!("Handling closed socket");
-            self.sm.process_event(Events::TcpDisconnect).unwrap();
-            self.network.allocate_socket()?;
-        }
-
-        // Attempt to finish any pending packets.
-        self.network.finish_write()?;
-
-        match *self.sm.state() {
-            States::Disconnected => {
-                if let Some(broker) = self.broker.get_address() {
-                    if self.network.connect(broker)? {
-                        info!("TCP socket connected");
-                        self.sm.process_event(Events::TcpConnected)?;
-                    }
-                }
+        if self.session.outbound.replay_pending() {
+            for packet in self.session.outbound.republish_packets() {
+                self.tx_buffer[..packet.len()].copy_from_slice(packet);
+                self.tx_buffer[0] |= 1 << 3;
+                connection
+                    .write_all(&self.tx_buffer[..packet.len()])
+                    .await
+                    .map_err(Error::Network)?;
             }
-            States::Restart => self.handle_restart()?,
-            States::Active => self.handle_active()?,
-            States::Establishing => {}
-        };
+
+            let pending_pubrels: Vec<PendingPubrel, MAX_PENDING_PUBREL> =
+                self.session.outbound.pending_pubrels().collect();
+            for pubrel in pending_pubrels {
+                self.write_packet(
+                    connection,
+                    &PubRel {
+                        packet_id: pubrel.packet_id,
+                        reason: pubrel.reason.into(),
+                    },
+                )
+                .await?;
+            }
+
+            self.session.outbound.finish_replay();
+        }
+
+        if self
+            .next_ping
+            .map(|deadline| now_ms > deadline)
+            .unwrap_or(false)
+        {
+            self.write_packet(connection, &PingReq {}).await?;
+            self.ping_timeout = Some(now_ms + PING_TIMEOUT_MS);
+            self.next_ping = Some(now_ms + u64::from(self.keep_alive_interval.0 / 2));
+        }
 
         Ok(())
     }
 
-    fn handle_packet<'a, F, T>(
+    pub async fn read<C>(
         &mut self,
-        control_packet: ReceivedPacket<'a>,
-        f: &mut F,
-    ) -> Result<Option<T>, Error<TcpStack::Error>>
+        connection: &mut C,
+        now_ms: u64,
+    ) -> Result<Option<InboundPublish<'_>>, Error<C::Error>>
     where
-        F: FnMut(
-            &mut MqttClient<'buf, TcpStack, Clock, Broker>,
-            &'a str,
-            &[u8],
-            &Properties<'a>,
-        ) -> T,
+        C: Read + Write + ErrorType,
     {
-        match control_packet {
-            ReceivedPacket::ConnAck(ack) => {
-                self.sm.process_event(Events::Connected(ack))?;
+        if self.state == ClientState::Disconnected {
+            self.packet_reader.reset();
+        }
 
-                return if self.sm.context_mut().session_state.was_reset() {
-                    Err(Error::SessionReset)
-                } else {
-                    Ok(None)
-                };
-            }
-
-            ReceivedPacket::PubRec(rec) => {
-                rec.reason.code().as_result().or_else(|e| {
-                    let context = self.sm.context_mut();
-                    context.send_quota = context
-                        .send_quota
-                        .saturating_add(1)
-                        .min(context.max_send_quota);
-                    context.session_state.remove_packet(rec.packet_id)?;
-                    Err(e)
-                })?;
-
-                // TODO: If the removed packet ID has the wrong QoS for this packet type,
-                // what should we return? Should probably be a protocol error
-                let code = if self
-                    .sm
-                    .context_mut()
-                    .session_state
-                    .remove_packet(rec.packet_id)
-                    .is_err()
-                {
-                    ReasonCode::PacketIdNotFound
-                } else {
-                    ReasonCode::Success
-                };
-
-                let pubrel = PubRel {
-                    packet_id: rec.packet_id,
-                    reason: code.into(),
-                };
-
-                self.network.send_packet(&pubrel)?;
-
-                self.sm.context_mut().session_state.handle_pubrec(&pubrel)?;
-            }
-
-            ReceivedPacket::PubRel(rel) => {
-                let session_state = &mut self.sm.context_mut().session_state;
-
-                let reason = session_state.remove_server_packet_id(rel.packet_id);
-
-                // Send a PubComp
-                let pubcomp = PubComp {
-                    packet_id: rel.packet_id,
-
-                    // Note: Because we do not support ExactlyOnce, it's not possible for
-                    // us to receive two packets with the same ID.
-                    reason: reason.into(),
-                };
-
-                self.network.send_packet(&pubcomp)?;
-            }
-
-            ReceivedPacket::Publish(info) => {
-                if &States::Active != self.sm.state() {
-                    return Err(Error::NotReady);
+        while !self.packet_reader.packet_available() {
+            let buffer = match self.packet_reader.receive_buffer() {
+                Ok(buffer) => buffer,
+                Err(err) => {
+                    self.handle_disconnect();
+                    return Err(err.into());
                 }
+            };
 
-                // Handle transmitting any necessary acknowledges
-                match info.qos {
-                    QoS::AtMostOnce => {}
-                    QoS::AtLeastOnce => {
-                        // Note(uwnrap): There should always be a packet ID for QoS > AtMostOnce.
-                        let packet_id = info.packet_id.unwrap();
+            let count = match connection.read(buffer).await {
+                Ok(count) => count,
+                Err(err) => {
+                    self.handle_disconnect();
+                    return Err(Error::Network(err));
+                }
+            };
+            if count == 0 {
+                self.handle_disconnect();
+                return Ok(None);
+            }
+            self.packet_reader.commit(count);
+            debug!("Received {} bytes", count);
+        }
 
-                        // Reject the packet ID if it's currently in use for another publication.
-                        let reason = if self
-                            .sm
-                            .context_mut()
-                            .session_state
-                            .server_packet_id_in_use(packet_id)
-                        {
-                            ReasonCode::PacketIdInUse
-                        } else {
-                            ReasonCode::Success
-                        };
+        let packet = {
+            let packet_reader = &mut self.packet_reader;
+            packet_reader.received_packet()?
+        };
+        info!("Received {:?}", packet);
+        let mut context = PacketContext {
+            tx_buffer: self.tx_buffer,
+            session: &mut self.session,
+            pending_subscriptions: &mut self.pending_subscriptions,
+            state: &mut self.state,
+            keep_alive_interval: &mut self.keep_alive_interval,
+            send_quota: &mut self.send_quota,
+            max_send_quota: &mut self.max_send_quota,
+            maximum_packet_size: &mut self.maximum_packet_size,
+            max_qos: &mut self.max_qos,
+            next_ping: &mut self.next_ping,
+            ping_timeout: &mut self.ping_timeout,
+        };
+        match handle_packet(&mut context, connection, packet, now_ms).await {
+            Err(Error::Network(err)) => {
+                context.mark_disconnected();
+                Err(Error::Network(err))
+            }
+            result => result,
+        }
+    }
 
-                        let puback = PubAck {
-                            packet_identifier: info.packet_id.unwrap(),
-                            reason: reason.into(),
-                        };
+    fn handle_disconnect(&mut self) {
+        self.session.outbound.mark_reconnect_pending();
+        self.state = ClientState::Disconnected;
+        self.packet_reader.reset();
+        self.pending_subscriptions.clear();
+        self.next_ping = None;
+        self.ping_timeout = None;
+    }
 
-                        self.network.send_packet(&puback)?;
+    fn keepalive_seconds(&self) -> u16 {
+        (self.keep_alive_interval.0 / 1000) as u16
+    }
+
+    async fn write_packet<C, T>(
+        &mut self,
+        connection: &mut C,
+        packet: &T,
+    ) -> Result<(), Error<C::Error>>
+    where
+        C: Read + Write + ErrorType,
+        T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
+    {
+        let bytes = crate::ser::MqttSerializer::to_buffer(self.tx_buffer, packet)
+            .map_err(|err| Error::Minimq(MinimqError::Protocol(err.into())))?;
+        if let Err(err) = connection.write_all(bytes).await {
+            self.handle_disconnect();
+            return Err(Error::Network(err));
+        }
+        if let Err(err) = connection.flush().await {
+            self.handle_disconnect();
+            return Err(Error::Network(err));
+        }
+        Ok(())
+    }
+
+    fn serialize_publish<P: crate::publication::ToPayload>(
+        &mut self,
+        packet: Pub<'_, P>,
+    ) -> Result<&[u8], PubError<core::convert::Infallible, P::Error>> {
+        crate::ser::MqttSerializer::pub_to_buffer(self.tx_buffer, packet).map_err(|err| match err {
+            crate::ser::PubError::Error(err) => {
+                PubError::Error(Error::Minimq(MinimqError::Protocol(err.into())))
+            }
+            crate::ser::PubError::Other(err) => PubError::Serialization(err),
+        })
+    }
+}
+
+struct PacketContext<'a, 'buf> {
+    tx_buffer: &'a mut [u8],
+    session: &'a mut SessionState<'buf>,
+    pending_subscriptions: &'a mut Vec<u16, MAX_PENDING_SUBSCRIPTIONS>,
+    state: &'a mut ClientState,
+    keep_alive_interval: &'a mut Milliseconds<u32>,
+    send_quota: &'a mut u16,
+    max_send_quota: &'a mut u16,
+    maximum_packet_size: &'a mut Option<u32>,
+    max_qos: &'a mut Option<QoS>,
+    next_ping: &'a mut Option<u64>,
+    ping_timeout: &'a mut Option<u64>,
+}
+
+impl PacketContext<'_, '_> {
+    fn mark_disconnected(&mut self) {
+        self.session.outbound.mark_reconnect_pending();
+        *self.state = ClientState::Disconnected;
+        self.pending_subscriptions.clear();
+        *self.next_ping = None;
+        *self.ping_timeout = None;
+    }
+}
+
+async fn handle_packet<'pkt, 'state, C>(
+    cx: &mut PacketContext<'_, 'state>,
+    connection: &mut C,
+    packet: ReceivedPacket<'pkt>,
+    now_ms: u64,
+) -> Result<Option<InboundPublish<'pkt>>, Error<C::Error>>
+where
+    C: Read + Write + ErrorType,
+{
+    match packet {
+        ReceivedPacket::ConnAck(ack) => {
+            ack.reason_code.as_result()?;
+            if !ack.session_present {
+                cx.session.reset();
+                cx.pending_subscriptions.clear();
+            }
+
+            *cx.send_quota = u16::MAX;
+            *cx.max_send_quota = cx.session.outbound.max_send_quota();
+            *cx.max_qos = None;
+            *cx.maximum_packet_size = None;
+
+            for property in ack.properties.into_iter() {
+                match property? {
+                    Property::MaximumPacketSize(size) => *cx.maximum_packet_size = Some(size),
+                    Property::AssignedClientIdentifier(id) => {
+                        cx.session.client_id = String::try_from(id.0)
+                            .map_err(|_| ProtocolError::ProvidedClientIdTooLong)?;
                     }
+                    Property::ServerKeepAlive(keep_alive) => {
+                        *cx.keep_alive_interval = Milliseconds(keep_alive as u32 * 1000);
+                    }
+                    Property::ReceiveMaximum(max) => {
+                        let local = cx.session.outbound.max_send_quota();
+                        *cx.send_quota = max.min(local);
+                        *cx.max_send_quota = max.min(local);
+                    }
+                    Property::MaximumQoS(max) => {
+                        *cx.max_qos =
+                            Some(QoS::try_from(max).map_err(|_| ProtocolError::WrongQos)?);
+                    }
+                    _ => {}
+                }
+            }
 
-                    QoS::ExactlyOnce => {
-                        let session_state = &mut self.sm.context_mut().session_state;
-                        // Note(uwnrap): There should always be a packet ID for QoS >
-                        // AtMostOnce.
-                        let packet_id = info.packet_id.unwrap();
-
-                        // Check if the packet ID already exists before forwarding to app
-                        // This procedure follows the MQTTv5 spec section 4.3.3 and 4.4
-                        let duplicate = session_state.server_packet_id_in_use(packet_id);
-
-                        let reason = if !duplicate {
-                            session_state.push_server_packet_id(packet_id)
-                        } else {
-                            ReasonCode::Success
-                        };
-
-                        let pubrec = PubRec {
+            *cx.state = ClientState::Active;
+            cx.session.register_connected();
+            *cx.next_ping = Some(now_ms + u64::from(cx.keep_alive_interval.0 / 2));
+            *cx.ping_timeout = None;
+            if cx.session.take_reset() {
+                return Err(Error::SessionReset);
+            }
+        }
+        ReceivedPacket::SubAck(ack) => {
+            let index = cx
+                .pending_subscriptions
+                .iter()
+                .position(|id| *id == ack.packet_identifier)
+                .ok_or(ProtocolError::BadIdentifier)?;
+            cx.pending_subscriptions.swap_remove(index);
+            for &code in ack.codes {
+                ReasonCode::from(code).as_result()?;
+            }
+        }
+        ReceivedPacket::PingResp => {
+            *cx.ping_timeout = None;
+        }
+        ReceivedPacket::PubAck(ack) => {
+            *cx.send_quota = cx.send_quota.saturating_add(1).min(*cx.max_send_quota);
+            cx.session.outbound.remove_publish(ack.packet_identifier)?;
+        }
+        ReceivedPacket::PubRec(rec) => {
+            rec.reason.code().as_result()?;
+            *cx.send_quota = cx.send_quota.saturating_add(1).min(*cx.max_send_quota);
+            cx.session.outbound.remove_publish(rec.packet_id)?;
+            cx.session
+                .outbound
+                .queue_pubrel(rec.packet_id, ReasonCode::Success)?;
+            write_packet(
+                cx.tx_buffer,
+                connection,
+                &PubRel {
+                    packet_id: rec.packet_id,
+                    reason: ReasonCode::Success.into(),
+                },
+            )
+            .await?;
+        }
+        ReceivedPacket::PubComp(comp) => {
+            cx.session.outbound.remove_pubrel(comp.packet_id)?;
+        }
+        ReceivedPacket::PubRel(rel) => {
+            let reason = if let Some(index) = cx
+                .session
+                .pending_server_packet_ids
+                .iter()
+                .position(|id| *id == rel.packet_id)
+            {
+                cx.session.pending_server_packet_ids.swap_remove(index);
+                ReasonCode::Success
+            } else {
+                ReasonCode::PacketIdNotFound
+            };
+            write_packet(
+                cx.tx_buffer,
+                connection,
+                &PubComp {
+                    packet_id: rel.packet_id,
+                    reason: reason.into(),
+                },
+            )
+            .await?;
+        }
+        ReceivedPacket::Publish(info) => {
+            let retain = info.retain;
+            let qos = info.qos;
+            match info.qos {
+                QoS::AtMostOnce => {}
+                QoS::AtLeastOnce => {
+                    let packet_id = info.packet_id.ok_or(ProtocolError::MalformedPacket)?;
+                    let reason = if cx.session.pending_server_packet_ids.contains(&packet_id) {
+                        ReasonCode::PacketIdInUse
+                    } else {
+                        ReasonCode::Success
+                    };
+                    write_packet(
+                        cx.tx_buffer,
+                        connection,
+                        &PubAck {
+                            packet_identifier: packet_id,
+                            reason: reason.into(),
+                        },
+                    )
+                    .await?;
+                }
+                QoS::ExactlyOnce => {
+                    let packet_id = info.packet_id.ok_or(ProtocolError::MalformedPacket)?;
+                    let duplicate = cx.session.pending_server_packet_ids.contains(&packet_id);
+                    let reason = if !duplicate {
+                        cx.session
+                            .pending_server_packet_ids
+                            .push(packet_id)
+                            .map(|_| ReasonCode::Success)
+                            .unwrap_or(ReasonCode::ReceiveMaxExceeded)
+                    } else {
+                        ReasonCode::Success
+                    };
+                    write_packet(
+                        cx.tx_buffer,
+                        connection,
+                        &PubRec {
                             packet_id,
                             reason: reason.into(),
-                        };
-
-                        self.network.send_packet(&pubrec)?;
-
-                        if duplicate || !pubrec.reason.code().success() {
-                            return Ok(None);
-                        }
+                        },
+                    )
+                    .await?;
+                    if duplicate || !reason.success() {
+                        return Ok(None);
                     }
                 }
-
-                // Provide the packet to the application for further processing.
-                return Ok(Some(f(self, info.topic.0, info.payload, &info.properties)));
             }
 
-            _ => {
-                self.sm
-                    .process_event(Events::ControlPacket(control_packet))?;
-            }
+            *cx.next_ping = Some(now_ms + u64::from(cx.keep_alive_interval.0 / 2));
+            return Ok(Some(InboundPublish {
+                topic: info.topic.0,
+                payload: info.payload,
+                properties: info.properties,
+                retain,
+                qos,
+            }));
         }
-
-        Ok(None)
+        ReceivedPacket::Disconnect(_) => {
+            cx.mark_disconnected();
+        }
     }
+
+    Ok(None)
 }
 
-/// The general structure for managing MQTT via Minimq.
-///
-/// # Note
-/// To connect and maintain an MQTT connection, the `Minimq::poll()` method must be called
-/// regularly.
-pub struct Minimq<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker> {
-    client: MqttClient<'buf, TcpStack, Clock, Broker>,
-    packet_reader: PacketReader<'buf>,
-}
-
-impl<'buf, TcpStack: TcpClientStack, Clock: embedded_time::Clock, Broker: crate::Broker>
-    Minimq<'buf, TcpStack, Clock, Broker>
+async fn write_packet<C, T>(
+    tx_buffer: &mut [u8],
+    connection: &mut C,
+    packet: &T,
+) -> Result<(), Error<C::Error>>
+where
+    C: Read + Write + ErrorType,
+    T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
 {
-    /// Construct a new MQTT interface.
-    ///
-    /// # Args
-    /// * `broker` - The broker to connect to. See [crate::broker::NamedBroker] and
-    ///   [crate::broker::IpBroker].
-    /// * `client_id` The client ID to use for communicating with the broker. If empty, rely on the
-    ///   broker to automatically assign a client ID.
-    /// * `network_stack` - The network stack to use for communication.
-    /// * `clock` - The clock to use for managing MQTT state timing.
-    ///
-    /// # Returns
-    /// A `Minimq` object that can be used for publishing messages, subscribing to topics, and
-    /// managing the MQTT state.
-    pub fn new(network_stack: TcpStack, clock: Clock, config: ConfigBuilder<'buf, Broker>) -> Self {
-        let config = config.build();
+    let bytes = crate::ser::MqttSerializer::to_buffer(tx_buffer, packet)
+        .map_err(|err| Error::Minimq(MinimqError::Protocol(err.into())))?;
+    connection.write_all(bytes).await.map_err(Error::Network)?;
+    connection.flush().await.map_err(Error::Network)?;
+    Ok(())
+}
 
-        let session_state = SessionState::new(
-            config.client_id,
-            config.state_buffer,
-            config.tx_buffer.len(),
-        );
+#[derive(Debug)]
+pub enum RunnerError<Connect, Io, Time> {
+    Connect(Connect),
+    Network(Error<Io>),
+    Timer(Time),
+}
 
-        Minimq {
-            client: MqttClient {
-                sm: StateMachine::new(ClientContext::new(
-                    clock,
-                    session_state,
-                    config.keepalive_interval,
-                )),
-                downgrade_qos: config.downgrade_qos,
-                broker: config.broker,
-                will: config.will,
-                auth: config.auth,
-                network: InterfaceHolder::new(network_stack, config.tx_buffer),
-                max_packet_size: config.rx_buffer.len(),
-            },
-            packet_reader: PacketReader::new(config.rx_buffer),
+impl<Connect, Io, Time> From<Error<Io>> for RunnerError<Connect, Io, Time> {
+    fn from(value: Error<Io>) -> Self {
+        Self::Network(value)
+    }
+}
+
+#[derive(Debug)]
+pub enum RunnerPubError<Connect, Io, Time, Serialization> {
+    Publish(PubError<Io, Serialization>),
+    Runner(RunnerError<Connect, Io, Time>),
+}
+
+impl<Connect, Io, Time, Serialization> From<RunnerError<Connect, Io, Time>>
+    for RunnerPubError<Connect, Io, Time, Serialization>
+{
+    fn from(value: RunnerError<Connect, Io, Time>) -> Self {
+        Self::Runner(value)
+    }
+}
+
+pub struct Runner<'a, 'buf, C: Connector, T, const N: usize = 253> {
+    client: &'a mut MqttClient<'buf, N>,
+    connector: &'a C,
+    timer: &'a mut T,
+    connection: Option<C::Connection<'a>>,
+}
+
+impl<'a, 'buf, C, T, const N: usize> Runner<'a, 'buf, C, T, N>
+where
+    C: Connector,
+    T: Timer,
+{
+    pub fn new(
+        client: &'a mut MqttClient<'buf, N>,
+        connector: &'a C,
+        timer: &'a mut T,
+    ) -> Self {
+        Self {
+            client,
+            connector,
+            timer,
+            connection: None,
         }
     }
 
-    /// Check the MQTT interface for available messages.
-    ///
-    /// # Note
-    /// This method will processes as many MQTT control packets as possible until a PUBLISH message
-    /// is received. The user should thus contintually call this function until it returns
-    /// `Ok(None)`, as this is indicative that there is no further data to process.
-    ///
-    /// # Args
-    /// * `f` - A closure to process any received messages. The closure should accept the client,
-    ///   topic, message, and list of proprties (in that order).
-    ///
-    /// # Returns
-    /// `Ok(Option<result>)` - During normal operation, a `result` will optionally be returned to
-    /// the user software if a value was returned from the `f` closure. If the closure was not
-    /// executed, `None` is returned. Note that `None` may be returned even if MQTT packets were
-    /// processed.
-    ///
-    /// Err(Error) if an MQTT-related error is encountered. Generally, Error::SessionReset is the
-    /// only error expected during normal operation. In this case, the client has lost any previous
-    /// subscriptions or session state.
-    pub fn poll<F, T>(&mut self, mut f: F) -> Result<Option<T>, Error<TcpStack::Error>>
-    where
-        for<'a> F: FnMut(
-            &mut MqttClient<'buf, TcpStack, Clock, Broker>,
-            &'a str,
-            &[u8],
-            &Properties<'a>,
-        ) -> T,
-    {
-        self.client.update()?;
+    pub async fn subscribe(
+        &mut self,
+        topics: &[TopicFilter<'_>],
+        properties: &[Property<'_>],
+    ) -> Result<(), RunnerError<C::ConnectError, C::IoError, T::Error>> {
+        self.ensure_connected().await?;
+        let connection = self.connection.as_mut().expect("connection established");
+        self.client
+            .subscribe(connection, topics, properties)
+            .await
+            .map_err(Into::into)
+    }
 
-        // If the connection is no longer active, reset the packet reader state and return. There's
-        // nothing more we can do.
-        if self.client.sm.state() != &States::Active
-            && self.client.sm.state() != &States::Establishing
+    pub async fn publish<P>(
+        &mut self,
+        publication: Publication<'_, P>,
+    ) -> Result<(), RunnerPubError<C::ConnectError, C::IoError, T::Error, P::Error>>
+    where
+        P: crate::publication::ToPayload,
+    {
+        self.ensure_connected().await?;
+        let connection = self.connection.as_mut().expect("connection established");
+        self.client
+            .publish(connection, publication)
+            .await
+            .map_err(RunnerPubError::Publish)
+    }
+
+    pub async fn poll(
+        &mut self,
+    ) -> Result<Option<InboundPublish<'_>>, RunnerError<C::ConnectError, C::IoError, T::Error>> {
+        self.ensure_connected().await?;
+        let now = self.timer.now().map_err(RunnerError::Timer)?;
+        self.read_or_wait(now).await
+    }
+
+    async fn ensure_connected(
+        &mut self,
+    ) -> Result<(), RunnerError<C::ConnectError, C::IoError, T::Error>> {
+        loop {
+            if self.client.state == ClientState::Disconnected {
+                self.connection = None;
+            }
+
+            if self.connection.is_none() {
+                let now = self.timer.now().map_err(RunnerError::Timer)?;
+                let connection = self
+                    .connector
+                    .connect(self.client.broker())
+                    .await
+                    .map_err(RunnerError::Connect)?;
+                self.connection = Some(connection);
+                let connection = self.connection.as_mut().expect("connection inserted");
+                self.client.connect(connection, now).await?;
+            }
+
+            if self.client.is_connected() {
+                return Ok(());
+            }
+
+            let now = self.timer.now().map_err(RunnerError::Timer)?;
+            let _ = self.read_or_wait(now).await?;
+        }
+    }
+
+    async fn read_or_wait(
+        &mut self,
+        now: u64,
+    ) -> Result<Option<InboundPublish<'_>>, RunnerError<C::ConnectError, C::IoError, T::Error>>
+    {
         {
-            self.packet_reader.reset();
+            let connection = self.connection.as_mut().expect("connection established");
+            self.client.maintain(connection, now).await?;
+        }
+
+        if self.client.state == ClientState::Disconnected {
+            self.connection = None;
             return Ok(None);
         }
 
-        // Read MQTT packets and process them until either:
-        // 1. There are no available MQTT packets from the network
-        // 2. A packet was processed that generates a result that needs to be propagated.
-        loop {
-            // Attempt to read an MQTT packet from the network.
-            while !self.packet_reader.packet_available() {
-                let buffer = match self.packet_reader.receive_buffer() {
-                    Ok(buffer) => buffer,
-                    Err(e) => {
-                        warn!("Protocol Error reset: {e:?}");
-                        self.client.sm.process_event(Events::ProtocolError).unwrap();
-                        self.packet_reader.reset();
-                        return Err(e.into());
-                    }
-                };
-
-                let received = self.client.network.read(buffer)?;
-                self.packet_reader.commit(received);
-
-                if received > 0 {
-                    debug!("Received {} bytes", received);
-                } else {
+        let next_message = if let Some(deadline) = self.client.next_deadline() {
+            let connection = self.connection.as_mut().expect("connection established");
+            let read = self.client.read(connection, now);
+            let sleep = self.timer.sleep_until(deadline);
+            match select2(read, sleep).await {
+                Either::Left(result) => result?,
+                Either::Right(result) => {
+                    result.map_err(RunnerError::Timer)?;
                     return Ok(None);
                 }
             }
+        } else {
+            let connection = self.connection.as_mut().expect("connection established");
+            self.client.read(connection, now).await?
+        };
 
-            let packet = self.packet_reader.received_packet()?;
-            info!("Received {:?}", packet);
-            if let Some(result) = self.client.handle_packet(packet, &mut f)? {
-                return Ok(Some(result));
-            }
+        Ok(next_message)
+    }
+}
+
+async fn select2<A, B>(left: A, right: B) -> Either<A::Output, B::Output>
+where
+    A: core::future::Future,
+    B: core::future::Future,
+{
+    let mut left = pin!(left);
+    let mut right = pin!(right);
+    poll_fn(|cx| {
+        if let Poll::Ready(value) = left.as_mut().poll(cx) {
+            return Poll::Ready(Either::Left(value));
         }
-    }
-
-    /// Directly access the MQTT client.
-    pub fn client(&mut self) -> &mut MqttClient<'buf, TcpStack, Clock, Broker> {
-        &mut self.client
-    }
+        if let Poll::Ready(value) = right.as_mut().poll(cx) {
+            return Poll::Ready(Either::Right(value));
+        }
+        Poll::Pending
+    })
+    .await
 }

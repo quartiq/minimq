@@ -20,6 +20,7 @@ pub enum ReceivedPacket<'a> {
     PubRel(PubRel<'a>),
     PubRec(PubRec<'a>),
     PubComp(PubComp<'a>),
+    #[allow(dead_code)]
     Disconnect(Disconnect<'a>),
     PingResp,
 }

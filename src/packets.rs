@@ -3,7 +3,7 @@ use crate::{
     publication::Publication,
     reason_codes::ReasonCode,
     types::{Auth, Properties, TopicFilter, Utf8String},
-    will::SerializedWill,
+    will::Will,
 };
 use bit_field::BitField;
 use serde::{Deserialize, Serialize};
@@ -24,10 +24,11 @@ pub struct Connect<'a> {
     pub client_id: Utf8String<'a>,
 
     /// An optional authentication message used by the server.
+    #[allow(dead_code)]
     pub auth: Option<Auth<'a>>,
 
     /// An optional will message to be transmitted whenever the connection is lost.
-    pub(crate) will: Option<SerializedWill<'a>>,
+    pub(crate) will: Option<Will<'a>>,
 
     /// Specified true there is no session state being taken in to the MQTT connection.
     pub clean_start: bool,
@@ -42,8 +43,8 @@ impl serde::Serialize for Connect<'_> {
             // Update the flags for the will parameters. Indicate that the will is present, the QoS of
             // the will message, and whether or not the will message should be retained.
             flags.set_bit(2, true);
-            flags.set_bits(3..=4, will.qos as u8);
-            flags.set_bit(5, will.retained == Retain::Retained);
+            flags.set_bits(3..=4, will.qos_level() as u8);
+            flags.set_bit(5, will.retained_flag() == Retain::Retained);
         }
 
         #[cfg(feature = "unsecure")]
@@ -60,7 +61,7 @@ impl serde::Serialize for Connect<'_> {
         item.serialize_field("properties", &self.properties)?;
         item.serialize_field("client_id", &self.client_id)?;
         if let Some(will) = &self.will {
-            item.serialize_field("will", will.contents)?;
+            item.serialize_field("will", will)?;
         }
 
         #[cfg(feature = "unsecure")]
@@ -162,6 +163,7 @@ pub struct Subscribe<'a> {
 pub struct PingReq;
 
 /// An MQTT PINGRESP control packet
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct PingResp;
 
@@ -177,6 +179,7 @@ pub struct PubAck<'a> {
 }
 
 /// An MQTT SUBACK control packet.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct SubAck<'a> {
     /// The identifier that the acknowledge is assocaited with.
@@ -225,6 +228,7 @@ pub struct PubComp<'a> {
 }
 
 /// An MQTT DISCONNECT control packet
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct Disconnect<'a> {
     /// The success status of the disconnection.
@@ -471,7 +475,6 @@ mod tests {
         ];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let mut will_buff = [0; 64];
         let will = crate::will::Will::new("EFG", &[0xAB, 0xCD], &[])
             .unwrap()
             .qos(crate::QoS::AtMostOnce);
@@ -482,7 +485,7 @@ mod tests {
             properties: crate::types::Properties::Slice(&[]),
             client_id: crate::types::Utf8String("ABC"),
             auth: None,
-            will: Some(will.serialize(&mut will_buff).unwrap()),
+            will: Some(will),
         };
 
         let message = MqttSerializer::to_buffer(&mut buffer, &connect).unwrap();
