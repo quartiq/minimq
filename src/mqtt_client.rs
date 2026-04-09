@@ -1,17 +1,17 @@
 use crate::{
-    Broker, Config, Error, MinimqError, Property, ProtocolError, PubError, QoS, ReasonCode, Retain,
+    Broker, Config, Error, Property, ProtocolError, PubError, QoS, ReasonCode, Retain,
     de::{PacketReader, received_packet::ReceivedPacket},
     debug, info,
     packets::{Connect, PingReq, Pub, PubAck, PubComp, PubRec, PubRel, Subscribe},
-    publication::Publication,
-    timer::Timer,
-    transport::{Connector, Either},
+    publication::{Publication, ResponseTarget},
+    transport::Connector,
     types::{Auth, Properties, TopicFilter, Utf8String},
     will::Will,
 };
-use core::{convert::TryFrom, future::poll_fn, pin::pin, task::Poll};
-use embedded_io_async::{ErrorType, Read, Write};
-use embedded_time::duration::Milliseconds;
+use core::convert::TryFrom;
+use embassy_futures::select::{Either, select};
+use embassy_time::{Duration, Instant, Timer};
+use embedded_io_async::{Error as _, ErrorKind, ErrorType, Read, Write};
 use heapless::{String, Vec};
 
 const PING_TIMEOUT_MS: u64 = 5_000;
@@ -21,7 +21,7 @@ const MAX_PENDING_SUBSCRIPTIONS: usize = 32;
 const MAX_PENDING_PUBREL: usize = 16;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum ClientState {
+enum State {
     Disconnected,
     Establishing,
     Active,
@@ -42,7 +42,7 @@ struct OutboundPublish {
 }
 
 #[derive(Debug)]
-struct InflightStore<'a> {
+struct Inflight<'a> {
     buf: &'a mut [u8],
     used: usize,
     entries: Vec<OutboundPublish, MAX_OUTBOUND>,
@@ -50,7 +50,7 @@ struct InflightStore<'a> {
     replay_pending: bool,
 }
 
-impl<'a> InflightStore<'a> {
+impl<'a> Inflight<'a> {
     fn new(buf: &'a mut [u8]) -> Self {
         Self {
             buf,
@@ -183,7 +183,7 @@ impl<'a> InflightStore<'a> {
 struct SessionState<'a> {
     client_id: String<64>,
     packet_id: u16,
-    outbound: InflightStore<'a>,
+    outbound: Inflight<'a>,
     pending_server_packet_ids: Vec<u16, MAX_INBOUND_QOS2>,
     had_state: bool,
     was_reset: bool,
@@ -194,7 +194,7 @@ impl<'a> SessionState<'a> {
         Self {
             client_id,
             packet_id: 1,
-            outbound: InflightStore::new(inflight),
+            outbound: Inflight::new(inflight),
             pending_server_packet_ids: Vec::new(),
             had_state: false,
             was_reset: false,
@@ -243,28 +243,58 @@ pub struct InboundPublish<'a> {
     pub qos: QoS,
 }
 
+impl<'a> InboundPublish<'a> {
+    pub fn response_topic(&'a self) -> Option<&'a str> {
+        self.properties.response_topic()
+    }
+
+    pub fn correlation_data(&'a self) -> Option<&'a [u8]> {
+        self.properties.correlation_data()
+    }
+
+    pub fn response_target(&'a self) -> Option<ResponseTarget<'a>> {
+        Some(ResponseTarget {
+            topic: self.response_topic()?,
+            correlation_data: self.correlation_data(),
+        })
+    }
+
+    pub fn reply<P>(&'a self, payload: P) -> Option<Publication<'a, P>> {
+        self.response_target()
+            .map(|target| target.publication(payload))
+    }
+}
+
 #[derive(Debug)]
-pub struct MqttClient<'buf, const N: usize = 253> {
-    broker: Broker<N>,
+pub enum Event<'a> {
+    Idle,
+    Connected,
+    Reconnected,
+    Inbound(InboundPublish<'a>),
+}
+
+#[derive(Debug)]
+struct Core<'buf> {
+    broker: Broker,
     packet_reader: PacketReader<'buf>,
     tx_buffer: &'buf mut [u8],
     session: SessionState<'buf>,
     will: Option<Will<'buf>>,
     auth: Option<Auth<'buf>>,
     downgrade_qos: bool,
-    keep_alive_interval: Milliseconds<u32>,
+    keep_alive_interval: Duration,
     send_quota: u16,
     max_send_quota: u16,
     maximum_packet_size: Option<u32>,
     max_qos: Option<QoS>,
     pending_subscriptions: Vec<u16, MAX_PENDING_SUBSCRIPTIONS>,
-    state: ClientState,
-    next_ping: Option<u64>,
-    ping_timeout: Option<u64>,
+    state: State,
+    next_ping: Option<Instant>,
+    ping_timeout: Option<Instant>,
 }
 
-impl<'buf, const N: usize> MqttClient<'buf, N> {
-    pub fn new(config: Config<'buf, N>) -> Self {
+impl<'buf> Core<'buf> {
+    fn new(config: Config<'buf>) -> Self {
         let Config {
             broker,
             buffers,
@@ -289,30 +319,30 @@ impl<'buf, const N: usize> MqttClient<'buf, N> {
             maximum_packet_size: None,
             max_qos: None,
             pending_subscriptions: Vec::new(),
-            state: ClientState::Disconnected,
+            state: State::Disconnected,
             next_ping: None,
             ping_timeout: None,
         }
     }
 
-    pub fn broker(&self) -> &Broker<N> {
+    fn broker(&self) -> &Broker {
         &self.broker
     }
 
-    pub fn is_connected(&self) -> bool {
-        self.state == ClientState::Active
+    fn is_connected(&self) -> bool {
+        self.state == State::Active
     }
 
-    pub fn subscriptions_pending(&self) -> bool {
+    fn subscriptions_pending(&self) -> bool {
         !self.pending_subscriptions.is_empty()
     }
 
-    pub fn pending_messages(&self) -> bool {
+    fn pending_messages(&self) -> bool {
         self.session.handshakes_pending()
     }
 
-    pub fn can_publish(&mut self, qos: QoS) -> bool {
-        if self.state != ClientState::Active {
+    fn can_publish(&mut self, qos: QoS) -> bool {
+        if self.state != State::Active {
             return false;
         }
         if qos != QoS::AtMostOnce && self.send_quota == 0 {
@@ -321,7 +351,7 @@ impl<'buf, const N: usize> MqttClient<'buf, N> {
         self.session.outbound.can_publish(self.tx_buffer.len())
     }
 
-    pub fn next_deadline(&self) -> Option<u64> {
+    fn next_deadline(&self) -> Option<Instant> {
         match (self.next_ping, self.ping_timeout) {
             (Some(ping), Some(timeout)) => Some(ping.min(timeout)),
             (Some(ping), None) => Some(ping),
@@ -330,13 +360,10 @@ impl<'buf, const N: usize> MqttClient<'buf, N> {
         }
     }
 
-    pub async fn connect<C>(
-        &mut self,
-        connection: &mut C,
-        now_ms: u64,
-    ) -> Result<(), Error<C::Error>>
+    async fn connect<C>(&mut self, connection: &mut C) -> Result<(), Error>
     where
         C: Read + Write + ErrorType,
+        C::Error: embedded_io_async::Error,
     {
         let client_id = self.session.client_id.clone();
         let properties = [
@@ -352,29 +379,30 @@ impl<'buf, const N: usize> MqttClient<'buf, N> {
                 properties: Properties::Slice(&properties),
                 client_id: Utf8String(client_id.as_str()),
                 auth: self.auth,
-                will: self.will,
+                will: self.will.clone(),
                 clean_start: !self.session.had_state,
             },
         )
         .await?;
 
-        self.state = ClientState::Establishing;
-        self.next_ping = Some(now_ms + u64::from(self.keep_alive_interval.0 / 2));
+        self.state = State::Establishing;
+        self.next_ping = Some(Instant::now() + self.keep_alive_interval / 2);
         self.ping_timeout = None;
         Ok(())
     }
 
-    pub async fn subscribe<C>(
+    async fn subscribe<C>(
         &mut self,
         connection: &mut C,
         topics: &[TopicFilter<'_>],
         properties: &[Property<'_>],
-    ) -> Result<(), Error<C::Error>>
+    ) -> Result<(), Error>
     where
         C: Read + Write + ErrorType,
+        C::Error: embedded_io_async::Error,
     {
-        if self.state != ClientState::Active {
-            return Err(ProtocolError::NotConnected.into());
+        if self.state != State::Active {
+            return Err(Error::Disconnected);
         }
 
         let packet_id = self.session.next_packet_id();
@@ -387,27 +415,24 @@ impl<'buf, const N: usize> MqttClient<'buf, N> {
             },
         )
         .await?;
-        self.pending_subscriptions.push(packet_id).map_err(|_| {
-            Error::Minimq(MinimqError::Protocol(
-                ProtocolError::InflightMetadataExhausted,
-            ))
-        })?;
+        self.pending_subscriptions
+            .push(packet_id)
+            .map_err(|_| ProtocolError::InflightMetadataExhausted)?;
         Ok(())
     }
 
-    pub async fn publish<C, P>(
+    async fn publish<C, P>(
         &mut self,
         connection: &mut C,
         publish: Publication<'_, P>,
-    ) -> Result<(), PubError<C::Error, P::Error>>
+    ) -> Result<(), PubError<P::Error>>
     where
         C: Read + Write + ErrorType,
+        C::Error: embedded_io_async::Error,
         P: crate::publication::ToPayload,
     {
-        if self.state != ClientState::Active {
-            return Err(PubError::Error(Error::Minimq(MinimqError::Protocol(
-                ProtocolError::NotConnected,
-            ))));
+        if self.state != State::Active {
+            return Err(PubError::Error(Error::Disconnected));
         }
 
         let mut publish: Pub<'_, P> = publish.into();
@@ -418,41 +443,30 @@ impl<'buf, const N: usize> MqttClient<'buf, N> {
         }
 
         if publish.qos > QoS::AtMostOnce && self.session.outbound.metadata_full() {
-            return Err(PubError::Error(Error::Minimq(MinimqError::Protocol(
-                ProtocolError::InflightMetadataExhausted,
-            ))));
+            return Err(PubError::Error(
+                ProtocolError::InflightMetadataExhausted.into(),
+            ));
         }
 
         if !self.can_publish(publish.qos) {
             return Err(PubError::Error(Error::NotReady));
         }
 
-        let qos = publish.qos;
         publish.packet_id = (publish.qos > QoS::AtMostOnce).then(|| self.session.next_packet_id());
         publish.dup = false;
 
-        let packet_id = publish.packet_id;
         let tx_ptr = self.tx_buffer.as_ptr() as usize;
+        let packet_id = publish.packet_id;
+        let qos = publish.qos;
         let (packet_offset, packet_len) = {
-            let packet = match self.serialize_publish(publish) {
-                Ok(packet) => packet,
-                Err(PubError::Serialization(err)) => return Err(PubError::Serialization(err)),
-                Err(PubError::Error(err)) => {
-                    return Err(PubError::Error(match err {
-                        Error::Minimq(err) => Error::Minimq(err),
-                        Error::NotReady => Error::NotReady,
-                        Error::SessionReset => Error::SessionReset,
-                        Error::Network(_) => unreachable!(),
-                    }));
-                }
-            };
+            let packet = self.serialize_publish(publish)?;
             if let Err(err) = connection.write_all(packet).await {
                 self.handle_disconnect();
-                return Err(PubError::Error(Error::Network(err)));
+                return Err(PubError::Error(Error::Transport(err.kind())));
             }
             if let Err(err) = connection.flush().await {
                 self.handle_disconnect();
-                return Err(PubError::Error(Error::Network(err)));
+                return Err(PubError::Error(Error::Transport(err.kind())));
             }
             let offset = packet.as_ptr() as usize - tx_ptr;
             (offset, packet.len())
@@ -470,21 +484,18 @@ impl<'buf, const N: usize> MqttClient<'buf, N> {
         Ok(())
     }
 
-    pub async fn maintain<C>(
-        &mut self,
-        connection: &mut C,
-        now_ms: u64,
-    ) -> Result<(), Error<C::Error>>
+    async fn maintain<C>(&mut self, connection: &mut C, now: Instant) -> Result<(), Error>
     where
         C: Read + Write + ErrorType,
+        C::Error: embedded_io_async::Error,
     {
-        if self.state != ClientState::Active {
+        if self.state != State::Active {
             return Ok(());
         }
 
         if self
             .ping_timeout
-            .map(|deadline| now_ms > deadline)
+            .map(|deadline| now >= deadline)
             .unwrap_or(false)
         {
             self.handle_disconnect();
@@ -498,7 +509,7 @@ impl<'buf, const N: usize> MqttClient<'buf, N> {
                 connection
                     .write_all(&self.tx_buffer[..packet.len()])
                     .await
-                    .map_err(Error::Network)?;
+                    .map_err(|err| Error::Transport(err.kind()))?;
             }
 
             let pending_pubrels: Vec<PendingPubrel, MAX_PENDING_PUBREL> =
@@ -519,26 +530,27 @@ impl<'buf, const N: usize> MqttClient<'buf, N> {
 
         if self
             .next_ping
-            .map(|deadline| now_ms > deadline)
+            .map(|deadline| now >= deadline)
             .unwrap_or(false)
         {
             self.write_packet(connection, &PingReq {}).await?;
-            self.ping_timeout = Some(now_ms + PING_TIMEOUT_MS);
-            self.next_ping = Some(now_ms + u64::from(self.keep_alive_interval.0 / 2));
+            self.ping_timeout = Some(now + Duration::from_millis(PING_TIMEOUT_MS));
+            self.next_ping = Some(now + self.keep_alive_interval / 2);
         }
 
         Ok(())
     }
 
-    pub async fn read<C>(
+    async fn read<C>(
         &mut self,
         connection: &mut C,
-        now_ms: u64,
-    ) -> Result<Option<InboundPublish<'_>>, Error<C::Error>>
+        now: Instant,
+    ) -> Result<Option<InboundPublish<'_>>, Error>
     where
         C: Read + Write + ErrorType,
+        C::Error: embedded_io_async::Error,
     {
-        if self.state == ClientState::Disconnected {
+        if self.state == State::Disconnected {
             self.packet_reader.reset();
         }
 
@@ -554,8 +566,12 @@ impl<'buf, const N: usize> MqttClient<'buf, N> {
             let count = match connection.read(buffer).await {
                 Ok(count) => count,
                 Err(err) => {
+                    let kind = err.kind();
+                    if matches!(kind, ErrorKind::TimedOut | ErrorKind::Interrupted) {
+                        return Err(Error::Transport(kind));
+                    }
                     self.handle_disconnect();
-                    return Err(Error::Network(err));
+                    return Err(Error::Transport(kind));
                 }
             };
             if count == 0 {
@@ -571,31 +587,34 @@ impl<'buf, const N: usize> MqttClient<'buf, N> {
             packet_reader.received_packet()?
         };
         info!("Received {:?}", packet);
-        let mut context = PacketContext {
-            tx_buffer: self.tx_buffer,
-            session: &mut self.session,
-            pending_subscriptions: &mut self.pending_subscriptions,
-            state: &mut self.state,
-            keep_alive_interval: &mut self.keep_alive_interval,
-            send_quota: &mut self.send_quota,
-            max_send_quota: &mut self.max_send_quota,
-            maximum_packet_size: &mut self.maximum_packet_size,
-            max_qos: &mut self.max_qos,
-            next_ping: &mut self.next_ping,
-            ping_timeout: &mut self.ping_timeout,
-        };
-        match handle_packet(&mut context, connection, packet, now_ms).await {
-            Err(Error::Network(err)) => {
-                context.mark_disconnected();
-                Err(Error::Network(err))
+        let (result, transport_error) = {
+            let mut ctx = PacketContext {
+                tx_buffer: self.tx_buffer,
+                session: &mut self.session,
+                pending_subscriptions: &mut self.pending_subscriptions,
+                state: &mut self.state,
+                keep_alive_interval: &mut self.keep_alive_interval,
+                send_quota: &mut self.send_quota,
+                max_send_quota: &mut self.max_send_quota,
+                maximum_packet_size: &mut self.maximum_packet_size,
+                max_qos: &mut self.max_qos,
+                next_ping: &mut self.next_ping,
+                ping_timeout: &mut self.ping_timeout,
+            };
+            let result = handle_packet(&mut ctx, connection, packet, now).await;
+            let transport_error = matches!(result, Err(Error::Transport(_)));
+            if transport_error {
+                ctx.mark_disconnected();
             }
-            result => result,
-        }
+            (result, transport_error)
+        };
+        debug_assert!(!transport_error || self.state == State::Disconnected);
+        result
     }
 
     fn handle_disconnect(&mut self) {
         self.session.outbound.mark_reconnect_pending();
-        self.state = ClientState::Disconnected;
+        self.state = State::Disconnected;
         self.packet_reader.reset();
         self.pending_subscriptions.clear();
         self.next_ping = None;
@@ -603,39 +622,28 @@ impl<'buf, const N: usize> MqttClient<'buf, N> {
     }
 
     fn keepalive_seconds(&self) -> u16 {
-        (self.keep_alive_interval.0 / 1000) as u16
+        self.keep_alive_interval.as_secs() as u16
     }
 
-    async fn write_packet<C, T>(
-        &mut self,
-        connection: &mut C,
-        packet: &T,
-    ) -> Result<(), Error<C::Error>>
+    fn reset_reader(&mut self) {
+        self.packet_reader.reset();
+    }
+
+    async fn write_packet<C, T>(&mut self, connection: &mut C, packet: &T) -> Result<(), Error>
     where
         C: Read + Write + ErrorType,
+        C::Error: embedded_io_async::Error,
         T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
     {
-        let bytes = crate::ser::MqttSerializer::to_buffer(self.tx_buffer, packet)
-            .map_err(|err| Error::Minimq(MinimqError::Protocol(err.into())))?;
-        if let Err(err) = connection.write_all(bytes).await {
-            self.handle_disconnect();
-            return Err(Error::Network(err));
-        }
-        if let Err(err) = connection.flush().await {
-            self.handle_disconnect();
-            return Err(Error::Network(err));
-        }
-        Ok(())
+        write_packet(self.tx_buffer, connection, packet).await
     }
 
     fn serialize_publish<P: crate::publication::ToPayload>(
         &mut self,
         packet: Pub<'_, P>,
-    ) -> Result<&[u8], PubError<core::convert::Infallible, P::Error>> {
+    ) -> Result<&[u8], PubError<P::Error>> {
         crate::ser::MqttSerializer::pub_to_buffer(self.tx_buffer, packet).map_err(|err| match err {
-            crate::ser::PubError::Error(err) => {
-                PubError::Error(Error::Minimq(MinimqError::Protocol(err.into())))
-            }
+            crate::ser::PubError::Error(err) => PubError::Error(Error::Protocol(err.into())),
             crate::ser::PubError::Other(err) => PubError::Serialization(err),
         })
     }
@@ -645,20 +653,20 @@ struct PacketContext<'a, 'buf> {
     tx_buffer: &'a mut [u8],
     session: &'a mut SessionState<'buf>,
     pending_subscriptions: &'a mut Vec<u16, MAX_PENDING_SUBSCRIPTIONS>,
-    state: &'a mut ClientState,
-    keep_alive_interval: &'a mut Milliseconds<u32>,
+    state: &'a mut State,
+    keep_alive_interval: &'a mut Duration,
     send_quota: &'a mut u16,
     max_send_quota: &'a mut u16,
     maximum_packet_size: &'a mut Option<u32>,
     max_qos: &'a mut Option<QoS>,
-    next_ping: &'a mut Option<u64>,
-    ping_timeout: &'a mut Option<u64>,
+    next_ping: &'a mut Option<Instant>,
+    ping_timeout: &'a mut Option<Instant>,
 }
 
 impl PacketContext<'_, '_> {
     fn mark_disconnected(&mut self) {
         self.session.outbound.mark_reconnect_pending();
-        *self.state = ClientState::Disconnected;
+        *self.state = State::Disconnected;
         self.pending_subscriptions.clear();
         *self.next_ping = None;
         *self.ping_timeout = None;
@@ -669,10 +677,11 @@ async fn handle_packet<'pkt, 'state, C>(
     cx: &mut PacketContext<'_, 'state>,
     connection: &mut C,
     packet: ReceivedPacket<'pkt>,
-    now_ms: u64,
-) -> Result<Option<InboundPublish<'pkt>>, Error<C::Error>>
+    now: Instant,
+) -> Result<Option<InboundPublish<'pkt>>, Error>
 where
     C: Read + Write + ErrorType,
+    C::Error: embedded_io_async::Error,
 {
     match packet {
         ReceivedPacket::ConnAck(ack) => {
@@ -682,7 +691,7 @@ where
                 cx.pending_subscriptions.clear();
             }
 
-            *cx.send_quota = u16::MAX;
+            *cx.send_quota = cx.session.outbound.max_send_quota();
             *cx.max_send_quota = cx.session.outbound.max_send_quota();
             *cx.max_qos = None;
             *cx.maximum_packet_size = None;
@@ -695,7 +704,7 @@ where
                             .map_err(|_| ProtocolError::ProvidedClientIdTooLong)?;
                     }
                     Property::ServerKeepAlive(keep_alive) => {
-                        *cx.keep_alive_interval = Milliseconds(keep_alive as u32 * 1000);
+                        *cx.keep_alive_interval = Duration::from_secs(keep_alive as u64);
                     }
                     Property::ReceiveMaximum(max) => {
                         let local = cx.session.outbound.max_send_quota();
@@ -710,9 +719,9 @@ where
                 }
             }
 
-            *cx.state = ClientState::Active;
+            *cx.state = State::Active;
             cx.session.register_connected();
-            *cx.next_ping = Some(now_ms + u64::from(cx.keep_alive_interval.0 / 2));
+            *cx.next_ping = Some(now + *cx.keep_alive_interval / 2);
             *cx.ping_timeout = None;
             if cx.session.take_reset() {
                 return Err(Error::SessionReset);
@@ -827,7 +836,7 @@ where
                 }
             }
 
-            *cx.next_ping = Some(now_ms + u64::from(cx.keep_alive_interval.0 / 2));
+            *cx.next_ping = Some(now + *cx.keep_alive_interval / 2);
             return Ok(Some(InboundPublish {
                 topic: info.topic.0,
                 payload: info.payload,
@@ -848,98 +857,75 @@ async fn write_packet<C, T>(
     tx_buffer: &mut [u8],
     connection: &mut C,
     packet: &T,
-) -> Result<(), Error<C::Error>>
+) -> Result<(), Error>
 where
     C: Read + Write + ErrorType,
+    C::Error: embedded_io_async::Error,
     T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
 {
     let bytes = crate::ser::MqttSerializer::to_buffer(tx_buffer, packet)
-        .map_err(|err| Error::Minimq(MinimqError::Protocol(err.into())))?;
-    connection.write_all(bytes).await.map_err(Error::Network)?;
-    connection.flush().await.map_err(Error::Network)?;
+        .map_err(|err| Error::Protocol(err.into()))?;
+    connection
+        .write_all(bytes)
+        .await
+        .map_err(|err| Error::Transport(err.kind()))?;
+    connection
+        .flush()
+        .await
+        .map_err(|err| Error::Transport(err.kind()))?;
     Ok(())
 }
 
-#[derive(Debug)]
-pub enum RunnerError<Connect, Io, Time> {
-    Connect(Connect),
-    Network(Error<Io>),
-    Timer(Time),
-    State,
-}
-
-impl<Connect, Io, Time> From<Error<Io>> for RunnerError<Connect, Io, Time> {
-    fn from(value: Error<Io>) -> Self {
-        Self::Network(value)
-    }
-}
-
-#[derive(Debug)]
-pub enum RunnerPubError<Connect, Io, Time, Serialization> {
-    Publish(PubError<Io, Serialization>),
-    Runner(RunnerError<Connect, Io, Time>),
-}
-
-impl<Connect, Io, Time, Serialization> From<RunnerError<Connect, Io, Time>>
-    for RunnerPubError<Connect, Io, Time, Serialization>
-{
-    fn from(value: RunnerError<Connect, Io, Time>) -> Self {
-        Self::Runner(value)
-    }
-}
-
-#[derive(Debug)]
-pub struct PollOutcome<'a> {
-    pub inbound: Option<InboundPublish<'a>>,
-    pub reconnected: bool,
-}
-
-type RunnerResult<C, T, V> = Result<
-    V,
-    RunnerError<
-        <C as Connector>::ConnectError,
-        <C as Connector>::IoError,
-        <T as Timer>::Error,
-    >,
->;
-
-pub struct Runner<'a, 'buf, C: Connector, T, const N: usize = 253> {
-    client: &'a mut MqttClient<'buf, N>,
+pub struct Session<'a, 'buf, C: Connector> {
+    core: Core<'buf>,
     connector: &'a C,
-    timer: &'a mut T,
     connection: Option<C::Connection<'a>>,
+    connected_once: bool,
 }
 
-impl<'a, 'buf, C, T, const N: usize> Runner<'a, 'buf, C, T, N>
+impl<'a, 'buf, C> Session<'a, 'buf, C>
 where
     C: Connector,
-    T: Timer,
 {
-    pub fn new(
-        client: &'a mut MqttClient<'buf, N>,
-        connector: &'a C,
-        timer: &'a mut T,
-    ) -> Self {
+    pub fn new(config: Config<'buf>, connector: &'a C) -> Self {
         Self {
-            client,
+            core: Core::new(config),
             connector,
-            timer,
             connection: None,
+            connected_once: false,
         }
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.core.is_connected()
+    }
+
+    pub fn can_publish(&mut self, qos: QoS) -> bool {
+        self.core.can_publish(qos)
+    }
+
+    pub fn subscriptions_pending(&self) -> bool {
+        self.core.subscriptions_pending()
+    }
+
+    pub fn pending_messages(&self) -> bool {
+        self.core.pending_messages()
     }
 
     pub async fn subscribe(
         &mut self,
         topics: &[TopicFilter<'_>],
         properties: &[Property<'_>],
-    ) -> RunnerResult<C, T, ()> {
-        self.ensure_connected().await?;
+    ) -> Result<(), Error> {
+        let activated = self.ensure_connected().await?;
+        if activated {
+            self.connected_once = true;
+        }
         let mut connection = self.take_connection()?;
         let result = self
-            .client
+            .core
             .subscribe(&mut connection, topics, properties)
-            .await
-            .map_err(Into::into);
+            .await;
         self.connection = Some(connection);
         result
     }
@@ -947,127 +933,119 @@ where
     pub async fn publish<P>(
         &mut self,
         publication: Publication<'_, P>,
-    ) -> Result<(), RunnerPubError<C::ConnectError, C::IoError, T::Error, P::Error>>
+    ) -> Result<(), PubError<P::Error>>
     where
         P: crate::publication::ToPayload,
     {
-        self.ensure_connected().await?;
-        let mut connection = self.take_connection().map_err(RunnerPubError::Runner)?;
-        let result = self
-            .client
-            .publish(&mut connection, publication)
-            .await
-            .map_err(RunnerPubError::Publish);
+        let activated = self.ensure_connected().await.map_err(PubError::Error)?;
+        if activated {
+            self.connected_once = true;
+        }
+        let mut connection = self.take_connection().map_err(PubError::Error)?;
+        let result = self.core.publish(&mut connection, publication).await;
         self.connection = Some(connection);
         result
     }
 
-    pub async fn poll(
-        &mut self,
-    ) -> RunnerResult<C, T, PollOutcome<'_>> {
+    pub async fn poll(&mut self) -> Result<Event<'_>, Error> {
         let reconnected = self.ensure_connected().await?;
-        let now = self.timer.now().map_err(RunnerError::Timer)?;
-        Ok(PollOutcome {
-            inbound: self.read_or_wait(now).await?,
-            reconnected,
-        })
+        if reconnected {
+            return Ok(if self.connected_once {
+                Event::Reconnected
+            } else {
+                self.connected_once = true;
+                Event::Connected
+            });
+        }
+
+        let now = Instant::now();
+        match self.step(now).await? {
+            Some(inbound) => Ok(Event::Inbound(inbound)),
+            None => Ok(Event::Idle),
+        }
     }
 
-    async fn ensure_connected(
-        &mut self,
-    ) -> RunnerResult<C, T, bool> {
+    async fn ensure_connected(&mut self) -> Result<bool, Error> {
         let mut reconnected = false;
         loop {
-            if self.client.state == ClientState::Disconnected {
+            if self.core.state == State::Disconnected {
+                self.core.reset_reader();
                 self.connection = None;
             }
 
             if self.connection.is_none() {
-                let now = self.timer.now().map_err(RunnerError::Timer)?;
-                let connection = self
-                    .connector
-                    .connect(self.client.broker())
-                    .await
-                    .map_err(RunnerError::Connect)?;
+                let connection = self.connector.connect(self.core.broker()).await?;
                 self.connection = Some(connection);
                 let mut connection = self.take_connection()?;
-                let result = self.client.connect(&mut connection, now).await;
+                let result = self.core.connect(&mut connection).await;
                 self.connection = Some(connection);
                 result?;
                 reconnected = true;
             }
 
-            if self.client.is_connected() {
+            if self.core.is_connected() {
                 return Ok(reconnected);
             }
 
-            let now = self.timer.now().map_err(RunnerError::Timer)?;
-            let _ = self.read_or_wait(now).await?;
+            let now = Instant::now();
+            let _ = self.step(now).await?;
         }
     }
 
-    async fn read_or_wait(
-        &mut self,
-        now: u64,
-    ) -> RunnerResult<C, T, Option<InboundPublish<'_>>> {
+    async fn step(&mut self, now: Instant) -> Result<Option<InboundPublish<'_>>, Error> {
         {
             let mut connection = self.take_connection()?;
-            let result = self.client.maintain(&mut connection, now).await;
+            let result = self.core.maintain(&mut connection, now).await;
             self.connection = Some(connection);
             result?;
         }
 
-        if self.client.state == ClientState::Disconnected {
+        if self.core.state == State::Disconnected {
             self.connection = None;
             return Ok(None);
         }
 
-        let next_message = if let Some(deadline) = self.client.next_deadline() {
+        if let Some(deadline) = self.core.next_deadline() {
             let mut connection = self.take_connection()?;
-            let read = self.client.read(&mut connection, now);
-            let sleep = self.timer.sleep_until(deadline);
-            let result = match select2(read, sleep).await {
-                Either::Left(result) => result?,
-                Either::Right(result) => {
+            let read = self.core.read(&mut connection, now);
+            let result = match select(read, Timer::at(deadline)).await {
+                Either::First(result) => match result {
+                    Ok(result) => result,
+                    Err(Error::Transport(ErrorKind::TimedOut | ErrorKind::Interrupted)) => {
+                        self.connection = Some(connection);
+                        return Ok(None);
+                    }
+                    Err(err) => {
+                        self.connection = Some(connection);
+                        return Err(err);
+                    }
+                },
+                Either::Second(_) => {
                     self.connection = Some(connection);
-                    result.map_err(RunnerError::Timer)?;
                     return Ok(None);
                 }
             };
             self.connection = Some(connection);
-            result
-        } else {
-            let mut connection = self.take_connection()?;
-            let result = self.client.read(&mut connection, now).await?;
-            self.connection = Some(connection);
-            result
+            return Ok(result);
+        }
+
+        let mut connection = self.take_connection()?;
+        let result = match self.core.read(&mut connection, now).await {
+            Ok(result) => result,
+            Err(Error::Transport(ErrorKind::TimedOut | ErrorKind::Interrupted)) => {
+                self.connection = Some(connection);
+                return Ok(None);
+            }
+            Err(err) => {
+                self.connection = Some(connection);
+                return Err(err);
+            }
         };
-
-        Ok(next_message)
+        self.connection = Some(connection);
+        Ok(result)
     }
 
-    fn take_connection(
-        &mut self,
-    ) -> RunnerResult<C, T, C::Connection<'a>> {
-        self.connection.take().ok_or(RunnerError::State)
+    fn take_connection(&mut self) -> Result<C::Connection<'a>, Error> {
+        self.connection.take().ok_or(Error::State)
     }
-}
-
-async fn select2<A, B>(left: A, right: B) -> Either<A::Output, B::Output>
-where
-    A: core::future::Future,
-    B: core::future::Future,
-{
-    let mut left = pin!(left);
-    let mut right = pin!(right);
-    poll_fn(|cx| {
-        if let Poll::Ready(value) = left.as_mut().poll(cx) {
-            return Poll::Ready(Either::Left(value));
-        }
-        if let Poll::Ready(value) = right.as_mut().poll(cx) {
-            return Poll::Ready(Either::Right(value));
-        }
-        Poll::Pending
-    })
-    .await
 }

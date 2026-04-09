@@ -1,34 +1,41 @@
-use crate::Broker;
+use crate::{Broker, Error};
 use core::net::SocketAddr;
-use embedded_io_async::{ErrorType, Read, Write};
-use embedded_nal_async::{AddrType, Dns, TcpConnect};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConnectError<E> {
-    Transport(E),
-    HostnameRequiresDns,
-}
+use embedded_io_async::{Error as _, Read, Write};
+use embedded_nal_async::AddrType;
+use embedded_nal_async::{Dns, TcpConnect};
 
 #[allow(async_fn_in_trait)]
 pub trait Connector {
-    type ConnectError;
-    type IoError;
-    type Connection<'a>: Read + Write + ErrorType<Error = Self::IoError> + 'a
+    type Error: embedded_io_async::Error;
+    type Connection<'a>: Read<Error = Self::Error> + Write<Error = Self::Error> + 'a
     where
         Self: 'a;
 
-    async fn connect<'a, const N: usize>(
-        &'a self,
-        broker: &Broker<N>,
-    ) -> Result<Self::Connection<'a>, Self::ConnectError>;
+    async fn connect<'a>(&'a self, broker: &Broker) -> Result<Self::Connection<'a>, Error>;
 }
 
+impl<T> Connector for &T
+where
+    T: Connector,
+{
+    type Error = T::Error;
+    type Connection<'a>
+        = T::Connection<'a>
+    where
+        Self: 'a;
+
+    async fn connect<'a>(&'a self, broker: &Broker) -> Result<Self::Connection<'a>, Error> {
+        (*self).connect(broker).await
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
 pub struct TcpConnector<T> {
-    stack: T,
+    pub stack: T,
 }
 
 impl<T> TcpConnector<T> {
-    pub fn new(stack: T) -> Self {
+    pub const fn new(stack: T) -> Self {
         Self { stack }
     }
 }
@@ -37,99 +44,95 @@ impl<T> Connector for TcpConnector<T>
 where
     T: TcpConnect,
 {
-    type ConnectError = ConnectError<T::Error>;
-    type IoError = T::Error;
+    type Error = T::Error;
     type Connection<'a>
         = T::Connection<'a>
     where
         Self: 'a;
 
-    async fn connect<'a, const N: usize>(
-        &'a self,
-        broker: &Broker<N>,
-    ) -> Result<Self::Connection<'a>, Self::ConnectError> {
+    async fn connect<'a>(&'a self, broker: &Broker) -> Result<Self::Connection<'a>, Error> {
         let Broker::SocketAddr(addr) = broker else {
-            return Err(ConnectError::HostnameRequiresDns);
+            return Err(Error::Transport(embedded_io_async::ErrorKind::Unsupported));
         };
         self.stack
             .connect(*addr)
             .await
-            .map_err(ConnectError::Transport)
+            .map_err(|err| Error::Transport(err.kind()))
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct DnsTcpConnector<T, D> {
-    stack: T,
-    dns: D,
+    pub stack: T,
+    pub dns: D,
+    pub addr_type: AddrType,
 }
 
 impl<T, D> DnsTcpConnector<T, D> {
-    pub fn new(stack: T, dns: D) -> Self {
-        Self { stack, dns }
+    pub const fn new(stack: T, dns: D, addr_type: AddrType) -> Self {
+        Self {
+            stack,
+            dns,
+            addr_type,
+        }
     }
 }
 
 impl<T, D> Connector for DnsTcpConnector<T, D>
 where
     T: TcpConnect,
-    D: Dns<Error = T::Error>,
+    D: Dns,
 {
-    type ConnectError = ConnectError<T::Error>;
-    type IoError = T::Error;
+    type Error = T::Error;
     type Connection<'a>
         = T::Connection<'a>
     where
         Self: 'a;
 
-    async fn connect<'a, const N: usize>(
-        &'a self,
-        broker: &Broker<N>,
-    ) -> Result<Self::Connection<'a>, Self::ConnectError> {
+    async fn connect<'a>(&'a self, broker: &Broker) -> Result<Self::Connection<'a>, Error> {
         let addr = match broker {
             Broker::SocketAddr(addr) => *addr,
             Broker::Hostname { host, port } => {
                 let ip = self
                     .dns
-                    .get_host_by_name(host.as_str(), AddrType::Either)
+                    .get_host_by_name(host.as_str(), self.addr_type.clone())
                     .await
-                    .map_err(ConnectError::Transport)?;
+                    .map_err(|_| Error::Transport(embedded_io_async::ErrorKind::Other))?;
                 SocketAddr::new(ip, *port)
             }
         };
+
         self.stack
             .connect(addr)
             .await
-            .map_err(ConnectError::Transport)
+            .map_err(|err| Error::Transport(err.kind()))
     }
-}
-
-pub enum Either<L, R> {
-    Left(L),
-    Right(R),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::net::SocketAddr;
-    use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
+    use crate::MQTT_INSECURE_DEFAULT_PORT;
+    use embedded_io_async::{ErrorKind, ErrorType};
+    use embedded_nal_async::AddrType;
+    use std::net::IpAddr;
 
     #[derive(Debug)]
-    struct DummyConnection;
+    struct NeverSocket;
 
-    impl ErrorType for DummyConnection {
+    impl ErrorType for NeverSocket {
         type Error = ErrorKind;
     }
 
-    impl Read for DummyConnection {
+    impl Read for NeverSocket {
         async fn read(&mut self, _buf: &mut [u8]) -> Result<usize, Self::Error> {
             Ok(0)
         }
     }
 
-    impl Write for DummyConnection {
-        async fn write(&mut self, _buf: &[u8]) -> Result<usize, Self::Error> {
-            Ok(0)
+    impl Write for NeverSocket {
+        async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+            Ok(buf.len())
         }
 
         async fn flush(&mut self) -> Result<(), Self::Error> {
@@ -137,43 +140,58 @@ mod tests {
         }
     }
 
-    struct DummyStack;
+    struct NeverStack;
 
-    impl TcpConnect for DummyStack {
+    impl TcpConnect for NeverStack {
         type Error = ErrorKind;
-        type Connection<'a> = DummyConnection;
+        type Connection<'a> = NeverSocket;
 
         async fn connect<'a>(
             &'a self,
             _remote: SocketAddr,
         ) -> Result<Self::Connection<'a>, Self::Error> {
-            Ok(DummyConnection)
+            Ok(NeverSocket)
         }
     }
 
-    fn block_on<F: core::future::Future>(future: F) -> F::Output {
-        use core::task::{Context, Poll, Waker};
-        use std::sync::Arc;
-        struct Noop;
-        impl std::task::Wake for Noop {
-            fn wake(self: Arc<Self>) {}
+    struct NeverDns;
+
+    impl Dns for NeverDns {
+        type Error = ErrorKind;
+
+        async fn get_host_by_name(
+            &self,
+            _host: &str,
+            _addr_type: AddrType,
+        ) -> Result<IpAddr, Self::Error> {
+            Err(ErrorKind::Unsupported)
         }
-        let waker = Waker::from(Arc::new(Noop));
-        let mut cx = Context::from_waker(&waker);
-        let mut future = Box::pin(future);
-        loop {
-            match future.as_mut().poll(&mut cx) {
-                Poll::Ready(value) => return value,
-                Poll::Pending => std::thread::yield_now(),
-            }
+
+        async fn get_host_by_address(
+            &self,
+            _addr: IpAddr,
+            _result: &mut [u8],
+        ) -> Result<usize, Self::Error> {
+            Err(ErrorKind::Unsupported)
         }
     }
 
     #[test]
     fn hostname_requires_dns_error() {
-        let connector = TcpConnector::new(DummyStack);
-        let broker: Broker = Broker::host("broker.example").unwrap();
-        let result = block_on(connector.connect(&broker));
-        assert!(matches!(result, Err(ConnectError::HostnameRequiresDns)));
+        let broker = Broker::hostname("broker", MQTT_INSECURE_DEFAULT_PORT).unwrap();
+        let connector = TcpConnector::new(NeverStack);
+        let result = crate::tests::block_on(async { connector.connect(&broker).await });
+        assert!(matches!(
+            result,
+            Err(Error::Transport(ErrorKind::Unsupported))
+        ));
+    }
+
+    #[test]
+    fn dns_connector_maps_dns_errors() {
+        let broker = Broker::hostname("broker", MQTT_INSECURE_DEFAULT_PORT).unwrap();
+        let connector = DnsTcpConnector::new(NeverStack, NeverDns, AddrType::IPv4);
+        let result = crate::tests::block_on(async { connector.connect(&broker).await });
+        assert!(matches!(result, Err(Error::Transport(ErrorKind::Other))));
     }
 }

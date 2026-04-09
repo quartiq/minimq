@@ -3,10 +3,72 @@ use crate::{
     properties::Property,
     types::{BinaryData, Properties},
 };
+use heapless::{String, Vec};
 
 pub trait ToPayload {
     type Error;
     fn serialize(self, buffer: &mut [u8]) -> Result<usize, Self::Error>;
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct ResponseTarget<'a> {
+    pub(crate) topic: &'a str,
+    pub(crate) correlation_data: Option<&'a [u8]>,
+}
+
+impl<'a> ResponseTarget<'a> {
+    pub fn topic(&self) -> &'a str {
+        self.topic
+    }
+
+    pub fn correlation_data(&self) -> Option<&'a [u8]> {
+        self.correlation_data
+    }
+
+    pub fn publication<P>(self, payload: P) -> Publication<'a, P> {
+        let publication = Publication::new(self.topic, payload);
+        match self.correlation_data {
+            Some(data) => publication.correlate(data),
+            None => publication,
+        }
+    }
+
+    pub fn to_owned<const TOPIC: usize, const CORRELATION: usize>(
+        self,
+    ) -> Result<OwnedResponseTarget<TOPIC, CORRELATION>, ProtocolError> {
+        Ok(OwnedResponseTarget {
+            topic: String::try_from(self.topic).map_err(|_| ProtocolError::BufferSize)?,
+            correlation_data: self
+                .correlation_data
+                .map(Vec::try_from)
+                .transpose()
+                .map_err(|_| ProtocolError::BufferSize)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedResponseTarget<const TOPIC: usize, const CORRELATION: usize> {
+    topic: String<TOPIC>,
+    correlation_data: Option<Vec<u8, CORRELATION>>,
+}
+
+impl<const TOPIC: usize, const CORRELATION: usize> OwnedResponseTarget<TOPIC, CORRELATION> {
+    pub fn topic(&self) -> &str {
+        self.topic.as_str()
+    }
+
+    pub fn correlation_data(&self) -> Option<&[u8]> {
+        self.correlation_data.as_deref()
+    }
+
+    pub fn publication<'a, P>(&'a self, payload: P) -> Publication<'a, P> {
+        let publication = Publication::new(self.topic.as_str(), payload);
+        match self.correlation_data.as_deref() {
+            Some(data) => publication.correlate(data),
+            None => publication,
+        }
+    }
 }
 
 impl ToPayload for &[u8] {
@@ -113,6 +175,14 @@ impl<'a, P> Publication<'a, P> {
             properties: Properties::Slice(&[]),
             retain: Retain::NotRetained,
         }
+    }
+
+    pub fn topic(&self) -> &'a str {
+        self.topic
+    }
+
+    pub fn properties_ref(&self) -> &Properties<'a> {
+        &self.properties
     }
 
     /// Specify the [QoS] of the publication. By default, the QoS is set to [QoS::AtMostOnce].

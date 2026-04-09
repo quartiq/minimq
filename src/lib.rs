@@ -11,7 +11,6 @@ mod properties;
 pub mod publication;
 mod reason_codes;
 mod ser;
-pub mod timer;
 pub mod transport;
 pub mod types;
 mod varint;
@@ -19,14 +18,15 @@ mod will;
 
 pub use broker::Broker;
 pub use config::{BufferLayout, Buffers, Config, ConfigBuilder, ConfigError};
-pub use mqtt_client::{InboundPublish, MqttClient, PollOutcome, Runner, RunnerError, RunnerPubError};
+pub use mqtt_client::{Event, InboundPublish, Session};
 pub use properties::Property;
-pub use publication::Publication;
+pub use publication::{OwnedResponseTarget, Publication, ResponseTarget};
 pub use reason_codes::ReasonCode;
 pub use will::Will;
 
 pub use de::Error as DeError;
 pub use embedded_io_async;
+pub use embedded_io_async::ErrorKind;
 pub use embedded_nal_async;
 pub use ser::Error as SerError;
 
@@ -82,24 +82,22 @@ pub enum ProtocolError {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum PubError<T, E> {
-    Error(Error<T>),
+pub enum PubError<E> {
+    Error(Error),
     Serialization(E),
 }
 
-impl<T, E> From<crate::ser::PubError<E>> for PubError<T, E> {
+impl<E> From<crate::ser::PubError<E>> for PubError<E> {
     fn from(e: crate::ser::PubError<E>) -> Self {
         match e {
             crate::ser::PubError::Other(e) => Self::Serialization(e),
-            crate::ser::PubError::Error(e) => {
-                Self::Error(Error::Minimq(MinimqError::Protocol(ProtocolError::from(e))))
-            }
+            crate::ser::PubError::Error(e) => Self::Error(ProtocolError::from(e).into()),
         }
     }
 }
 
-impl<T, E> From<Error<T>> for PubError<T, E> {
-    fn from(e: Error<T>) -> Self {
+impl<E> From<Error> for PubError<E> {
+    fn from(e: Error) -> Self {
         Self::Error(e)
     }
 }
@@ -122,40 +120,29 @@ impl From<ReasonCode> for ProtocolError {
     }
 }
 
-#[derive(Debug, PartialEq)]
-#[non_exhaustive]
-pub enum MinimqError {
-    Protocol(ProtocolError),
-    Timer,
-}
-
 /// Possible errors encountered during MQTT operation.
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
-pub enum Error<E> {
+pub enum Error {
     NotReady,
+    Disconnected,
     SessionReset,
-    Network(E),
-    Minimq(MinimqError),
+    Protocol(ProtocolError),
+    Transport(ErrorKind),
+    State,
 }
 
-impl<E> From<MinimqError> for Error<E> {
-    fn from(minimq: MinimqError) -> Self {
-        Self::Minimq(minimq)
-    }
-}
-
-impl<E> From<ProtocolError> for Error<E> {
+impl From<ProtocolError> for Error {
     fn from(p: ProtocolError) -> Self {
-        Self::Minimq(p.into())
+        match p {
+            ProtocolError::NotConnected => Self::Disconnected,
+            other => Self::Protocol(other),
+        }
     }
 }
 
-impl From<ProtocolError> for MinimqError {
-    fn from(error: ProtocolError) -> Self {
-        Self::Protocol(error)
-    }
-}
+#[cfg(test)]
+pub(crate) mod tests;
 
 #[doc(hidden)]
 #[cfg(not(feature = "logging"))]

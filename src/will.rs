@@ -3,10 +3,26 @@ use crate::{
     properties::{Property, PropertyIdentifier},
     types::{BinaryData, Properties, Utf8String},
 };
+use heapless::String;
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
+enum Topic<'a> {
+    Borrowed(&'a str),
+    Owned(String<128>),
+}
+
+impl Topic<'_> {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Borrowed(topic) => topic,
+            Self::Owned(topic) => topic.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Will<'a> {
-    topic: &'a str,
+    topic: Topic<'a>,
     data: &'a [u8],
     qos: QoS,
     retained: Retain,
@@ -40,11 +56,24 @@ impl<'a> Will<'a> {
         }
 
         Ok(Self {
-            topic,
+            topic: Topic::Borrowed(topic),
             data,
             properties,
             qos: QoS::AtMostOnce,
             retained: Retain::NotRetained,
+        })
+    }
+
+    /// Construct a new will message with an owned topic.
+    pub fn new_owned(
+        topic: &str,
+        data: &'a [u8],
+        properties: &'a [Property<'a>],
+    ) -> Result<Self, ProtocolError> {
+        let topic = String::try_from(topic).map_err(|_| ProtocolError::BufferSize)?;
+        Self::new("", data, properties).map(|mut will| {
+            will.topic = Topic::Owned(topic);
+            will
         })
     }
 
@@ -78,7 +107,7 @@ impl serde::Serialize for Will<'_> {
 
         let mut item = serializer.serialize_struct("Will", 0)?;
         item.serialize_field("properties", &Properties::Slice(self.properties))?;
-        item.serialize_field("topic", &Utf8String(self.topic))?;
+        item.serialize_field("topic", &Utf8String(self.topic.as_str()))?;
         item.serialize_field("data", &BinaryData(self.data))?;
         item.end()
     }

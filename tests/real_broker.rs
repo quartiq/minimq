@@ -3,21 +3,20 @@ mod support;
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use embedded_nal_async::{AddrType, Dns, TcpConnect};
 use minimq::{
-    Broker, Buffers, ConfigBuilder, Error, MqttClient, Publication, QoS,
-    transport::{Connector, DnsTcpConnector, TcpConnector},
+    Broker, Buffers, ConfigBuilder, Error, Event, Publication, QoS, Session,
+    transport::{DnsTcpConnector, TcpConnector},
     types::TopicFilter,
 };
-use support::block_on;
 use std::{
     io,
     net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use support::block_on;
 
 const BROKER_ADDR_ENV: &str = "MINIMQ_REAL_BROKER_ADDR";
 const BROKER_HOST_ENV: &str = "MINIMQ_REAL_BROKER_HOST";
 const IO_TIMEOUT: Duration = Duration::from_millis(200);
-const STEP_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 struct StdConnection(TcpStream);
@@ -74,22 +73,28 @@ impl StdStack {
     fn new(io_timeout: Duration) -> Self {
         Self { io_timeout }
     }
-
-    fn connect_stream(&self, remote: SocketAddr) -> Result<StdConnection, io::Error> {
-        let stream = TcpStream::connect_timeout(&remote, STEP_TIMEOUT)?;
-        stream.set_read_timeout(Some(self.io_timeout))?;
-        stream.set_write_timeout(Some(STEP_TIMEOUT))?;
-        stream.set_nodelay(true)?;
-        Ok(StdConnection(stream))
-    }
 }
 
 impl TcpConnect for StdStack {
     type Error = ErrorKind;
     type Connection<'a> = StdConnection;
 
-    async fn connect<'a>(&'a self, remote: SocketAddr) -> Result<Self::Connection<'a>, Self::Error> {
-        self.connect_stream(remote).map_err(|err| io_kind(err.kind()))
+    async fn connect<'a>(
+        &'a self,
+        remote: SocketAddr,
+    ) -> Result<Self::Connection<'a>, Self::Error> {
+        let stream = TcpStream::connect_timeout(&remote, Duration::from_secs(5))
+            .map_err(|err| io_kind(err.kind()))?;
+        stream
+            .set_read_timeout(Some(self.io_timeout))
+            .map_err(|err| io_kind(err.kind()))?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .map_err(|err| io_kind(err.kind()))?;
+        stream
+            .set_nodelay(true)
+            .map_err(|err| io_kind(err.kind()))?;
+        Ok(StdConnection(stream))
     }
 }
 
@@ -97,27 +102,32 @@ impl TcpConnect for StdStack {
 struct StdDns;
 
 impl Dns for StdDns {
-    type Error = ErrorKind;
+    type Error = io::ErrorKind;
 
-    async fn get_host_by_name(&self, host: &str, _addr_type: AddrType) -> Result<IpAddr, Self::Error> {
+    async fn get_host_by_name(
+        &self,
+        host: &str,
+        _addr_type: AddrType,
+    ) -> Result<IpAddr, Self::Error> {
         (host, 0)
             .to_socket_addrs()
-            .map_err(|err| io_kind(err.kind()))?
+            .map_err(|err| err.kind())?
             .next()
             .map(|addr| addr.ip())
-            .ok_or(ErrorKind::NotFound)
+            .ok_or(io::ErrorKind::NotFound)
     }
 
-    async fn get_host_by_address(&self, _addr: IpAddr, _result: &mut [u8]) -> Result<usize, Self::Error> {
-        Err(ErrorKind::Unsupported)
+    async fn get_host_by_address(
+        &self,
+        _addr: IpAddr,
+        _result: &mut [u8],
+    ) -> Result<usize, Self::Error> {
+        Err(io::ErrorKind::Unsupported)
     }
 }
 
 fn socket_broker() -> Option<SocketAddr> {
-    let raw = match std::env::var(BROKER_ADDR_ENV) {
-        Ok(raw) => raw,
-        Err(_) => return None,
-    };
+    let raw = std::env::var(BROKER_ADDR_ENV).ok()?;
     Some(
         raw.parse()
             .unwrap_or_else(|_| panic!("invalid {BROKER_ADDR_ENV} value: {raw}")),
@@ -126,14 +136,6 @@ fn socket_broker() -> Option<SocketAddr> {
 
 fn hostname_broker() -> Option<String> {
     std::env::var(BROKER_HOST_ENV).ok()
-}
-
-fn now_ms(start: Instant) -> u64 {
-    start.elapsed().as_millis() as u64
-}
-
-fn timed_out(err: ErrorKind) -> bool {
-    err == ErrorKind::TimedOut
 }
 
 fn unique_client_id(label: &str) -> String {
@@ -152,137 +154,67 @@ fn unique_topic() -> String {
     format!("minimq/test/{nanos}")
 }
 
-fn client(broker: Broker, client_id: &str) -> MqttClient<'static> {
+fn config(broker: Broker, client_id: &str) -> minimq::Config<'static> {
     let rx = Box::leak(Box::new([0; 1024]));
     let tx = Box::leak(Box::new([0; 1024]));
     let inflight = Box::leak(Box::new([0; 1024]));
-    MqttClient::new(
-        ConfigBuilder::new(broker, Buffers { rx, tx, inflight })
-            .client_id(client_id)
-            .unwrap()
-            .build(),
-    )
+    ConfigBuilder::new(broker, Buffers { rx, tx, inflight })
+        .client_id(client_id)
+        .unwrap()
+        .build()
 }
 
-fn connect_client<C>(client: &mut MqttClient<'static>, connection: &mut C, start: Instant)
+fn poll_until_ready<C>(
+    session: &mut Session<'_, 'static, C>,
+    want_inbound: bool,
+) -> Option<(String, Vec<u8>, QoS)>
 where
-    C: Read + Write + ErrorType<Error = ErrorKind>,
+    C: minimq::transport::Connector,
 {
-    block_on(client.connect(connection, now_ms(start))).unwrap();
-    let deadline = Instant::now() + STEP_TIMEOUT;
-    while !client.is_connected() {
-        match block_on(client.read(connection, now_ms(start))) {
-            Ok(None) => {}
-            Ok(Some(_)) => panic!("unexpected publish during connect"),
-            Err(Error::Network(err)) if timed_out(err) => {
-                assert!(Instant::now() < deadline, "timed out waiting for CONNACK");
+    for _ in 0..200 {
+        match block_on(session.poll()) {
+            Ok(Event::Idle | Event::Connected | Event::Reconnected) if !want_inbound => {
+                return None;
             }
-            Err(err) => panic!("connect failed: {err:?}"),
-        }
-    }
-}
-
-fn subscribe_topic<C>(
-    client: &mut MqttClient<'static>,
-    connection: &mut C,
-    topic: &str,
-    start: Instant,
-) where
-    C: Read + Write + ErrorType<Error = ErrorKind>,
-{
-    let topics = [TopicFilter::new(topic)];
-    block_on(client.subscribe(connection, &topics, &[])).unwrap();
-
-    let deadline = Instant::now() + STEP_TIMEOUT;
-    while client.subscriptions_pending() {
-        match block_on(client.read(connection, now_ms(start))) {
-            Ok(None) => {}
-            Ok(Some(_)) => panic!("unexpected publish while awaiting SUBACK"),
-            Err(Error::Network(err)) if timed_out(err) => {
-                assert!(Instant::now() < deadline, "timed out waiting for SUBACK");
-            }
-            Err(err) => panic!("subscribe failed: {err:?}"),
-        }
-    }
-}
-
-fn publish_qos1<C>(
-    client: &mut MqttClient<'static>,
-    connection: &mut C,
-    topic: &str,
-    payload: &[u8],
-    start: Instant,
-) where
-    C: Read + Write + ErrorType<Error = ErrorKind>,
-{
-    block_on(client.publish(
-        connection,
-        Publication::new(topic, payload).qos(QoS::AtLeastOnce),
-    ))
-    .unwrap();
-
-    let deadline = Instant::now() + STEP_TIMEOUT;
-    while client.pending_messages() {
-        match block_on(client.read(connection, now_ms(start))) {
-            Ok(None) => {}
-            Ok(Some(_)) => panic!("publisher unexpectedly received a publish"),
-            Err(Error::Network(err)) if timed_out(err) => {
-                assert!(Instant::now() < deadline, "timed out waiting for PUBACK");
-            }
-            Err(err) => panic!("publish did not complete: {err:?}"),
-        }
-    }
-}
-
-fn await_publish<C>(
-    client: &mut MqttClient<'static>,
-    connection: &mut C,
-    start: Instant,
-) -> (String, Vec<u8>, QoS)
-where
-    C: Read + Write + ErrorType<Error = ErrorKind>,
-{
-    let deadline = Instant::now() + STEP_TIMEOUT;
-    loop {
-        match block_on(client.read(connection, now_ms(start))) {
-            Ok(Some(message)) => {
-                return (
+            Ok(Event::Inbound(message)) if want_inbound => {
+                return Some((
                     message.topic.to_string(),
                     message.payload.to_vec(),
                     message.qos,
-                );
+                ));
             }
-            Ok(None) => {}
-            Err(Error::Network(err)) if timed_out(err) => {
-                assert!(Instant::now() < deadline, "timed out waiting for publish");
-            }
-            Err(err) => panic!("read failed: {err:?}"),
+            Ok(_) => {}
+            Err(Error::Transport(ErrorKind::TimedOut | ErrorKind::Interrupted)) => {}
+            Err(err) => panic!("session poll failed: {err:?}"),
         }
     }
+    panic!("timed out waiting for broker activity");
 }
 
 fn assert_roundtrip<C>(
-    subscriber: &mut MqttClient<'static>,
-    publisher: &mut MqttClient<'static>,
+    subscriber: &mut Session<'_, 'static, C>,
+    publisher: &mut Session<'_, 'static, C>,
     topic: &str,
     payload: &[u8],
-    start: Instant,
-    subscriber_connector: C,
-    publisher_connector: C,
 ) where
-    C: Connector<IoError = ErrorKind>,
-    C::ConnectError: core::fmt::Debug,
+    C: minimq::transport::Connector,
 {
-    let mut subscriber_connection = block_on(subscriber_connector.connect(subscriber.broker())).unwrap();
-    let mut publisher_connection = block_on(publisher_connector.connect(publisher.broker())).unwrap();
+    assert!(matches!(
+        block_on(subscriber.poll()).unwrap(),
+        Event::Connected
+    ));
+    let topics = [TopicFilter::new(topic)];
+    block_on(subscriber.subscribe(&topics, &[])).unwrap();
+    let _ = poll_until_ready(subscriber, false);
 
-    connect_client(subscriber, &mut subscriber_connection, start);
-    subscribe_topic(subscriber, &mut subscriber_connection, topic, start);
-    connect_client(publisher, &mut publisher_connection, start);
-    publish_qos1(publisher, &mut publisher_connection, topic, payload, start);
+    assert!(matches!(
+        block_on(publisher.poll()).unwrap(),
+        Event::Connected
+    ));
+    block_on(publisher.publish(Publication::new(topic, payload).qos(QoS::AtLeastOnce))).unwrap();
 
     let (received_topic, received_payload, received_qos) =
-        await_publish(subscriber, &mut subscriber_connection, start);
+        poll_until_ready(subscriber, true).expect("publish");
     assert_eq!(received_topic, topic);
     assert_eq!(received_payload, payload);
     assert_eq!(received_qos, QoS::AtLeastOnce);
@@ -295,20 +227,22 @@ fn real_broker_qos1_roundtrip_over_tcp_connector() {
         return;
     };
 
-    let mut subscriber = client(Broker::socket_addr(addr), &unique_client_id("sub"));
-    let mut publisher = client(Broker::socket_addr(addr), &unique_client_id("pub"));
+    let connector = TcpConnector::new(StdStack::new(IO_TIMEOUT));
+    let mut subscriber = Session::new(
+        config(Broker::socket_addr(addr), &unique_client_id("sub")),
+        &connector,
+    );
+    let mut publisher = Session::new(
+        config(Broker::socket_addr(addr), &unique_client_id("pub")),
+        &connector,
+    );
     let topic = unique_topic();
-    let payload = b"hello from minimq";
-    let start = Instant::now();
 
     assert_roundtrip(
         &mut subscriber,
         &mut publisher,
         &topic,
-        payload,
-        start,
-        TcpConnector::new(StdStack::new(IO_TIMEOUT)),
-        TcpConnector::new(StdStack::new(IO_TIMEOUT)),
+        b"hello from minimq",
     );
 }
 
@@ -319,25 +253,18 @@ fn real_broker_qos1_roundtrip_over_dns_connector() {
         return;
     };
 
-    let mut broker = Broker::host(&host).unwrap();
-    let port = socket_broker().map(|addr| addr.port()).unwrap_or(1883);
-    broker.set_port(port);
-
-    let mut subscriber = client(broker.clone(), &unique_client_id("dns-sub"));
-    let mut publisher = client(broker, &unique_client_id("dns-pub"));
-    let topic = unique_topic();
-    let payload = b"hello over dns";
-    let start = Instant::now();
-
-    let stack = StdStack::new(IO_TIMEOUT);
-    let dns = StdDns;
-    assert_roundtrip(
-        &mut subscriber,
-        &mut publisher,
-        &topic,
-        payload,
-        start,
-        DnsTcpConnector::new(stack, dns),
-        DnsTcpConnector::new(stack, dns),
+    let broker = Broker::hostname(
+        &host,
+        socket_broker().map(|addr| addr.port()).unwrap_or(1883),
+    )
+    .unwrap();
+    let connector = DnsTcpConnector::new(StdStack::new(IO_TIMEOUT), StdDns, AddrType::IPv4);
+    let mut subscriber = Session::new(
+        config(broker.clone(), &unique_client_id("dns-sub")),
+        &connector,
     );
+    let mut publisher = Session::new(config(broker, &unique_client_id("dns-pub")), &connector);
+    let topic = unique_topic();
+
+    assert_roundtrip(&mut subscriber, &mut publisher, &topic, b"hello over dns");
 }

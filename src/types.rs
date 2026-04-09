@@ -45,6 +45,16 @@ impl Properties<'_> {
     }
 }
 
+impl<'a> Properties<'a> {
+    pub fn response_topic(&'a self) -> Option<&'a str> {
+        self.into_iter().response_topic()
+    }
+
+    pub fn correlation_data(&'a self) -> Option<&'a [u8]> {
+        self.into_iter().correlation_data()
+    }
+}
+
 /// Used to progressively iterate across binary property blocks, deserializing them along the way.
 pub struct PropertiesIter<'a> {
     inner: PropertiesIterInner<'a>,
@@ -72,6 +82,16 @@ impl<'a> PropertiesIter<'a> {
         self.find_map(|prop| {
             if let Ok(crate::Property::ResponseTopic(topic)) = prop {
                 Some(topic.0)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn correlation_data(&mut self) -> Option<&'a [u8]> {
+        self.find_map(|prop| {
+            if let Ok(crate::Property::CorrelationData(data)) = prop {
+                Some(data.0)
             } else {
                 None
             }

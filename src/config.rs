@@ -1,5 +1,5 @@
 use crate::{Broker, ProtocolError, Will, types::Auth};
-use embedded_time::duration::{Extensions, Milliseconds};
+use embassy_time::Duration;
 use heapless::String;
 
 #[derive(Debug)]
@@ -36,43 +36,43 @@ pub enum ConfigError {
 }
 
 #[derive(Debug)]
-pub struct Config<'a, const N: usize = 253> {
-    pub(crate) broker: Broker<N>,
+pub struct Config<'a> {
+    pub(crate) broker: Broker,
     pub(crate) buffers: Buffers<'a>,
     pub(crate) will: Option<Will<'a>>,
     pub(crate) client_id: String<64>,
-    pub(crate) keepalive_interval: Milliseconds<u32>,
+    pub(crate) keepalive_interval: Duration,
     pub(crate) downgrade_qos: bool,
     pub(crate) auth: Option<Auth<'a>>,
 }
 
 /// Configuration specifying the operational state of the MQTT client.
 #[derive(Debug)]
-pub struct ConfigBuilder<'a, const N: usize = 253> {
-    broker: Broker<N>,
+pub struct ConfigBuilder<'a> {
+    broker: Broker,
     buffers: Buffers<'a>,
     will: Option<Will<'a>>,
     client_id: String<64>,
-    keepalive_interval: Milliseconds<u32>,
+    keepalive_interval: Duration,
     downgrade_qos: bool,
     auth: Option<Auth<'a>>,
 }
 
-impl<'a, const N: usize> ConfigBuilder<'a, N> {
-    pub fn new(broker: Broker<N>, buffers: Buffers<'a>) -> Self {
+impl<'a> ConfigBuilder<'a> {
+    pub fn new(broker: Broker, buffers: Buffers<'a>) -> Self {
         Self {
             broker,
             buffers,
             will: None,
             client_id: String::new(),
             auth: None,
-            keepalive_interval: 59_000.milliseconds(),
+            keepalive_interval: Duration::from_secs(59),
             downgrade_qos: false,
         }
     }
 
     pub fn from_buffer_layout(
-        broker: Broker<N>,
+        broker: Broker,
         buffer: &'a mut [u8],
         layout: BufferLayout,
     ) -> Result<Self, ConfigError> {
@@ -103,7 +103,7 @@ impl<'a, const N: usize> ConfigBuilder<'a, N> {
     }
 
     pub fn keepalive_interval(mut self, seconds: u16) -> Self {
-        self.keepalive_interval = Milliseconds(seconds as u32 * 1000);
+        self.keepalive_interval = Duration::from_secs(seconds as u64);
         self
     }
 
@@ -120,7 +120,7 @@ impl<'a, const N: usize> ConfigBuilder<'a, N> {
         Ok(self)
     }
 
-    pub fn build(self) -> Config<'a, N> {
+    pub fn build(self) -> Config<'a> {
         Config {
             broker: self.broker,
             buffers: self.buffers,

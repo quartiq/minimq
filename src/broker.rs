@@ -5,19 +5,29 @@ use core::{
 };
 use heapless::String;
 
+const HOST_CAPACITY: usize = 253;
+
 /// MQTT broker endpoint configuration.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Broker<const N: usize = 253> {
+pub enum Broker {
     SocketAddr(SocketAddr),
-    Hostname { host: String<N>, port: u16 },
+    Hostname {
+        host: String<HOST_CAPACITY>,
+        port: u16,
+    },
 }
 
-impl<const N: usize> Broker<N> {
-    pub fn host(host: &str) -> Result<Self, &'static str> {
+impl Broker {
+    pub fn hostname(host: &str, port: u16) -> Result<Self, &'static str> {
         Ok(Self::Hostname {
             host: String::try_from(host).map_err(|_| "Broker hostname too long")?,
-            port: MQTT_INSECURE_DEFAULT_PORT,
+            port,
         })
+    }
+
+    pub fn host(host: &str) -> Result<Self, &'static str> {
+        Self::hostname(host, MQTT_INSECURE_DEFAULT_PORT)
     }
 
     pub fn socket_addr(addr: SocketAddr) -> Self {

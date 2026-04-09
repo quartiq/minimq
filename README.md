@@ -4,11 +4,12 @@
 # Minimq
 
 Minimq provides a minimal MQTTv5 client and message parsing for the MQTT version 5 protocol. It
-now separates MQTT session logic from transport setup. The core client uses explicit caller-owned
-buffers and async byte streams via
+now centers on a single long-lived `Session` that owns reconnects, connection state, and timing.
+The client uses explicit caller-owned buffers and async byte streams via
 [`embedded-io-async`](https://docs.rs/embedded-io-async/latest/embedded_io_async/), while the
 provided transport adapters target
-[`embedded-nal-async`](https://docs.rs/embedded-nal-async/latest/embedded_nal_async/).
+[`embedded-nal-async`](https://docs.rs/embedded-nal-async/latest/embedded_nal_async/) and timing
+is driven by [`embassy-time`](https://docs.rs/embassy-time/latest/embassy_time/).
 
 Minimq provides a simple, `no_std` interface to connect to an MQTT broker to publish messages and
 subscribe to topics.
@@ -37,10 +38,9 @@ the `ResponseTopic` and `CorrelationData` properties for in-bound and out-bound 
 
 The crate is split into:
 
-* MQTT client/session logic
+* MQTT session logic
 * Broker endpoint configuration
 * Async transport adapters
-* A stateful async runner that owns reconnect and socket lifecycle
 
 The main configuration surface takes explicit buffers:
 
@@ -51,13 +51,24 @@ The main configuration surface takes explicit buffers:
 If a single shared byte slab is still convenient for a target, use `BufferLayout::split()` as a
 fallible helper instead of building layout assumptions into the client API.
 
-`Runner` owns the live transport connection. Call `poll()` to drive reconnect, keepalive, and
-inbound message delivery. It returns a `PollOutcome` with:
+`Session` owns the live transport connection. Call `poll()` to drive reconnect, keepalive, and
+inbound message delivery. It returns:
 
-* `inbound` for the next received publish, if any
-* `reconnected` when this call established or re-established an active session
+* `Event::Connected` when this call establishes the first active session
+* `Event::Reconnected` when this call established or re-established an active session
+* `Event::Inbound(_)` for the next received publish
+* `Event::Idle` when no application-visible work was produced
 
-Call `publish()` / `subscribe()` on the runner after the borrowed inbound message has been dropped.
+Call `publish()` / `subscribe()` directly on the session after the borrowed inbound message has
+been dropped.
+
+For request/response patterns, [`InboundPublish`] also exposes MQTT-level helpers for
+`ResponseTopic` and `CorrelationData`, plus `reply()` / `response_target()` to build replies
+without re-parsing properties in the application layer.
+
+For RTIC or other non-Embassy executors, enable an `embassy-time` `generic-queue-*` feature in
+the final binary crate together with an `embassy-stm32` `time-driver-*` feature. `minimq` does
+not choose the timer queue feature itself.
 
 ## Examples
 
