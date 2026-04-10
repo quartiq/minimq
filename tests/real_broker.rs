@@ -5,7 +5,7 @@ use embedded_nal_async::AddrType;
 use minimq::{
     Broker, Buffers, ConfigBuilder, Error, Event, Publication, QoS, Session,
     transport::{DnsTcpConnector, TcpConnector},
-    types::TopicFilter,
+    types::{SubscriptionOptions, TopicFilter},
 };
 use std::{
     net::SocketAddr,
@@ -93,7 +93,8 @@ fn assert_roundtrip<'a, C>(
         block_on(subscriber.poll()).unwrap(),
         Event::Connected
     ));
-    let topics = [TopicFilter::new(topic)];
+    let topics = [TopicFilter::new(topic)
+        .options(SubscriptionOptions::default().maximum_qos(QoS::AtLeastOnce))];
     block_on(subscriber.subscribe(&topics, &[])).unwrap();
     let _ = poll_until_ready(subscriber, false);
 

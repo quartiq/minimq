@@ -261,6 +261,12 @@ mod tests {
         let expected: HVec<_, 4> = HVec::from_slice(&[Ok(correlation), Ok(props[0])]).unwrap();
         assert_eq!(values, expected);
     }
+
+    #[test]
+    fn default_subscription_options_cap_inbound_qos_to_at_most_once() {
+        let filter = TopicFilter::new("demo/in");
+        assert_eq!(filter.options.maximum_qos, QoS::AtMostOnce);
+    }
 }
 
 impl<'de> serde::de::Deserialize<'de> for BinaryData<'de> {
