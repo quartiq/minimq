@@ -3,14 +3,14 @@
 
 # Minimq
 
-`minimq` is a small `no_std` MQTT v5 client for embedded systems.
+`minimq` is a small `no_std`, no-alloc, `async` MQTT v5 client for embedded systems.
 
 It is built for applications that want:
 
 - one long-lived MQTT session object with automatic reconnect
 - explicit caller-owned buffers
 - async transport over [`embedded_io_async`]
-- MQTT request/reply support without extra glue
+- MQTT5 request/reply support without extra glue
 
 The main API is [`Session`].
 
@@ -18,7 +18,7 @@ The main API is [`Session`].
 
 - MQTT v5 publish and subscribe
 - QoS 0, 1, and 2 for outgoing publishes
-- reconnect and session resumption
+- will, reconnect and session resumption
 - anonymous and plain text authentication
 - retained publishes and will messages
 - explicit connection lifecycle events

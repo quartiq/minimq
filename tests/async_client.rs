@@ -134,6 +134,21 @@ fn connack_receive_max(max: u16) -> [u8; 8] {
     ]
 }
 
+fn connack_max_packet_size(max: u32) -> [u8; 10] {
+    [
+        0x20,
+        0x08,
+        0x00,
+        0x00,
+        0x05,
+        0x27,
+        (max >> 24) as u8,
+        (max >> 16) as u8,
+        (max >> 8) as u8,
+        max as u8,
+    ]
+}
+
 fn puback(id: u16) -> [u8; 4] {
     [0x40, 0x02, (id >> 8) as u8, id as u8]
 }
@@ -168,6 +183,10 @@ fn disconnect() -> [u8; 4] {
 
 fn suback(id: u16, code: u8) -> [u8; 6] {
     [0x90, 0x04, (id >> 8) as u8, id as u8, 0x00, code]
+}
+
+fn unsuback(id: u16, code: u8) -> [u8; 6] {
+    [0xB0, 0x04, (id >> 8) as u8, id as u8, 0x00, code]
 }
 
 fn pingreq() -> [u8; 2] {
@@ -637,6 +656,133 @@ fn poll_reports_reconnect() {
         block_on(session.poll()).unwrap(),
         Event::Connected
     ));
+}
+
+#[test]
+fn connect_uses_configured_session_expiry_interval() {
+    let mut connection = MockConnection::default();
+    let inspect = connection.clone();
+    connection.push_rx(&connack());
+    let connector = MockConnector::new(connection);
+    let broker = "127.0.0.1:1883"
+        .parse::<std::net::SocketAddr>()
+        .unwrap()
+        .into();
+    let mut session = Session::new(
+        ConfigBuilder::new(
+            broker,
+            Buffers {
+                rx: Box::leak(Box::new([0; 128])),
+                outbound: Box::leak(Box::new([0; 1152])),
+            },
+        )
+        .client_id("test")
+        .unwrap()
+        .session_expiry_interval(7)
+        .build(),
+        &connector,
+    );
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    assert!(
+        inspect
+            .tx()
+            .first()
+            .unwrap()
+            .windows(5)
+            .any(|window| window == [0x11, 0x00, 0x00, 0x00, 0x07])
+    );
+}
+
+#[test]
+fn publish_rejects_packets_larger_than_broker_maximum() {
+    let mut connection = MockConnection::default();
+    let inspect = connection.clone();
+    connection.push_rx(&connack_max_packet_size(8));
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    let result = block_on(session.publish(Publication::new("data", b"x")));
+    assert!(matches!(
+        result,
+        Err(PubError::Error(Error::Protocol(ProtocolError::Failed(
+            minimq::ReasonCode::PacketTooLarge
+        ))))
+    ));
+    assert_eq!(inspect.tx().len(), 1);
+}
+
+#[test]
+fn unsubscribe_replays_until_unsuback() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.push_rx(&disconnect());
+
+    let mut second = MockConnection::default();
+    let inspect = second.clone();
+    second.push_rx(&connack_session_present());
+    second.push_rx(&unsuback(1, 0x00));
+
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config(), &connector);
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    block_on(session.unsubscribe(&["data"], &[])).unwrap();
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Reconnected
+    ));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+
+    assert_eq!(
+        inspect.tx().last().unwrap(),
+        &vec![
+            0xAA, 0x09, 0x00, 0x01, 0x00, 0x00, 0x04, b'd', b'a', b't', b'a'
+        ]
+    );
+}
+
+#[test]
+fn unsubscribe_rejects_packets_larger_than_broker_maximum() {
+    let mut connection = MockConnection::default();
+    let inspect = connection.clone();
+    connection.push_rx(&connack_max_packet_size(8));
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    let result = block_on(session.unsubscribe(&["data"], &[]));
+    assert!(matches!(
+        result,
+        Err(Error::Protocol(ProtocolError::Failed(
+            minimq::ReasonCode::PacketTooLarge
+        )))
+    ));
+    assert_eq!(inspect.tx().len(), 1);
+}
+
+#[test]
+fn subscribe_rejects_packets_larger_than_broker_maximum() {
+    let mut connection = MockConnection::default();
+    let inspect = connection.clone();
+    connection.push_rx(&connack_max_packet_size(8));
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    let result = block_on(session.subscribe(&[minimq::types::TopicFilter::new("data")], &[]));
+    assert!(matches!(
+        result,
+        Err(Error::Protocol(ProtocolError::Failed(
+            minimq::ReasonCode::PacketTooLarge
+        )))
+    ));
+    assert_eq!(inspect.tx().len(), 1);
 }
 
 #[test]

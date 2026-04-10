@@ -119,6 +119,38 @@ pub struct Subscribe<'a> {
     pub topics: &'a [TopicFilter<'a>],
 }
 
+#[derive(Debug)]
+pub struct Unsubscribe<'a> {
+    pub packet_id: u16,
+    pub dup: bool,
+    pub properties: Properties<'a>,
+    pub topics: &'a [&'a str],
+}
+
+impl serde::Serialize for Unsubscribe<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut item = serializer.serialize_struct("Unsubscribe", 0)?;
+        item.serialize_field("packet_id", &self.packet_id)?;
+        item.serialize_field("properties", &self.properties)?;
+        item.serialize_field("topics", &TopicFilters(self.topics))?;
+        item.end()
+    }
+}
+
+struct TopicFilters<'a>(&'a [&'a str]);
+
+impl serde::Serialize for TopicFilters<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for topic in self.0 {
+            seq.serialize_element(&Utf8String(topic))?;
+        }
+        seq.end()
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct PingReq;
 
@@ -136,6 +168,16 @@ pub struct PubAck<'a> {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct SubAck<'a> {
+    pub packet_identifier: u16,
+    #[serde(borrow)]
+    pub properties: Properties<'a>,
+    #[serde(skip)]
+    pub codes: &'a [u8],
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct UnsubAck<'a> {
     pub packet_identifier: u16,
     #[serde(borrow)]
     pub properties: Properties<'a>,
@@ -286,6 +328,29 @@ mod tests {
         let message = MqttSerializer::to_buffer(&mut buffer, &subscribe).unwrap();
 
         assert_eq!(message, good_subscribe);
+    }
+
+    #[test]
+    fn serialize_unsubscribe() {
+        let good_unsubscribe: [u8; 10] = [
+            0xA2, // Unsubscribe request
+            0x08, // Remaining length (8)
+            0x00, 0x10, // Packet identifier (16)
+            0x00, // Property length
+            0x00, 0x03, 0x41, 0x42, 0x43, // Topic: ABC
+        ];
+
+        let unsubscribe = crate::packets::Unsubscribe {
+            packet_id: 16,
+            dup: false,
+            properties: crate::types::Properties::Slice(&[]),
+            topics: &["ABC"],
+        };
+
+        let mut buffer: [u8; 900] = [0; 900];
+        let message = MqttSerializer::to_buffer(&mut buffer, &unsubscribe).unwrap();
+
+        assert_eq!(message, good_unsubscribe);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::de::PacketReader;
-use crate::packets::{Connect, PingReq, Pub, PubRel, Subscribe};
+use crate::packets::{Connect, PingReq, Pub, PubRel, Subscribe, Unsubscribe};
 use crate::types::{Auth, Properties, TopicFilter, Utf8String};
 use crate::will::WillSpec;
 use crate::{Broker, Config, Error, Property, ProtocolError, PubError, QoS, debug, info};
@@ -115,6 +115,7 @@ pub(super) struct Core<'buf> {
     runtime: RuntimeState,
     will: Option<WillSpec<'buf>>,
     auth: Option<Auth<'buf>>,
+    session_expiry_interval: u32,
     downgrade_qos: bool,
 }
 
@@ -126,6 +127,7 @@ impl<'buf> Core<'buf> {
             will,
             client_id,
             keepalive_interval,
+            session_expiry_interval,
             downgrade_qos,
             auth,
         } = config;
@@ -138,6 +140,7 @@ impl<'buf> Core<'buf> {
             runtime: RuntimeState::new(keepalive_interval),
             will,
             auth,
+            session_expiry_interval,
             downgrade_qos,
         }
     }
@@ -176,7 +179,7 @@ impl<'buf> Core<'buf> {
         let client_id = self.client_id.clone();
         let properties = [
             Property::MaximumPacketSize(self.packet_reader.buffer.len() as u32),
-            Property::SessionExpiryInterval(u32::MAX),
+            Property::SessionExpiryInterval(self.session_expiry_interval),
             Property::ReceiveMaximum(self.session.pending_server_packet_ids.capacity() as u16),
         ];
         let will = self.will.clone();
@@ -229,6 +232,37 @@ impl<'buf> Core<'buf> {
             .map_err(|err| Error::Protocol(err.into()))?;
             (offset, packet.len())
         };
+        Self::require_packet_size(self.runtime.maximum_packet_size, len)?;
+        self.write_retained_packet(connection, packet_id, offset, len)
+            .await
+    }
+
+    pub(super) async fn unsubscribe<C: Io>(
+        &mut self,
+        connection: &mut C,
+        topics: &[&str],
+        properties: &[Property<'_>],
+    ) -> Result<(), Error> {
+        if self.runtime.state != ConnectionState::Active {
+            return Err(Error::Disconnected);
+        }
+
+        self.require_retained_slot()?;
+        let packet_id = self.session.next_packet_id();
+        let (offset, len) = {
+            let (offset, packet) = crate::ser::MqttSerializer::to_buffer_meta(
+                self.session.outbound.scratch_space(),
+                &Unsubscribe {
+                    packet_id,
+                    dup: false,
+                    properties: Properties::Slice(properties),
+                    topics,
+                },
+            )
+            .map_err(|err| Error::Protocol(err.into()))?;
+            (offset, packet.len())
+        };
+        Self::require_packet_size(self.runtime.maximum_packet_size, len)?;
         self.write_retained_packet(connection, packet_id, offset, len)
             .await
     }
@@ -268,6 +302,8 @@ impl<'buf> Core<'buf> {
 
         if let Some(packet_id) = packet_id {
             let (offset, len) = self.session.outbound.encode_publish(publish)?;
+            Self::require_packet_size(self.runtime.maximum_packet_size, len)
+                .map_err(PubError::Error)?;
             self.write_retained_packet(connection, packet_id, offset, len)
                 .await
                 .map_err(PubError::Error)?;
@@ -275,7 +311,9 @@ impl<'buf> Core<'buf> {
             return Ok(());
         }
 
+        let maximum_packet_size = self.runtime.maximum_packet_size;
         let packet = self.serialize_publish(publish)?;
+        Self::require_packet_size(maximum_packet_size, packet.len()).map_err(PubError::Error)?;
         if let Err(err) = connection.write_all(packet).await {
             self.handle_disconnect();
             return Err(PubError::Error(Error::Transport(err.kind())));
@@ -310,6 +348,7 @@ impl<'buf> Core<'buf> {
         if self.session.outbound.needs_replay() {
             self.session.outbound.mark_retained_dup();
             for packet in self.session.outbound.retained_packets() {
+                Self::require_packet_size(self.runtime.maximum_packet_size, packet.len())?;
                 connection
                     .write_all(packet)
                     .await
@@ -325,6 +364,7 @@ impl<'buf> Core<'buf> {
                         packet_id: release.packet_id,
                         reason: release.reason.into(),
                     },
+                    self.runtime.maximum_packet_size,
                 )
                 .await?;
             }
@@ -338,7 +378,7 @@ impl<'buf> Core<'buf> {
             .map(|deadline| now >= deadline)
             .unwrap_or(false)
         {
-            write_control_packet(connection, &PingReq {}).await?;
+            write_control_packet(connection, &PingReq {}, self.runtime.maximum_packet_size).await?;
             self.runtime.ping_timeout = Some(now + Duration::from_millis(PING_TIMEOUT_MS));
             self.runtime.next_ping = Some(now + self.runtime.keepalive_interval / 2);
         }
@@ -426,6 +466,13 @@ impl<'buf> Core<'buf> {
         Ok(())
     }
 
+    fn require_packet_size(maximum_packet_size: Option<u32>, len: usize) -> Result<(), Error> {
+        if maximum_packet_size.is_some_and(|max| len > max as usize) {
+            return Err(ProtocolError::Failed(crate::ReasonCode::PacketTooLarge).into());
+        }
+        Ok(())
+    }
+
     async fn write_retained_packet<C: Io>(
         &mut self,
         connection: &mut C,
@@ -433,6 +480,7 @@ impl<'buf> Core<'buf> {
         offset: usize,
         len: usize,
     ) -> Result<(), Error> {
+        Self::require_packet_size(self.runtime.maximum_packet_size, len)?;
         let packet = self.session.outbound.retained_packet(offset, len);
         if let Err(err) = connection.write_all(packet).await {
             self.handle_disconnect();

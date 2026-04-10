@@ -52,6 +52,21 @@ where
         result
     }
 
+    pub async fn unsubscribe(
+        &mut self,
+        topics: &[&str],
+        properties: &[Property<'_>],
+    ) -> Result<(), Error> {
+        let _ = self.ensure_connected().await?;
+        let mut connection = self.take_connection()?;
+        let result = self
+            .core
+            .unsubscribe(&mut connection, topics, properties)
+            .await;
+        self.connection = Some(connection);
+        result
+    }
+
     pub async fn publish<P>(
         &mut self,
         publication: Publication<'_, P>,

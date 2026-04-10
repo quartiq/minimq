@@ -208,10 +208,26 @@ where
 pub(super) async fn write_control_packet<C: Io, T>(
     connection: &mut C,
     packet: &T,
+    maximum_packet_size: Option<u32>,
 ) -> Result<(), Error>
 where
     T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
 {
     let mut buffer = [0u8; CONTROL_PACKET_LEN];
-    write_packet(&mut buffer, connection, packet).await
+    let bytes = crate::ser::MqttSerializer::to_buffer(&mut buffer, packet)
+        .map_err(|err| Error::Protocol(err.into()))?;
+    if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
+        return Err(Error::Protocol(ProtocolError::Failed(
+            ReasonCode::PacketTooLarge,
+        )));
+    }
+    connection
+        .write_all(bytes)
+        .await
+        .map_err(|err| Error::Transport(err.kind()))?;
+    connection
+        .flush()
+        .await
+        .map_err(|err| Error::Transport(err.kind()))?;
+    Ok(())
 }

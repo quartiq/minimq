@@ -55,6 +55,7 @@ pub struct Config<'a> {
     pub(crate) will: Option<WillSpec<'a>>,
     pub(crate) client_id: String<64>,
     pub(crate) keepalive_interval: Duration,
+    pub(crate) session_expiry_interval: u32,
     pub(crate) downgrade_qos: bool,
     pub(crate) auth: Option<Auth<'a>>,
 }
@@ -66,6 +67,7 @@ pub struct ConfigBuilder<'a> {
     will: Option<WillSpec<'a>>,
     client_id: String<64>,
     keepalive_interval: Duration,
+    session_expiry_interval: u32,
     downgrade_qos: bool,
     auth: Option<Auth<'a>>,
 }
@@ -79,6 +81,7 @@ impl<'a> ConfigBuilder<'a> {
             client_id: String::new(),
             auth: None,
             keepalive_interval: Duration::from_secs(59),
+            session_expiry_interval: u32::MAX,
             downgrade_qos: false,
         }
     }
@@ -118,6 +121,11 @@ impl<'a> ConfigBuilder<'a> {
         self
     }
 
+    pub fn session_expiry_interval(mut self, seconds: u32) -> Self {
+        self.session_expiry_interval = seconds;
+        self
+    }
+
     pub fn autodowngrade_qos(mut self) -> Self {
         self.downgrade_qos = true;
         self
@@ -146,6 +154,7 @@ impl<'a> ConfigBuilder<'a> {
             will: self.will,
             client_id: self.client_id,
             keepalive_interval: self.keepalive_interval,
+            session_expiry_interval: self.session_expiry_interval,
             downgrade_qos: self.downgrade_qos,
             auth: self.auth,
         }

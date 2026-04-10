@@ -77,6 +77,12 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                 ReasonCode::from(code).as_result()?;
             }
         }
+        ReceivedPacket::UnsubAck(ack) => {
+            cx.session.outbound.ack_packet(ack.packet_identifier)?;
+            for &code in ack.codes {
+                ReasonCode::from(code).as_result()?;
+            }
+        }
         ReceivedPacket::PingResp => {
             cx.runtime.ping_timeout = None;
         }
@@ -106,6 +112,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                     packet_id: rec.packet_id,
                     reason: ReasonCode::Success.into(),
                 },
+                cx.runtime.maximum_packet_size,
             )
             .await?;
         }
@@ -131,6 +138,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                     packet_id: rel.packet_id,
                     reason: reason.into(),
                 },
+                cx.runtime.maximum_packet_size,
             )
             .await?;
         }
@@ -152,6 +160,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                             packet_identifier: packet_id,
                             reason: reason.into(),
                         },
+                        cx.runtime.maximum_packet_size,
                     )
                     .await?;
                 }
@@ -173,6 +182,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                             packet_id,
                             reason: reason.into(),
                         },
+                        cx.runtime.maximum_packet_size,
                     )
                     .await?;
                     if duplicate || !reason.success() {

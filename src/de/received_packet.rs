@@ -1,7 +1,7 @@
 use crate::{
     ProtocolError, QoS, Retain,
     message_types::MessageType,
-    packets::{ConnAck, Disconnect, Pub, PubAck, PubComp, PubRec, PubRel, SubAck},
+    packets::{ConnAck, Disconnect, Pub, PubAck, PubComp, PubRec, PubRel, SubAck, UnsubAck},
     varint::Varint,
 };
 
@@ -17,6 +17,7 @@ pub enum ReceivedPacket<'a> {
     Publish(Pub<'a, &'a [u8]>),
     PubAck(PubAck<'a>),
     SubAck(SubAck<'a>),
+    UnsubAck(UnsubAck<'a>),
     PubRel(PubRel<'a>),
     PubRec(PubRec<'a>),
     PubComp(PubComp<'a>),
@@ -40,6 +41,9 @@ impl<'a> ReceivedPacket<'a> {
                 }
                 ReceivedPacket::SubAck(suback) => {
                     suback.codes = remaining_payload;
+                }
+                ReceivedPacket::UnsubAck(unsuback) => {
+                    unsuback.codes = remaining_payload;
                 }
                 _ => return Err(ProtocolError::MalformedPacket),
             }
@@ -102,6 +106,7 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
             }
             MessageType::PubAck => ReceivedPacket::PubAck(seq.next_element()?.unwrap()),
             MessageType::SubAck => ReceivedPacket::SubAck(seq.next_element()?.unwrap()),
+            MessageType::UnsubAck => ReceivedPacket::UnsubAck(seq.next_element()?.unwrap()),
             MessageType::PingResp => ReceivedPacket::PingResp,
             MessageType::PubRec => ReceivedPacket::PubRec(seq.next_element()?.unwrap()),
             MessageType::PubRel => ReceivedPacket::PubRel(seq.next_element()?.unwrap()),
@@ -240,6 +245,30 @@ mod test {
                 assert_eq!(sub_ack.codes.len(), 1);
                 assert_eq!(ReasonCode::from(sub_ack.codes[0]), ReasonCode::GrantedQos2);
                 assert_eq!(sub_ack.packet_identifier, 5);
+            }
+            _ => panic!("Invalid message"),
+        }
+    }
+
+    #[test]
+    fn deserialize_good_unsuback() {
+        let serialized_unsuback: [u8; 6] = [
+            0xB0, // UnsubAck
+            0x04, // Remaining length
+            0x00, 0x05, // Identifier
+            0x00, // Properties length
+            0x11, // Response Code
+        ];
+
+        let packet = ReceivedPacket::from_buffer(&serialized_unsuback).unwrap();
+        match packet {
+            ReceivedPacket::UnsubAck(unsub_ack) => {
+                assert_eq!(unsub_ack.codes.len(), 1);
+                assert_eq!(
+                    ReasonCode::from(unsub_ack.codes[0]),
+                    ReasonCode::NoSubscriptionExisted
+                );
+                assert_eq!(unsub_ack.packet_identifier, 5);
             }
             _ => panic!("Invalid message"),
         }
