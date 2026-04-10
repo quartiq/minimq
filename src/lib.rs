@@ -156,4 +156,5 @@ impl From<ProtocolError> for Error {
 }
 
 #[cfg(test)]
+#[path = "../tests/support/mod.rs"]
 pub(crate) mod tests;
