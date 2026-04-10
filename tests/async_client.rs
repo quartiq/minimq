@@ -373,6 +373,26 @@ fn subscribe_is_replayed_after_disconnect_until_suback() {
 }
 
 #[test]
+fn subscribe_reports_inflight_metadata_exhaustion_before_send() {
+    let mut connection = MockConnection::default();
+    let inspect = connection.clone();
+    connection.push_rx(&connack());
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    for _ in 0..4 {
+        block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+    }
+
+    let result = block_on(session.subscribe(&[minimq::types::TopicFilter::new("data")], &[]));
+    assert!(matches!(
+        result,
+        Err(Error::Protocol(ProtocolError::InflightMetadataExhausted))
+    ));
+    assert_eq!(inspect.tx().len(), 5);
+}
+
+#[test]
 fn outbound_qos2_flow_allows_out_of_order_pubrec_and_pubcomp() {
     let mut connection = MockConnection::default();
     connection.push_rx(&connack());

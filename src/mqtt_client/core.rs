@@ -222,32 +222,23 @@ impl<'buf> Core<'buf> {
             return Err(Error::Disconnected);
         }
 
+        self.require_retained_slot()?;
         let packet_id = self.session.next_packet_id();
-        let (offset, packet) = crate::ser::MqttSerializer::to_buffer_meta(
-            self.session.outbound.scratch_space(),
-            &Subscribe {
-                packet_id,
-                dup: false,
-                properties: Properties::Slice(properties),
-                topics,
-            },
-        )
-        .map_err(|err| Error::Protocol(err.into()))?;
-        let len = packet.len();
-        let packet = self.session.outbound.retained_packet(offset, len);
-        if let Err(err) = connection.write_all(packet).await {
-            self.handle_disconnect();
-            return Err(Error::Transport(err.kind()));
-        }
-        if let Err(err) = connection.flush().await {
-            self.handle_disconnect();
-            return Err(Error::Transport(err.kind()));
-        }
-        self.session
-            .outbound
-            .retain_packet(packet_id, offset, len)
-            .map_err(Error::Protocol)?;
-        Ok(())
+        let (offset, len) = {
+            let (offset, packet) = crate::ser::MqttSerializer::to_buffer_meta(
+                self.session.outbound.scratch_space(),
+                &Subscribe {
+                    packet_id,
+                    dup: false,
+                    properties: Properties::Slice(properties),
+                    topics,
+                },
+            )
+            .map_err(|err| Error::Protocol(err.into()))?;
+            (offset, packet.len())
+        };
+        self.write_retained_packet(connection, packet_id, offset, len)
+            .await
     }
 
     pub(super) async fn publish<C, P>(
@@ -277,10 +268,8 @@ impl<'buf> Core<'buf> {
 
         let packet_id = publish.packet_id;
         let qos = publish.qos;
-        if packet_id.is_some() && self.session.outbound.retained_full() {
-            return Err(PubError::Error(
-                ProtocolError::InflightMetadataExhausted.into(),
-            ));
+        if packet_id.is_some() {
+            self.require_retained_slot().map_err(PubError::Error)?;
         }
 
         if !self.can_publish(qos) {
@@ -289,19 +278,9 @@ impl<'buf> Core<'buf> {
 
         if let Some(packet_id) = packet_id {
             let (offset, len) = self.session.outbound.encode_publish(publish)?;
-            let packet = self.session.outbound.retained_packet(offset, len);
-            if let Err(err) = connection.write_all(packet).await {
-                self.handle_disconnect();
-                return Err(PubError::Error(Error::Transport(err.kind())));
-            }
-            if let Err(err) = connection.flush().await {
-                self.handle_disconnect();
-                return Err(PubError::Error(Error::Transport(err.kind())));
-            }
-            self.session
-                .outbound
-                .retain_packet(packet_id, offset, len)
-                .map_err(|err| PubError::Error(err.into()))?;
+            self.write_retained_packet(connection, packet_id, offset, len)
+                .await
+                .map_err(PubError::Error)?;
             self.runtime.send_quota = self.runtime.send_quota.saturating_sub(1);
             return Ok(());
         }
@@ -456,6 +435,39 @@ impl<'buf> Core<'buf> {
 
     pub(super) fn reset_reader(&mut self) {
         self.packet_reader.reset();
+    }
+
+    fn require_retained_slot(&self) -> Result<(), Error> {
+        if self.session.outbound.retained_full() {
+            return Err(ProtocolError::InflightMetadataExhausted.into());
+        }
+        Ok(())
+    }
+
+    async fn write_retained_packet<C>(
+        &mut self,
+        connection: &mut C,
+        packet_id: u16,
+        offset: usize,
+        len: usize,
+    ) -> Result<(), Error>
+    where
+        C: Read + Write + ErrorType,
+        C::Error: embedded_io_async::Error,
+    {
+        let packet = self.session.outbound.retained_packet(offset, len);
+        if let Err(err) = connection.write_all(packet).await {
+            self.handle_disconnect();
+            return Err(Error::Transport(err.kind()));
+        }
+        if let Err(err) = connection.flush().await {
+            self.handle_disconnect();
+            return Err(Error::Transport(err.kind()));
+        }
+        self.session
+            .outbound
+            .retain_packet(packet_id, offset, len)
+            .map_err(Error::Protocol)
     }
 
     fn serialize_publish<P: crate::publication::ToPayload>(
