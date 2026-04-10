@@ -131,6 +131,18 @@ impl<'a> Outbound<'a> {
         Ok((start + offset, packet.len()))
     }
 
+    pub(super) fn encode_packet<T>(&mut self, packet: &T) -> Result<(usize, usize), ProtocolError>
+    where
+        T: serde::Serialize + crate::message_types::ControlPacket,
+    {
+        self.compact();
+        let start = self.used;
+        let (offset, packet) =
+            crate::ser::MqttSerializer::to_buffer_meta(&mut self.buf[start..], packet)
+                .map_err(ProtocolError::from)?;
+        Ok((start + offset, packet.len()))
+    }
+
     pub(super) fn retained_packet(&self, offset: usize, len: usize) -> &[u8] {
         &self.buf[offset..offset + len]
     }
@@ -181,6 +193,34 @@ impl<'a> Outbound<'a> {
             cursor += entry.len;
         }
         self.used = cursor;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Outbound;
+    use crate::{
+        packets::Subscribe,
+        types::{Properties, TopicFilter},
+    };
+
+    #[test]
+    fn encode_packet_returns_absolute_offset_after_retained_prefix() {
+        let mut storage = [0u8; 64];
+        let mut outbound = Outbound::new(&mut storage);
+
+        outbound.retain_packet(7, 0, 10).unwrap();
+
+        let (offset, len) = outbound
+            .encode_packet(&Subscribe {
+                packet_id: 16,
+                dup: false,
+                properties: Properties::Slice(&[]),
+                topics: &[TopicFilter::new("ABC")],
+            })
+            .unwrap();
+
+        assert_eq!(&outbound.retained_packet(offset, len)[..2], &[0x82, 0x09]);
     }
 }
 

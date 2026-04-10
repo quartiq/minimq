@@ -210,11 +210,28 @@ pub struct PubComp<'a> {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct Disconnect<'a> {
     pub reason_code: ReasonCode,
-    #[serde(borrow)]
     pub properties: Properties<'a>,
+}
+
+impl<'a, 'de: 'a> Deserialize<'de> for Disconnect<'a> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire<'a> {
+            #[serde(default)]
+            reason_code: Option<ReasonCode>,
+            #[serde(borrow, default)]
+            properties: Option<Properties<'a>>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Ok(Self {
+            reason_code: wire.reason_code.unwrap_or(ReasonCode::Success),
+            properties: wire.properties.unwrap_or(Properties::Slice(&[])),
+        })
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
