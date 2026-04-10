@@ -1,8 +1,8 @@
 use crate::{
     Retain,
     packets::{
-        ConnAck, Connect, Disconnect, PingReq, PingResp, Pub, PubAck, PubComp, PubRec, PubRel,
-        SubAck, Subscribe, UnsubAck, Unsubscribe,
+        ConnAck, Connect, Disconnect, DisconnectReq, PingReq, PingResp, Pub, PubAck, PubComp,
+        PubRec, PubRel, SubAck, Subscribe, UnsubAck, Unsubscribe,
     },
 };
 use bit_field::BitField;
@@ -100,5 +100,9 @@ impl ControlPacket for PingResp {
 }
 
 impl ControlPacket for Disconnect<'_> {
+    const MESSAGE_TYPE: MessageType = MessageType::Disconnect;
+}
+
+impl ControlPacket for DisconnectReq {
     const MESSAGE_TYPE: MessageType = MessageType::Disconnect;
 }

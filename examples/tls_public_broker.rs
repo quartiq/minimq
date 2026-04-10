@@ -5,8 +5,8 @@ use minimq::{
     Broker, BufferLayout, ConfigBuilder, Event, Property, Publication, QoS, Session,
     transport::Connector, types::TopicFilter,
 };
-use std::fmt::{Display, Formatter};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use thiserror::Error;
 use tokio::net::TcpStream;
 
 const BROKER_HOST: &str = "broker.emqx.io";
@@ -18,53 +18,20 @@ fn kind_from_std(err: &std::io::Error) -> minimq::embedded_io_async::ErrorKind {
     err.kind().into()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 enum ExampleError {
-    Config(minimq::ConfigError),
-    Protocol(minimq::ProtocolError),
-    Session(minimq::Error),
-    Publish(minimq::PubError<()>),
+    #[error(transparent)]
+    Config(#[from] minimq::ConfigError),
+    #[error(transparent)]
+    Protocol(#[from] minimq::ProtocolError),
+    #[error(transparent)]
+    Session(#[from] minimq::Error),
+    #[error(transparent)]
+    Publish(#[from] minimq::PubError<()>),
+    #[error("unexpected event: {0}")]
     Unexpected(&'static str),
+    #[error("timed out waiting for subscribed publish")]
     Timeout,
-}
-
-impl Display for ExampleError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Config(err) => write!(f, "{err:?}"),
-            Self::Protocol(err) => write!(f, "{err:?}"),
-            Self::Session(err) => write!(f, "{err:?}"),
-            Self::Publish(err) => write!(f, "{err:?}"),
-            Self::Unexpected(what) => write!(f, "unexpected event: {what}"),
-            Self::Timeout => write!(f, "timed out waiting for subscribed publish"),
-        }
-    }
-}
-
-impl std::error::Error for ExampleError {}
-
-impl From<minimq::ConfigError> for ExampleError {
-    fn from(err: minimq::ConfigError) -> Self {
-        Self::Config(err)
-    }
-}
-
-impl From<minimq::ProtocolError> for ExampleError {
-    fn from(err: minimq::ProtocolError) -> Self {
-        Self::Protocol(err)
-    }
-}
-
-impl From<minimq::Error> for ExampleError {
-    fn from(err: minimq::Error) -> Self {
-        Self::Session(err)
-    }
-}
-
-impl From<minimq::PubError<()>> for ExampleError {
-    fn from(err: minimq::PubError<()>) -> Self {
-        Self::Publish(err)
-    }
 }
 
 struct EmqxTlsConnector;

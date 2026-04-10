@@ -1,5 +1,5 @@
 use crate::de::PacketReader;
-use crate::packets::{Connect, PingReq, Pub, PubRel, Subscribe, Unsubscribe};
+use crate::packets::{Connect, DisconnectReq, PingReq, Pub, PubRel, Subscribe, Unsubscribe};
 use crate::types::{Auth, Properties, TopicFilter, Utf8String};
 use crate::will::WillSpec;
 use crate::{Broker, Config, Error, Property, ProtocolError, PubError, QoS, debug, info};
@@ -161,7 +161,7 @@ impl<'buf> Core<'buf> {
         self.runtime.session_resumed
     }
 
-    pub(super) fn can_publish(&mut self, qos: QoS) -> bool {
+    pub(super) fn is_publish_ready(&mut self, qos: QoS) -> bool {
         if self.runtime.state != ConnectionState::Active {
             return false;
         }
@@ -302,7 +302,7 @@ impl<'buf> Core<'buf> {
             self.require_retained_slot().map_err(PubError::Error)?;
         }
 
-        if !self.can_publish(qos) {
+        if !self.is_publish_ready(qos) {
             return Err(PubError::Error(Error::NotReady));
         }
 
@@ -390,6 +390,16 @@ impl<'buf> Core<'buf> {
         }
 
         Ok(())
+    }
+
+    pub(super) async fn disconnect<C: Io>(&mut self, connection: &mut C) -> Result<(), Error> {
+        let result = if self.runtime.state == ConnectionState::Active {
+            write_control_packet(connection, &DisconnectReq, self.runtime.maximum_packet_size).await
+        } else {
+            Ok(())
+        };
+        self.handle_disconnect();
+        result
     }
 
     pub(super) async fn read<C: Io>(

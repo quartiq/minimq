@@ -38,13 +38,28 @@ where
         self.core.is_connected()
     }
 
-    /// Returns whether the session currently has local transport/inflight capacity for a publish.
+    /// Return whether the session currently has local transport and in-flight capacity for a
+    /// publish at the requested QoS.
     ///
     /// This is intentionally a local readiness check. It does not account for payload-dependent
     /// serialization failures or broker-advertised `MaximumPacketSize`, so `publish()` remains the
     /// authoritative operation.
-    pub fn can_publish(&mut self, qos: QoS) -> bool {
-        self.core.can_publish(qos)
+    pub fn is_publish_ready(&mut self, qos: QoS) -> bool {
+        self.core.is_publish_ready(qos)
+    }
+
+    /// Gracefully close the current MQTT transport with `DISCONNECT`.
+    ///
+    /// This only closes the current transport. A later [`poll`](Self::poll) will connect again.
+    /// If the broker preserves the MQTT session, subscriptions and in-flight state may resume.
+    pub async fn disconnect(&mut self) -> Result<(), Error> {
+        let Some(mut connection) = self.connection.take() else {
+            self.pending_activation = None;
+            return Ok(());
+        };
+        let result = self.core.disconnect(&mut connection).await;
+        self.pending_activation = None;
+        result
     }
 
     /// Send a `SUBSCRIBE`.

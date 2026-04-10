@@ -28,6 +28,7 @@ embassy-futures = "0.1.2"
 embassy-time = "0.5.1"
 varint-rs = { version = "2.2", default-features = false }
 serde = { version = "1", features = ["derive"], default-features = false }
+thiserror = { version = "2", default-features = false }
 
 [dev-dependencies]
 log = "0.4"

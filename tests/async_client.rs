@@ -181,6 +181,10 @@ fn disconnect() -> [u8; 4] {
     [0xE0, 0x02, 0x00, 0x00]
 }
 
+fn disconnect_req() -> [u8; 2] {
+    [0xE0, 0x00]
+}
+
 fn suback(id: u16, code: u8) -> [u8; 6] {
     [0x90, 0x04, (id >> 8) as u8, id as u8, 0x00, code]
 }
@@ -684,6 +688,20 @@ fn poll_reports_reconnect() {
         block_on(session.poll()).unwrap(),
         Event::Connected
     ));
+}
+
+#[test]
+fn disconnect_sends_disconnect_packet_and_drops_connection() {
+    let mut connection = MockConnection::default();
+    let inspect = connection.clone();
+    connection.push_rx(&connack());
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    block_on(session.disconnect()).unwrap();
+
+    assert!(!session.is_connected());
+    assert_eq!(inspect.tx().last().unwrap(), &disconnect_req());
 }
 
 #[test]

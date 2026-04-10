@@ -59,30 +59,49 @@ pub enum Retain {
 
 /// Errors that are specific to the MQTT protocol implementation.
 #[non_exhaustive]
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, thiserror::Error)]
 pub enum ProtocolError {
+    #[error("provided client ID is too long")]
     ProvidedClientIdTooLong,
+    #[error("received an unexpected MQTT packet")]
     UnexpectedPacket,
+    #[error("received an invalid MQTT property")]
     InvalidProperty,
+    #[error("received a malformed MQTT packet")]
     MalformedPacket,
+    #[error("buffer is too small")]
     BufferSize,
+    #[error("invalid buffer layout")]
     BufferLayout,
+    #[error("unknown packet identifier")]
     BadIdentifier,
+    #[error("invalid QoS value")]
     WrongQos,
+    #[error("unsupported MQTT packet")]
     UnsupportedPacket,
+    #[error("at least one topic is required")]
     NoTopic,
+    #[error("authentication was already specified")]
     AuthAlreadySpecified,
+    #[error("will message was already specified")]
     WillAlreadySpecified,
+    #[error("not connected")]
     NotConnected,
+    #[error("in-flight metadata capacity exhausted")]
     InflightMetadataExhausted,
+    #[error("broker returned failure reason {0:?}")]
     Failed(ReasonCode),
+    #[error(transparent)]
     Serialization(SerError),
+    #[error(transparent)]
     Deserialization(DeError),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, thiserror::Error)]
 pub enum PubError<E> {
-    Error(Error),
+    #[error(transparent)]
+    Error(#[from] Error),
+    #[error("payload serialization failed")]
     Serialization(E),
 }
 
@@ -92,12 +111,6 @@ impl<E> From<crate::ser::PubError<E>> for PubError<E> {
             crate::ser::PubError::Other(e) => Self::Serialization(e),
             crate::ser::PubError::Error(e) => Self::Error(ProtocolError::from(e).into()),
         }
-    }
-}
-
-impl<E> From<Error> for PubError<E> {
-    fn from(e: Error) -> Self {
-        Self::Error(e)
     }
 }
 
@@ -120,12 +133,16 @@ impl From<ReasonCode> for ProtocolError {
 }
 
 /// Possible errors encountered during MQTT operation.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    #[error("session is not ready")]
     NotReady,
+    #[error("session is disconnected")]
     Disconnected,
+    #[error(transparent)]
     Protocol(ProtocolError),
+    #[error("transport error: {0:?}")]
     Transport(ErrorKind),
 }
 

@@ -65,8 +65,9 @@ impl BufferLayout {
 }
 
 /// Configuration errors detected before a session is built.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
+    #[error("buffer layout exceeds backing storage")]
     BufferLayout,
 }
 

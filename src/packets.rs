@@ -154,6 +154,9 @@ impl serde::Serialize for TopicFilters<'_> {
 #[derive(Debug, Serialize)]
 pub struct PingReq;
 
+#[derive(Debug, Serialize)]
+pub struct DisconnectReq;
+
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct PingResp;
