@@ -32,7 +32,6 @@ pub use ser::Error as SerError;
 
 use num_enum::TryFromPrimitive;
 
-#[cfg(feature = "logging")]
 pub(crate) use log::{debug, error, info, trace};
 
 /// Default port number for unencrypted MQTT traffic.
@@ -141,47 +140,3 @@ impl From<ProtocolError> for Error {
 
 #[cfg(test)]
 pub(crate) mod tests;
-
-#[doc(hidden)]
-#[cfg(not(feature = "logging"))]
-mod mqtt_log {
-    #[doc(hidden)]
-    #[macro_export]
-    macro_rules! trace {
-        ($($arg:tt)+) => {
-            ()
-        };
-    }
-
-    #[doc(hidden)]
-    #[macro_export]
-    macro_rules! debug {
-        ($($arg:tt)+) => {
-            ()
-        };
-    }
-
-    #[doc(hidden)]
-    #[macro_export]
-    macro_rules! info {
-        ($($arg:tt)+) => {
-            ()
-        };
-    }
-
-    #[doc(hidden)]
-    #[macro_export]
-    macro_rules! warn {
-        ($($arg:tt)+) => {
-            ()
-        };
-    }
-
-    #[doc(hidden)]
-    #[macro_export]
-    macro_rules! error {
-        ($($arg:tt)+) => {
-            ()
-        };
-    }
-}

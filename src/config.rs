@@ -91,7 +91,6 @@ impl<'a> ConfigBuilder<'a> {
         Ok(Self::new(broker, layout.split(buffer)?))
     }
 
-    #[cfg(feature = "unsecure")]
     pub fn set_auth(
         mut self,
         user_name: &'a str,

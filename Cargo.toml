@@ -3,8 +3,8 @@ name = "minimq"
 version = "0.10.0"
 authors = [
     "Ryan Summers <ryan.summers@vertigo-designs.com>",
-    "Max Rottenkolber <max@mr.gy>",
     "Robert Jördens <rj@quartiq.de>",
+    "Max Rottenkolber <max@mr.gy>",
 ]
 edition = "2024"
 description = "An MQTT5 client"
@@ -21,7 +21,7 @@ rust-version = "1.85.0"
 bit_field = "0.10.0"
 num_enum = { version = "0.7", default-features = false }
 heapless = { version = "0.9.1" }
-log = { version = "0.4", optional = true }
+log = { version = "0.4", default-features = false }
 embedded-io-async = "0.7"
 embedded-nal-async = "0.9"
 embassy-futures = "0.1.2"
@@ -29,13 +29,15 @@ embassy-time = "0.5.1"
 varint-rs = { version = "2.2", default-features = false }
 serde = { version = "1", features = ["derive"], default-features = false }
 
-[features]
-default = []
-logging = ["dep:log"]
-unsecure = []
-
 [dev-dependencies]
 log = "0.4"
 env_logger = "0.11"
 embassy-time = { version = "0.5.1", features = ["std", "generic-queue-8"] }
 std-embedded-nal-async = "0.4"
+embedded-tls = "0.18.0"
+embedded-io-adapters = { version = "0.7.0", features = ["tokio-1"] }
+rand = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
+
+[[example]]
+name = "tls_public_broker"

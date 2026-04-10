@@ -19,6 +19,7 @@ The main API is [`Session`].
 - MQTT v5 publish and subscribe
 - QoS 0, 1, and 2 for outgoing publishes
 - reconnect and session resumption
+- anonymous and plain text authentication
 - retained publishes and will messages
 - explicit connection lifecycle events
 - zero-copy inbound payload access
@@ -147,9 +148,9 @@ MQTT.
 
 - [`embedded_io_async`] for byte I/O
 - [`embedded_nal_async`] adapters in `transport`
-- [`embassy_time`] for timing
+- [`embassy_time`] for timing. It does not choose a queue feature for you.
 
-`minimq` does not choose the `embassy-time` queue feature for you.
+Secure MQTT over TLS works fine using, for example, embedded-tls: `examples/tls_public_broker.rs`.
 
 ## Repository Tests
 
