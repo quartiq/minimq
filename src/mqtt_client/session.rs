@@ -9,7 +9,7 @@ use crate::{
 
 use super::{
     Event, InboundPublish,
-    core::{Core, State},
+    core::{ConnectionState, Core},
 };
 
 pub struct Session<'a, 'buf, C: Connector> {
@@ -88,7 +88,7 @@ where
     async fn ensure_connected(&mut self) -> Result<Option<bool>, Error> {
         let mut activated = None;
         loop {
-            if self.core.state == State::Disconnected {
+            if self.core.state == ConnectionState::Disconnected {
                 self.core.reset_reader();
                 self.connection = None;
             }
@@ -122,7 +122,7 @@ where
             result?;
         }
 
-        if self.core.state == State::Disconnected {
+        if self.core.state == ConnectionState::Disconnected {
             self.connection = None;
             return Ok(None);
         }

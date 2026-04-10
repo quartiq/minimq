@@ -5,23 +5,32 @@ use minimq::{
     Broker, Buffers, ConfigBuilder, Error, Event, ProtocolError, PubError, Publication, QoS,
     Session, transport::Connector,
 };
-use std::{cell::RefCell, collections::VecDeque};
+use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use support::block_on;
 
 #[derive(Default)]
-struct MockConnection {
+struct MockIo {
     rx: VecDeque<Vec<u8>>,
     tx: Vec<Vec<u8>>,
     write_error: Option<(usize, ErrorKind)>,
 }
 
+#[derive(Clone, Default)]
+struct MockConnection {
+    inner: Rc<RefCell<MockIo>>,
+}
+
 impl MockConnection {
     fn push_rx(&mut self, data: &[u8]) {
-        self.rx.push_back(data.to_vec());
+        self.inner.borrow_mut().rx.push_back(data.to_vec());
     }
 
     fn fail_write_after(&mut self, successful_writes: usize, err: ErrorKind) {
-        self.write_error = Some((successful_writes, err));
+        self.inner.borrow_mut().write_error = Some((successful_writes, err));
+    }
+
+    fn tx(&self) -> Vec<Vec<u8>> {
+        self.inner.borrow().tx.clone()
     }
 }
 
@@ -31,7 +40,7 @@ impl ErrorType for MockConnection {
 
 impl Read for MockConnection {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        let Some(mut chunk) = self.rx.pop_front() else {
+        let Some(mut chunk) = self.inner.borrow_mut().rx.pop_front() else {
             return Err(ErrorKind::TimedOut);
         };
 
@@ -39,7 +48,7 @@ impl Read for MockConnection {
         buf[..len].copy_from_slice(&chunk[..len]);
         if len < chunk.len() {
             chunk.drain(..len);
-            self.rx.push_front(chunk);
+            self.inner.borrow_mut().rx.push_front(chunk);
         }
         Ok(len)
     }
@@ -47,15 +56,16 @@ impl Read for MockConnection {
 
 impl Write for MockConnection {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        if let Some((remaining, err)) = &mut self.write_error {
+        let mut inner = self.inner.borrow_mut();
+        if let Some((remaining, err)) = &mut inner.write_error {
             if *remaining == 0 {
                 let err = *err;
-                self.write_error = None;
+                inner.write_error = None;
                 return Err(err);
             }
             *remaining -= 1;
         }
-        self.tx.push(buf.to_vec());
+        inner.tx.push(buf.to_vec());
         Ok(buf.len())
     }
 
@@ -144,6 +154,10 @@ fn disconnect() -> [u8; 4] {
     [0xE0, 0x02, 0x00, 0x00]
 }
 
+fn pingreq() -> [u8; 2] {
+    [0xC0, 0x00]
+}
+
 fn connack_session_present() -> [u8; 5] {
     [0x20, 0x03, 0x01, 0x00, 0x00]
 }
@@ -172,6 +186,14 @@ fn inbound_publish_qos1(id: u16, topic: &str, payload: &[u8]) -> Vec<u8> {
     packet.push(0x00);
     packet.extend_from_slice(payload);
     packet
+}
+
+fn outbound_puback(id: u16) -> [u8; 6] {
+    [0x40, 0x04, (id >> 8) as u8, id as u8, 0x00, 0x00]
+}
+
+fn outbound_pubrec(id: u16) -> [u8; 6] {
+    [0x50, 0x04, (id >> 8) as u8, id as u8, 0x00, 0x00]
 }
 
 fn connected_session<'a>(connector: &'a MockConnector) -> Session<'a, 'static, MockConnector> {
@@ -313,6 +335,90 @@ fn inbound_qos2_marks_pending_until_pubrel() {
     assert_eq!(message.topic, "data");
 
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+}
+
+#[test]
+fn full_retained_outbound_still_sends_puback() {
+    let mut connection = MockConnection::default();
+    let inspect = connection.clone();
+    connection.push_rx(&connack());
+    connection.push_rx(&inbound_publish_qos1(9, "data", b"x"));
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    for _ in 0..4 {
+        block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+    }
+
+    match block_on(session.poll()).unwrap() {
+        Event::Inbound(message) => assert_eq!(message.topic, "data"),
+        other => panic!("unexpected event: {other:?}"),
+    }
+
+    assert_eq!(inspect.tx().last().unwrap(), &outbound_puback(9));
+}
+
+#[test]
+fn full_retained_outbound_still_sends_pubrec() {
+    let mut connection = MockConnection::default();
+    let inspect = connection.clone();
+    connection.push_rx(&connack());
+    connection.push_rx(&inbound_publish_qos2(9, "data", b"x"));
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    for _ in 0..4 {
+        block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+    }
+
+    match block_on(session.poll()).unwrap() {
+        Event::Inbound(message) => assert_eq!(message.topic, "data"),
+        other => panic!("unexpected event: {other:?}"),
+    }
+
+    assert_eq!(inspect.tx().last().unwrap(), &outbound_pubrec(9));
+}
+
+#[test]
+fn full_retained_outbound_still_sends_pingreq() {
+    let mut connection = MockConnection::default();
+    let inspect = connection.clone();
+    connection.push_rx(&connack());
+    let connector = MockConnector::new(connection);
+    let mut session = Session::new(
+        ConfigBuilder::new(
+            "127.0.0.1:1883"
+                .parse::<std::net::SocketAddr>()
+                .unwrap()
+                .into(),
+            Buffers {
+                rx: Box::leak(Box::new([0; 128])),
+                outbound: Box::leak(Box::new([0; 1152])),
+            },
+        )
+        .client_id("test")
+        .unwrap()
+        .keepalive_interval(1)
+        .build(),
+        &connector,
+    );
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    for _ in 0..4 {
+        block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(
+        inspect
+            .tx()
+            .iter()
+            .any(|frame| frame.as_slice() == pingreq())
+    );
 }
 
 #[test]

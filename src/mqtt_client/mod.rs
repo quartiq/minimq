@@ -1,4 +1,6 @@
 mod core;
+mod outbound;
+mod protocol;
 mod session;
 
 pub use session::Session;
