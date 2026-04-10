@@ -115,6 +115,8 @@ impl<'a, P> From<Publication<'a, P>> for Pub<'a, P> {
 #[derive(Debug, Serialize)]
 pub struct Subscribe<'a> {
     pub packet_id: u16,
+    #[serde(skip)]
+    pub dup: bool,
     pub properties: Properties<'a>,
     pub topics: &'a [TopicFilter<'a>],
 }
@@ -277,6 +279,7 @@ mod tests {
 
         let subscribe = crate::packets::Subscribe {
             packet_id: 16,
+            dup: false,
             properties: crate::types::Properties::Slice(&[]),
             topics: &[TopicFilter::new("ABC")],
         };

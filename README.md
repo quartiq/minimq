@@ -7,7 +7,7 @@
 
 It is built for applications that want:
 
-- one long-lived MQTT session object
+- one long-lived MQTT session object with automatic reconnect
 - explicit caller-owned buffers
 - async transport over [`embedded_io_async`]
 - MQTT request/reply support without extra glue
@@ -52,9 +52,10 @@ async fn run() -> Result<(), minimq::Error> {
 
     loop {
         match session.poll().await? {
-            Event::Connected | Event::Reconnected => {
+            Event::Connected => {
                 session.subscribe(&[TopicFilter::new("demo/in")], &[]).await?;
             }
+            Event::Reconnected => {}
             Event::Inbound(message) => {
                 if let Some(reply) = message.reply("ack") {
                     session.publish(reply.qos(QoS::AtLeastOnce)).await?;
@@ -71,7 +72,7 @@ async fn run() -> Result<(), minimq::Error> {
 You provide:
 
 1. a broker endpoint
-2. three byte buffers
+2. byte buffers
 3. a transport connector
 4. a loop that keeps calling `poll()`
 
@@ -96,6 +97,10 @@ Typical flow:
   - `Event::Inbound(message)`
   - `Event::Idle`
 - call `publish()` and `subscribe()` on the same session
+
+`Event::Connected` means you have a fresh broker session and should establish any subscriptions or
+other session state. `Event::Reconnected` means the broker resumed the existing session, so
+subscriptions and in-flight QoS state were kept.
 
 ## Buffers
 
@@ -144,22 +149,7 @@ MQTT.
 - [`embedded_nal_async`] adapters in `transport`
 - [`embassy_time`] for timing
 
-For RTIC or any non-Embassy executor, the final binary crate must enable an
-`embassy-time` `generic-queue-*` feature. `minimq` does not choose the queue feature for you.
-
-If you use `embassy-stm32`, the final binary also needs an `embassy-stm32` `time-driver-*`
-feature.
-
-## Current Shape
-
-The crate is intentionally narrow:
-
-- one preferred session API
-- no allocator
-- no sync transport compatibility layer
-- no attempt to abstract over every possible runtime or socket model
-
-That keeps the dominant embedded async use case simple.
+`minimq` does not choose the `embassy-time` queue feature for you.
 
 ## Repository Tests
 

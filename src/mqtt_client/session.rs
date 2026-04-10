@@ -68,11 +68,11 @@ where
 
     pub async fn poll(&mut self) -> Result<Event<'_>, Error> {
         let _ = self.ensure_connected().await?;
-        if let Some(first_connect) = self.pending_activation.take() {
-            return Ok(if first_connect {
-                Event::Connected
-            } else {
+        if let Some(resumed) = self.pending_activation.take() {
+            return Ok(if resumed {
                 Event::Reconnected
+            } else {
+                Event::Connected
             });
         }
 
@@ -82,8 +82,8 @@ where
         }
     }
 
-    async fn ensure_connected(&mut self) -> Result<Option<bool>, Error> {
-        let mut activated = None;
+    async fn ensure_connected(&mut self) -> Result<bool, Error> {
+        let mut activated = false;
         loop {
             if self.core.is_disconnected() {
                 self.core.reset_reader();
@@ -91,18 +91,19 @@ where
             }
 
             if self.connection.is_none() {
-                let first_connect = !self.core.session_present();
                 let connection = self.connector.connect(self.core.broker()).await?;
                 self.connection = Some(connection);
                 let mut connection = self.take_connection()?;
                 let result = self.core.connect(&mut connection).await;
                 self.connection = Some(connection);
                 result?;
-                activated = Some(first_connect);
-                self.pending_activation = activated;
+                activated = true;
             }
 
             if self.core.is_connected() {
+                if activated {
+                    self.pending_activation = Some(self.core.session_resumed());
+                }
                 return Ok(activated);
             }
 

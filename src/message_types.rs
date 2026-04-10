@@ -72,7 +72,7 @@ impl ControlPacket for PubComp<'_> {
 impl ControlPacket for Subscribe<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::Subscribe;
     fn fixed_header_flags(&self) -> u8 {
-        0b0010
+        0b0010 | ((self.dup as u8) << 3)
     }
 }
 

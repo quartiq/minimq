@@ -55,6 +55,12 @@ impl<'a> Outbound<'a> {
         self.retained.is_full()
     }
 
+    pub(super) fn retained_packets(&self) -> impl Iterator<Item = &[u8]> {
+        self.retained
+            .iter()
+            .map(|entry| &self.buf[entry.offset..entry.offset + entry.len])
+    }
+
     pub(super) fn max_inflight(&self) -> u16 {
         MAX_RETAINED.min(MAX_PENDING_RELEASE) as u16
     }
@@ -69,7 +75,7 @@ impl<'a> Outbound<'a> {
         &mut self.buf[self.used..]
     }
 
-    pub(super) fn ack_publish(&mut self, packet_id: u16) -> Result<(), ProtocolError> {
+    pub(super) fn ack_packet(&mut self, packet_id: u16) -> Result<(), ProtocolError> {
         let position = self
             .retained
             .iter()
@@ -100,12 +106,6 @@ impl<'a> Outbound<'a> {
         Ok(())
     }
 
-    pub(super) fn retained_packets(&self) -> impl Iterator<Item = &[u8]> {
-        self.retained
-            .iter()
-            .map(|entry| &self.buf[entry.offset..entry.offset + entry.len])
-    }
-
     pub(super) fn mark_retained_dup(&mut self) {
         for entry in &self.retained {
             self.buf[entry.offset] |= 1 << 3;
@@ -133,7 +133,7 @@ impl<'a> Outbound<'a> {
         &self.buf[offset..offset + len]
     }
 
-    pub(super) fn retain_publish(
+    pub(super) fn retain_packet(
         &mut self,
         packet_id: u16,
         offset: usize,

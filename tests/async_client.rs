@@ -138,12 +138,24 @@ fn puback(id: u16) -> [u8; 4] {
     [0x40, 0x02, (id >> 8) as u8, id as u8]
 }
 
+fn puback_reason(id: u16, reason: u8) -> [u8; 5] {
+    [0x40, 0x03, (id >> 8) as u8, id as u8, reason]
+}
+
 fn pubrec(id: u16) -> [u8; 4] {
     [0x50, 0x02, (id >> 8) as u8, id as u8]
 }
 
+fn pubrec_reason(id: u16, reason: u8) -> [u8; 5] {
+    [0x50, 0x03, (id >> 8) as u8, id as u8, reason]
+}
+
 fn pubcomp(id: u16) -> [u8; 4] {
     [0x70, 0x02, (id >> 8) as u8, id as u8]
+}
+
+fn pubcomp_reason(id: u16, reason: u8) -> [u8; 5] {
+    [0x70, 0x03, (id >> 8) as u8, id as u8, reason]
 }
 
 fn pubrel(id: u16) -> [u8; 4] {
@@ -152,6 +164,10 @@ fn pubrel(id: u16) -> [u8; 4] {
 
 fn disconnect() -> [u8; 4] {
     [0xE0, 0x02, 0x00, 0x00]
+}
+
+fn suback(id: u16, code: u8) -> [u8; 6] {
+    [0x90, 0x04, (id >> 8) as u8, id as u8, 0x00, code]
 }
 
 fn pingreq() -> [u8; 2] {
@@ -261,6 +277,29 @@ fn broker_disconnect_marks_inflight_for_replay_on_resume() {
 }
 
 #[test]
+fn broker_disconnect_without_session_resume_reports_connected() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.push_rx(&disconnect());
+
+    let mut second = MockConnection::default();
+    second.push_rx(&connack());
+
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config(), &connector);
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+}
+
+#[test]
 fn inflight_metadata_exhaustion_is_reported() {
     let mut connection = MockConnection::default();
     connection.push_rx(&connack());
@@ -297,6 +336,40 @@ fn outbound_qos_acks_can_arrive_out_of_order() {
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+}
+
+#[test]
+fn subscribe_is_replayed_after_disconnect_until_suback() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.push_rx(&disconnect());
+
+    let mut second = MockConnection::default();
+    let inspect = second.clone();
+    second.push_rx(&connack_session_present());
+    second.push_rx(&suback(1, 0x01));
+
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config(), &connector);
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    block_on(session.subscribe(&[minimq::types::TopicFilter::new("data")], &[])).unwrap();
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Reconnected
+    ));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+
+    assert_eq!(
+        inspect.tx().last().unwrap(),
+        &vec![
+            0x8A, 0x0A, 0x00, 0x01, 0x00, 0x00, 0x04, b'd', b'a', b't', b'a', 0x00
+        ]
+    );
 }
 
 #[test]
@@ -475,6 +548,62 @@ fn session_reconnects_after_write_error() {
     ));
 
     block_on(session.publish(Publication::new("reply", b"ok").qos(QoS::AtLeastOnce))).unwrap();
+}
+
+#[test]
+fn puback_failure_is_reported_and_clears_inflight() {
+    let mut connection = MockConnection::default();
+    connection.push_rx(&connack());
+    connection.push_rx(&puback_reason(1, 0x87));
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+    assert!(matches!(
+        block_on(session.poll()),
+        Err(Error::Protocol(ProtocolError::Failed(
+            minimq::ReasonCode::NotAuthorized
+        )))
+    ));
+    block_on(session.publish(Publication::new("data", b"y").qos(QoS::AtLeastOnce))).unwrap();
+}
+
+#[test]
+fn pubrec_failure_is_reported_and_clears_inflight() {
+    let mut connection = MockConnection::default();
+    connection.push_rx(&connack());
+    connection.push_rx(&pubrec_reason(1, 0x97));
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    block_on(session.publish(Publication::new("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
+    assert!(matches!(
+        block_on(session.poll()),
+        Err(Error::Protocol(ProtocolError::Failed(
+            minimq::ReasonCode::QuotaExceeded
+        )))
+    ));
+    block_on(session.publish(Publication::new("data", b"y").qos(QoS::ExactlyOnce))).unwrap();
+}
+
+#[test]
+fn pubcomp_failure_is_reported_and_clears_release_state() {
+    let mut connection = MockConnection::default();
+    connection.push_rx(&connack());
+    connection.push_rx(&pubrec(1));
+    connection.push_rx(&pubcomp_reason(1, 0x83));
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    block_on(session.publish(Publication::new("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(
+        block_on(session.poll()),
+        Err(Error::Protocol(ProtocolError::Failed(
+            minimq::ReasonCode::ImplementationError
+        )))
+    ));
+    block_on(session.publish(Publication::new("data", b"y").qos(QoS::ExactlyOnce))).unwrap();
 }
 
 #[test]

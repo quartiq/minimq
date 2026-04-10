@@ -126,7 +126,6 @@ impl From<ReasonCode> for ProtocolError {
 pub enum Error {
     NotReady,
     Disconnected,
-    SessionReset,
     Protocol(ProtocolError),
     Transport(ErrorKind),
 }

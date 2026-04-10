@@ -36,9 +36,9 @@ where
     match packet {
         ReceivedPacket::ConnAck(ack) => {
             ack.reason_code.as_result()?;
+            cx.runtime.session_resumed = ack.session_present;
             if !ack.session_present {
                 cx.session.reset();
-                cx.runtime.pending_subscriptions.clear();
             }
 
             cx.runtime.send_quota = cx.session.outbound.max_inflight();
@@ -75,18 +75,9 @@ where
             cx.session.register_connected();
             cx.runtime.next_ping = Some(now + cx.runtime.keepalive_interval / 2);
             cx.runtime.ping_timeout = None;
-            if cx.session.take_reset() {
-                return Err(Error::SessionReset);
-            }
         }
         ReceivedPacket::SubAck(ack) => {
-            let index = cx
-                .runtime
-                .pending_subscriptions
-                .iter()
-                .position(|id| *id == ack.packet_identifier)
-                .ok_or(ProtocolError::BadIdentifier)?;
-            cx.runtime.pending_subscriptions.swap_remove(index);
+            cx.session.outbound.ack_packet(ack.packet_identifier)?;
             for &code in ack.codes {
                 ReasonCode::from(code).as_result()?;
             }
@@ -100,16 +91,17 @@ where
                 .send_quota
                 .saturating_add(1)
                 .min(cx.runtime.max_send_quota);
-            cx.session.outbound.ack_publish(ack.packet_identifier)?;
+            cx.session.outbound.ack_packet(ack.packet_identifier)?;
+            ack.reason.code().as_result()?;
         }
         ReceivedPacket::PubRec(rec) => {
-            rec.reason.code().as_result()?;
             cx.runtime.send_quota = cx
                 .runtime
                 .send_quota
                 .saturating_add(1)
                 .min(cx.runtime.max_send_quota);
-            cx.session.outbound.ack_publish(rec.packet_id)?;
+            cx.session.outbound.ack_packet(rec.packet_id)?;
+            rec.reason.code().as_result()?;
             cx.session
                 .outbound
                 .queue_release(rec.packet_id, ReasonCode::Success)?;
@@ -124,6 +116,7 @@ where
         }
         ReceivedPacket::PubComp(comp) => {
             cx.session.outbound.ack_release(comp.packet_id)?;
+            comp.reason.code().as_result()?;
         }
         ReceivedPacket::PubRel(rel) => {
             let reason = if let Some(index) = cx

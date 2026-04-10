@@ -3,7 +3,6 @@ use crate::packets::{Connect, PingReq, Pub, PubRel, Subscribe};
 use crate::types::{Auth, Properties, TopicFilter, Utf8String};
 use crate::will::WillSpec;
 use crate::{Broker, Config, Error, Property, ProtocolError, PubError, QoS, debug, info};
-use core::mem;
 use core::num::NonZeroU16;
 use embassy_time::{Duration, Instant};
 use embedded_io_async::{Error as _, ErrorKind, ErrorType, Read, Write};
@@ -17,7 +16,6 @@ use super::protocol::{PacketContext, handle_packet};
 
 const PING_TIMEOUT_MS: u64 = 5_000;
 const MAX_INBOUND_QOS2: usize = 4;
-pub(super) const MAX_PENDING_SUBSCRIPTIONS: usize = 4;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(super) enum ConnectionState {
@@ -28,8 +26,8 @@ pub(super) enum ConnectionState {
 
 #[derive(Debug)]
 pub(super) struct RuntimeState {
-    pub(super) pending_subscriptions: Vec<u16, MAX_PENDING_SUBSCRIPTIONS>,
     pub(super) state: ConnectionState,
+    pub(super) session_resumed: bool,
     pub(super) keepalive_interval: Duration,
     pub(super) send_quota: u16,
     pub(super) max_send_quota: u16,
@@ -42,8 +40,8 @@ pub(super) struct RuntimeState {
 impl RuntimeState {
     fn new(keepalive_interval: Duration) -> Self {
         Self {
-            pending_subscriptions: Vec::new(),
             state: ConnectionState::Disconnected,
+            session_resumed: false,
             keepalive_interval,
             send_quota: u16::MAX,
             max_send_quota: u16::MAX,
@@ -65,7 +63,7 @@ impl RuntimeState {
 
     pub(super) fn disconnect(&mut self) {
         self.state = ConnectionState::Disconnected;
-        self.pending_subscriptions.clear();
+        self.session_resumed = false;
         self.next_ping = None;
         self.ping_timeout = None;
     }
@@ -77,7 +75,6 @@ pub(super) struct SessionData<'a> {
     pub(super) outbound: Outbound<'a>,
     pub(super) pending_server_packet_ids: Vec<u16, MAX_INBOUND_QOS2>,
     session_present: bool,
-    reset_pending: bool,
 }
 
 impl<'a> SessionData<'a> {
@@ -87,7 +84,6 @@ impl<'a> SessionData<'a> {
             outbound: Outbound::new(outbound),
             pending_server_packet_ids: Vec::new(),
             session_present: false,
-            reset_pending: false,
         }
     }
 
@@ -96,15 +92,10 @@ impl<'a> SessionData<'a> {
     }
 
     pub(super) fn reset(&mut self) {
-        self.reset_pending = self.session_present;
         self.session_present = false;
         self.packet_id = NonZeroU16::new(1).unwrap();
         self.outbound.clear();
         self.pending_server_packet_ids.clear();
-    }
-
-    pub(super) fn take_reset(&mut self) -> bool {
-        mem::take(&mut self.reset_pending)
     }
 
     fn next_packet_id(&mut self) -> u16 {
@@ -163,8 +154,8 @@ impl<'buf> Core<'buf> {
         self.runtime.state == ConnectionState::Disconnected
     }
 
-    pub(super) fn session_present(&self) -> bool {
-        self.session.session_present
+    pub(super) fn session_resumed(&self) -> bool {
+        self.runtime.session_resumed
     }
 
     pub(super) fn can_publish(&mut self, qos: QoS) -> bool {
@@ -232,19 +223,30 @@ impl<'buf> Core<'buf> {
         }
 
         let packet_id = self.session.next_packet_id();
-        self.write_packet(
-            connection,
+        let (offset, packet) = crate::ser::MqttSerializer::to_buffer_meta(
+            self.session.outbound.scratch_space(),
             &Subscribe {
                 packet_id,
+                dup: false,
                 properties: Properties::Slice(properties),
                 topics,
             },
         )
-        .await?;
-        self.runtime
-            .pending_subscriptions
-            .push(packet_id)
-            .map_err(|_| ProtocolError::InflightMetadataExhausted)?;
+        .map_err(|err| Error::Protocol(err.into()))?;
+        let len = packet.len();
+        let packet = self.session.outbound.retained_packet(offset, len);
+        if let Err(err) = connection.write_all(packet).await {
+            self.handle_disconnect();
+            return Err(Error::Transport(err.kind()));
+        }
+        if let Err(err) = connection.flush().await {
+            self.handle_disconnect();
+            return Err(Error::Transport(err.kind()));
+        }
+        self.session
+            .outbound
+            .retain_packet(packet_id, offset, len)
+            .map_err(Error::Protocol)?;
         Ok(())
     }
 
@@ -298,7 +300,7 @@ impl<'buf> Core<'buf> {
             }
             self.session
                 .outbound
-                .retain_publish(packet_id, offset, len)
+                .retain_packet(packet_id, offset, len)
                 .map_err(|err| PubError::Error(err.into()))?;
             self.runtime.send_quota = self.runtime.send_quota.saturating_sub(1);
             return Ok(());
@@ -454,15 +456,6 @@ impl<'buf> Core<'buf> {
 
     pub(super) fn reset_reader(&mut self) {
         self.packet_reader.reset();
-    }
-
-    async fn write_packet<C, T>(&mut self, connection: &mut C, packet: &T) -> Result<(), Error>
-    where
-        C: Read + Write + ErrorType,
-        C::Error: embedded_io_async::Error,
-        T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
-    {
-        write_packet(self.session.outbound.scratch_space(), connection, packet).await
     }
 
     fn serialize_publish<P: crate::publication::ToPayload>(
