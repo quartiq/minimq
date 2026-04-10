@@ -13,61 +13,30 @@ jobs:
   style:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          components: rustfmt
-      - name: cargo fmt --check
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
+          components: rustfmt, clippy
+
+      - run: cargo fmt -- --check
+      - run: cargo check
+      - run: cargo clippy --tests --examples
 
   documentation:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          target: thumbv7em-none-eabihf
-          override: true
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Cargo Doc
-        uses: actions-rs/cargo@v1
-        with:
-          command: doc
-
-  clippy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          target: thumbv7em-none-eabihf
-          override: true
-          components: clippy
-
-      - name: cargo clippy
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
+      - run: cargo doc
 
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - name: Cargo Audit
-        uses: actions-rs/audit-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit
 
   compile:
     runs-on: ubuntu-latest
@@ -77,48 +46,35 @@ jobs:
           - stable
           - beta
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: Install Rust ${{ matrix.toolchain }}
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
           target: thumbv7em-none-eabihf
-          override: true
-      - name: cargo check
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
-          args: --verbose
-      - name: cargo build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --all-features
-      - name: cargo build release
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --all-features
+      - run: cargo check --verbose
+      - run: cargo build
+      - run: cargo build --release
+      - run: cargo build --examples
 
   test:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain:
+          - stable
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Start Mosquitto
         run: |
-          sudo apt-get install mosquitto
+          sudo apt-get update
+          sudo apt-get install -y mosquitto mosquitto-clients
           sudo service mosquitto start
 
-
       - name: Install Rust ${{ matrix.toolchain }}
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@master
         with:
-          override: true
-          toolchain: stable
-          profile: minimal
+          toolchain: ${{ matrix.toolchain }}
 
-      - name: Cargo Test
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
+      - run: cargo test
