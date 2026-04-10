@@ -9,10 +9,10 @@ It is built for applications that want:
 
 - one long-lived MQTT session object
 - explicit caller-owned buffers
-- async transport over [`embedded-io-async`](https://docs.rs/embedded-io-async/latest/embedded_io_async/)
+- async transport over [`embedded_io_async`]
 - MQTT request/reply support without extra glue
 
-The main API is [`Session`](https://docs.rs/minimq/latest/minimq/struct.Session.html).
+The main API is [`Session`].
 
 ## What It Gives You
 
@@ -79,11 +79,11 @@ The session then owns reconnects, keepalive, packet flow, and inbound message de
 
 Core types:
 
-- [`Broker`](https://docs.rs/minimq/latest/minimq/enum.Broker.html): broker endpoint config
-- [`Buffers`](https://docs.rs/minimq/latest/minimq/struct.Buffers.html): caller-owned RX/outbound memory
-- [`ConfigBuilder`](https://docs.rs/minimq/latest/minimq/struct.ConfigBuilder.html): session configuration
-- [`Session`](https://docs.rs/minimq/latest/minimq/struct.Session.html): the MQTT client you drive
-- [`Event`](https://docs.rs/minimq/latest/minimq/enum.Event.html): what `poll()` produced
+- [`Broker`]: broker endpoint config
+- [`Buffers`]: caller-owned RX/outbound memory
+- [`ConfigBuilder`]: session configuration
+- [`Session`]: the MQTT client you drive
+- [`Event`]: what `poll()` produced
 
 Typical flow:
 
@@ -114,18 +114,18 @@ The outbound buffer is shared:
 
 That means outbound capacity is not just "how big a single publish may be". It also bounds how much
 unacknowledged QoS traffic the session can retain. If that arena is full, `publish()` can return
-[`Error::NotReady`](https://docs.rs/minimq/latest/minimq/enum.Error.html#variant.NotReady) until
+[`Error::NotReady`] until
 the broker advances the in-flight state.
 
 If you prefer one contiguous slab, use
-[`BufferLayout::split()`](https://docs.rs/minimq/latest/minimq/struct.BufferLayout.html#method.split)
+[`BufferLayout::split()`]
 to carve it into named regions.
 
 ## Request / Reply
 
 `minimq` understands MQTT request/reply properties directly.
 
-On inbound publishes, [`InboundPublish`](https://docs.rs/minimq/latest/minimq/struct.InboundPublish.html)
+On inbound publishes, [`InboundPublish`]
 can:
 
 - inspect `ResponseTopic`
@@ -140,9 +140,9 @@ MQTT.
 
 `minimq` uses:
 
-- [`embedded-io-async`](https://docs.rs/embedded-io-async/latest/embedded_io_async/) for byte I/O
-- [`embedded-nal-async`](https://docs.rs/embedded-nal-async/latest/embedded_nal_async/) adapters in `transport`
-- [`embassy-time`](https://docs.rs/embassy-time/latest/embassy_time/) for timing
+- [`embedded_io_async`] for byte I/O
+- [`embedded_nal_async`] adapters in `transport`
+- [`embassy_time`] for timing
 
 For RTIC or any non-Embassy executor, the final binary crate must enable an
 `embassy-time` `generic-queue-*` feature. `minimq` does not choose the queue feature for you.
@@ -166,9 +166,9 @@ That keeps the dominant embedded async use case simple.
 The repository contains:
 
 - deterministic protocol tests in
-  [`tests/async_client.rs`](https://github.com/quartiq/minimq/blob/master/tests/async_client.rs)
+  `tests/async_client.rs`
 - optional live-broker smoke tests in
-  [`tests/real_broker.rs`](https://github.com/quartiq/minimq/blob/master/tests/real_broker.rs)
+  `tests/real_broker.rs`
 
 The real-broker tests are only for integration coverage. They are skipped unless broker
 environment variables are provided.
