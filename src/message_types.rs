@@ -1,9 +1,9 @@
 use crate::{
-    packets::{
-        ConnAck, Connect, Disconnect, PingReq, PingResp, Pub, PubAck, PubComp, PubRec, PubRel,
-        SubAck, Subscribe,
-    },
     Retain,
+    packets::{
+        ConnAck, Connect, Disconnect, DisconnectReq, PingReq, PingResp, Pub, PubAck, PubComp,
+        PubRec, PubRel, SubAck, Subscribe, UnsubAck, Unsubscribe,
+    },
 };
 use bit_field::BitField;
 use num_enum::TryFromPrimitive;
@@ -72,12 +72,23 @@ impl ControlPacket for PubComp<'_> {
 impl ControlPacket for Subscribe<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::Subscribe;
     fn fixed_header_flags(&self) -> u8 {
-        0b0010
+        0b0010 | ((self.dup as u8) << 3)
     }
 }
 
 impl ControlPacket for SubAck<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::SubAck;
+}
+
+impl ControlPacket for Unsubscribe<'_> {
+    const MESSAGE_TYPE: MessageType = MessageType::Unsubscribe;
+    fn fixed_header_flags(&self) -> u8 {
+        0b0010 | ((self.dup as u8) << 3)
+    }
+}
+
+impl ControlPacket for UnsubAck<'_> {
+    const MESSAGE_TYPE: MessageType = MessageType::UnsubAck;
 }
 
 impl ControlPacket for PingReq {
@@ -89,5 +100,9 @@ impl ControlPacket for PingResp {
 }
 
 impl ControlPacket for Disconnect<'_> {
+    const MESSAGE_TYPE: MessageType = MessageType::Disconnect;
+}
+
+impl ControlPacket for DisconnectReq {
     const MESSAGE_TYPE: MessageType = MessageType::Disconnect;
 }

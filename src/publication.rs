@@ -1,12 +1,67 @@
-use crate::{
-    properties::Property,
-    types::{BinaryData, Properties},
-    ProtocolError, QoS, Retain,
-};
+use crate::properties::Property;
+use crate::types::{BinaryData, Properties};
+use crate::{ProtocolError, QoS, Retain};
+use heapless::{String, Vec};
 
 pub trait ToPayload {
     type Error;
     fn serialize(self, buffer: &mut [u8]) -> Result<usize, Self::Error>;
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) struct ResponseTarget<'a> {
+    pub(crate) topic: &'a str,
+    pub(crate) correlation_data: Option<&'a [u8]>,
+}
+
+impl<'a> ResponseTarget<'a> {
+    pub(crate) fn publication<P>(self, payload: P) -> Publication<'a, P> {
+        let publication = Publication::new(self.topic, payload);
+        match self.correlation_data {
+            Some(data) => publication.correlate(data),
+            None => publication,
+        }
+    }
+
+    pub(crate) fn to_owned<const TOPIC: usize, const CORRELATION: usize>(
+        self,
+    ) -> Result<OwnedResponseTarget<TOPIC, CORRELATION>, ProtocolError> {
+        Ok(OwnedResponseTarget {
+            topic: String::try_from(self.topic).map_err(|_| ProtocolError::BufferSize)?,
+            correlation_data: self
+                .correlation_data
+                .map(Vec::try_from)
+                .transpose()
+                .map_err(|_| ProtocolError::BufferSize)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedResponseTarget<const TOPIC: usize, const CORRELATION: usize> {
+    topic: String<TOPIC>,
+    correlation_data: Option<Vec<u8, CORRELATION>>,
+}
+
+impl<const TOPIC: usize, const CORRELATION: usize> OwnedResponseTarget<TOPIC, CORRELATION> {
+    /// Return the response topic.
+    pub fn topic(&self) -> &str {
+        self.topic.as_str()
+    }
+
+    /// Return the response correlation data, if present.
+    pub fn correlation_data(&self) -> Option<&[u8]> {
+        self.correlation_data.as_deref()
+    }
+
+    /// Build a publication addressed to this response target.
+    pub fn publication<'a, P>(&'a self, payload: P) -> Publication<'a, P> {
+        let publication = Publication::new(self.topic.as_str(), payload);
+        match self.correlation_data.as_deref() {
+            Some(data) => publication.correlate(data),
+            None => publication,
+        }
+    }
 }
 
 impl ToPayload for &[u8] {
@@ -44,18 +99,7 @@ impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for F {
     }
 }
 
-/// Builder pattern for generating MQTT publications.
-///
-/// # Note
-/// By default, messages are constructed with:
-/// * A QoS setting of [QoS::AtMostOnce]
-/// * No properties
-/// * No destination topic
-/// * Retention set to [Retain::NotRetained]
-///
-/// It is expected that the user provide a topic either by directly specifying a publication topic
-/// in [Publication::topic], or by parsing a topic from the [Property::ResponseTopic] property
-/// contained within received properties by using the [Publication::reply] API.
+/// Builder for an outbound MQTT `PUBLISH`.
 pub struct Publication<'a, P> {
     pub(crate) topic: &'a str,
     pub(crate) properties: Properties<'a>,
@@ -65,46 +109,7 @@ pub struct Publication<'a, P> {
 }
 
 impl<'a, P> Publication<'a, P> {
-    /// Generate the publication as a reply to some other received message.
-    ///
-    /// # Note
-    /// The received message properties are parsed for both [Property::CorrelationData] and
-    /// [Property::ResponseTopic].
-    ///
-    /// * If correlation data is found, it is automatically appended to the
-    ///   publication properties.
-    ///
-    /// * If a response topic is identified, the message topic will be
-    ///   configured for it, which will override the default topic.
-    pub fn respond(
-        default_topic: Option<&'a str>,
-        received_properties: &'a Properties<'a>,
-        payload: P,
-    ) -> Result<Self, ProtocolError> {
-        let response_topic = received_properties
-            .into_iter()
-            .flatten()
-            .find_map(|p| {
-                if let Property::ResponseTopic(topic) = p {
-                    Some(topic.0)
-                } else {
-                    None
-                }
-            })
-            .or(default_topic)
-            .ok_or(ProtocolError::NoTopic)?;
-
-        let publication = Self::new(response_topic, payload);
-
-        for p in received_properties.into_iter().flatten() {
-            if let Property::CorrelationData(data) = p {
-                return Ok(publication.correlate(data.0));
-            }
-        }
-        Ok(publication)
-    }
-
-    /// Construct a new publication with a payload.
+    /// Construct a publication with QoS 0, no retain flag, and no user properties.
     pub fn new(topic: &'a str, payload: P) -> Self {
         Self {
             payload,
@@ -115,19 +120,23 @@ impl<'a, P> Publication<'a, P> {
         }
     }
 
-    /// Specify the [QoS] of the publication. By default, the QoS is set to [QoS::AtMostOnce].
+    pub fn properties_ref(&self) -> &Properties<'a> {
+        &self.properties
+    }
+
+    /// Set the requested publish QoS.
     pub fn qos(mut self, qos: QoS) -> Self {
         self.qos = qos;
         self
     }
 
-    /// Specify that this message should be [Retain::Retained].
+    /// Mark the publication as retained.
     pub fn retain(mut self) -> Self {
         self.retain = Retain::Retained;
         self
     }
 
-    /// Specify properties associated with this publication.
+    /// Attach MQTT v5 publish properties.
     pub fn properties(mut self, properties: &'a [Property<'a>]) -> Self {
         self.properties = match self.properties {
             Properties::Slice(_) => Properties::Slice(properties),
@@ -135,18 +144,12 @@ impl<'a, P> Publication<'a, P> {
                 correlation,
                 properties,
             },
-            _ => unimplemented!(),
+            Properties::DataBlock(_) => Properties::Slice(properties),
         };
         self
     }
 
-    /// Include correlation data to the message
-    ///
-    /// # Note
-    /// This will override any existing correlation data in the message.
-    ///
-    /// # Args
-    /// * `data` - The data composing the correlation data.
+    /// Attach MQTT v5 correlation data.
     pub fn correlate(mut self, data: &'a [u8]) -> Self {
         self.properties = match self.properties {
             Properties::Slice(properties) | Properties::CorrelatedSlice { properties, .. } => {
@@ -155,7 +158,10 @@ impl<'a, P> Publication<'a, P> {
                     correlation: Property::CorrelationData(BinaryData(data)),
                 }
             }
-            _ => unimplemented!(),
+            Properties::DataBlock(_) => Properties::CorrelatedSlice {
+                properties: &[],
+                correlation: Property::CorrelationData(BinaryData(data)),
+            },
         };
 
         self
