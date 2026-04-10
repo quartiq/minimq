@@ -47,9 +47,8 @@ fn unique_topic() -> String {
 
 fn config<'a>(broker: Broker<'a>, client_id: &str) -> minimq::Config<'a> {
     let rx = Box::leak(Box::new([0; 1024]));
-    let tx = Box::leak(Box::new([0; 1024]));
-    let inflight = Box::leak(Box::new([0; 1024]));
-    ConfigBuilder::new(broker, Buffers { rx, tx, inflight })
+    let outbound = Box::leak(Box::new([0; 2048]));
+    ConfigBuilder::new(broker, Buffers { rx, outbound })
         .client_id(client_id)
         .unwrap()
         .build()
@@ -119,14 +118,8 @@ fn real_broker_qos1_roundtrip_over_tcp_connector() {
     };
 
     let connector = TcpConnector::new(StdStack::default());
-    let mut subscriber = Session::new(
-        config(Broker::socket_addr(addr), &unique_client_id("sub")),
-        &connector,
-    );
-    let mut publisher = Session::new(
-        config(Broker::socket_addr(addr), &unique_client_id("pub")),
-        &connector,
-    );
+    let mut subscriber = Session::new(config(addr.into(), &unique_client_id("sub")), &connector);
+    let mut publisher = Session::new(config(addr.into(), &unique_client_id("pub")), &connector);
     let topic = unique_topic();
 
     assert_roundtrip(

@@ -1,5 +1,5 @@
 #![cfg_attr(not(test), no_std)]
-//! Minimal MQTT v5 client core with async transport adapters.
+#![doc = include_str!("../README.md")]
 
 pub mod broker;
 pub mod config;
@@ -20,7 +20,7 @@ pub use broker::Broker;
 pub use config::{BufferLayout, Buffers, Config, ConfigBuilder, ConfigError};
 pub use mqtt_client::{Event, InboundPublish, Session};
 pub use properties::Property;
-pub use publication::{OwnedResponseTarget, Publication, ResponseTarget};
+pub use publication::{OwnedResponseTarget, Publication};
 pub use reason_codes::ReasonCode;
 pub use will::{OwnedWill, Will};
 

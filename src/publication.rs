@@ -9,21 +9,13 @@ pub trait ToPayload {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct ResponseTarget<'a> {
+pub(crate) struct ResponseTarget<'a> {
     pub(crate) topic: &'a str,
     pub(crate) correlation_data: Option<&'a [u8]>,
 }
 
 impl<'a> ResponseTarget<'a> {
-    pub fn topic(&self) -> &'a str {
-        self.topic
-    }
-
-    pub fn correlation_data(&self) -> Option<&'a [u8]> {
-        self.correlation_data
-    }
-
-    pub fn publication<P>(self, payload: P) -> Publication<'a, P> {
+    pub(crate) fn publication<P>(self, payload: P) -> Publication<'a, P> {
         let publication = Publication::new(self.topic, payload);
         match self.correlation_data {
             Some(data) => publication.correlate(data),
@@ -31,7 +23,7 @@ impl<'a> ResponseTarget<'a> {
         }
     }
 
-    pub fn to_owned<const TOPIC: usize, const CORRELATION: usize>(
+    pub(crate) fn to_owned<const TOPIC: usize, const CORRELATION: usize>(
         self,
     ) -> Result<OwnedResponseTarget<TOPIC, CORRELATION>, ProtocolError> {
         Ok(OwnedResponseTarget {
@@ -113,34 +105,6 @@ pub struct Publication<'a, P> {
 }
 
 impl<'a, P> Publication<'a, P> {
-    pub fn respond(
-        default_topic: Option<&'a str>,
-        received_properties: &'a Properties<'a>,
-        payload: P,
-    ) -> Result<Self, ProtocolError> {
-        let response_topic = received_properties
-            .into_iter()
-            .flatten()
-            .find_map(|p| {
-                if let Property::ResponseTopic(topic) = p {
-                    Some(topic.0)
-                } else {
-                    None
-                }
-            })
-            .or(default_topic)
-            .ok_or(ProtocolError::NoTopic)?;
-
-        let publication = Self::new(response_topic, payload);
-
-        for p in received_properties.into_iter().flatten() {
-            if let Property::CorrelationData(data) = p {
-                return Ok(publication.correlate(data.0));
-            }
-        }
-        Ok(publication)
-    }
-
     pub fn new(topic: &'a str, payload: P) -> Self {
         Self {
             payload,
@@ -149,10 +113,6 @@ impl<'a, P> Publication<'a, P> {
             properties: Properties::Slice(&[]),
             retain: Retain::NotRetained,
         }
-    }
-
-    pub fn topic(&self) -> &'a str {
-        self.topic
     }
 
     pub fn properties_ref(&self) -> &Properties<'a> {

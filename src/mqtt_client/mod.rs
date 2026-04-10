@@ -27,24 +27,26 @@ impl<'a> InboundPublish<'a> {
         self.properties.correlation_data()
     }
 
-    pub fn response_target(&'a self) -> Option<ResponseTarget<'a>> {
+    pub fn reply<P>(&'a self, payload: P) -> Option<Publication<'a, P>> {
         Some(ResponseTarget {
             topic: self.response_topic()?,
             correlation_data: self.correlation_data(),
         })
-    }
-
-    pub fn reply<P>(&'a self, payload: P) -> Option<Publication<'a, P>> {
-        self.response_target()
-            .map(|target| target.publication(payload))
+        .map(|target| target.publication(payload))
     }
 
     pub fn reply_owned<const TOPIC: usize, const CORRELATION: usize>(
         &'a self,
     ) -> Result<Option<OwnedResponseTarget<TOPIC, CORRELATION>>, ProtocolError> {
-        self.response_target()
-            .map(|target| target.to_owned())
-            .transpose()
+        match self.response_topic() {
+            Some(topic) => ResponseTarget {
+                topic,
+                correlation_data: self.correlation_data(),
+            }
+            .to_owned()
+            .map(Some),
+            None => Ok(None),
+        }
     }
 }
 

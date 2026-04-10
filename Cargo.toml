@@ -28,7 +28,6 @@ embassy-futures = "0.1.2"
 embassy-time = "0.5.1"
 varint-rs = { version = "2.2", default-features = false }
 serde = { version = "1", features = ["derive"], default-features = false }
-smlang = "0.8.0"
 
 [features]
 default = []

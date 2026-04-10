@@ -6,6 +6,8 @@ use crate::{
     Broker, Config, Error, Property, ProtocolError, PubError, QoS, ReasonCode, debug, info,
 };
 use core::convert::TryFrom;
+use core::mem;
+use core::num::NonZeroU16;
 use embassy_time::{Duration, Instant};
 use embedded_io_async::{Error as _, ErrorKind, ErrorType, Read, Write};
 use heapless::{String, Vec};
@@ -13,6 +15,7 @@ use heapless::{String, Vec};
 use super::InboundPublish;
 
 const PING_TIMEOUT_MS: u64 = 5_000;
+const CONTROL_PACKET_LEN: usize = 9;
 const MAX_OUTBOUND: usize = 4;
 const MAX_INBOUND_QOS2: usize = 4;
 const MAX_PENDING_SUBSCRIPTIONS: usize = 4;
@@ -78,38 +81,14 @@ impl<'a> Inflight<'a> {
         MAX_OUTBOUND.min(MAX_PENDING_PUBREL) as u16
     }
 
-    fn can_publish(&mut self, max_tx_size: usize) -> bool {
+    fn can_publish(&mut self) -> bool {
         self.compact();
-        self.entries.len() < self.entries.capacity()
-            && self.buf.len().saturating_sub(self.used) >= max_tx_size
+        self.entries.len() < self.entries.capacity() && self.used < self.buf.len()
     }
 
-    fn push_publish(
-        &mut self,
-        packet_id: u16,
-        qos: QoS,
-        packet: &[u8],
-    ) -> Result<(), ProtocolError> {
-        if self.entries.is_full() {
-            return Err(ProtocolError::InflightMetadataExhausted);
-        }
+    fn scratch(&mut self) -> &mut [u8] {
         self.compact();
-        if self.buf.len().saturating_sub(self.used) < packet.len() {
-            return Err(ProtocolError::BufferSize);
-        }
-
-        let offset = self.used;
-        self.buf[offset..offset + packet.len()].copy_from_slice(packet);
-        self.used += packet.len();
-        self.entries
-            .push(OutboundPublish {
-                packet_id,
-                qos,
-                offset,
-                len: packet.len(),
-            })
-            .map_err(|_| ProtocolError::InflightMetadataExhausted)?;
-        Ok(())
+        &mut self.buf[self.used..]
     }
 
     fn remove_publish(&mut self, packet_id: u16) -> Result<OutboundPublish, ProtocolError> {
@@ -145,6 +124,52 @@ impl<'a> Inflight<'a> {
             .map(|entry| &self.buf[entry.offset..entry.offset + entry.len])
     }
 
+    fn mark_replay_dup(&mut self) {
+        for entry in &self.entries {
+            self.buf[entry.offset] |= 1 << 3;
+        }
+    }
+
+    fn encode_publish<P: crate::publication::ToPayload>(
+        &mut self,
+        packet: Pub<'_, P>,
+    ) -> Result<(usize, usize), PubError<P::Error>> {
+        self.compact();
+        let start = self.used;
+        let (offset, packet) =
+            crate::ser::MqttSerializer::pub_to_buffer_meta(&mut self.buf[start..], packet)
+                .map_err(|err| match err {
+                    crate::ser::PubError::Error(err) => {
+                        PubError::Error(Error::Protocol(err.into()))
+                    }
+                    crate::ser::PubError::Other(err) => PubError::Serialization(err),
+                })?;
+        Ok((start + offset, packet.len()))
+    }
+
+    fn packet(&self, offset: usize, len: usize) -> &[u8] {
+        &self.buf[offset..offset + len]
+    }
+
+    fn commit_publish(
+        &mut self,
+        packet_id: u16,
+        qos: QoS,
+        offset: usize,
+        len: usize,
+    ) -> Result<(), ProtocolError> {
+        self.entries
+            .push(OutboundPublish {
+                packet_id,
+                qos,
+                offset,
+                len,
+            })
+            .map_err(|_| ProtocolError::InflightMetadataExhausted)?;
+        self.used = self.used.max(offset + len);
+        Ok(())
+    }
+
     fn pending_pubrels(&self) -> impl Iterator<Item = PendingPubrel> + '_ {
         self.pending_pubrel.iter().copied()
     }
@@ -178,70 +203,59 @@ impl<'a> Inflight<'a> {
 }
 
 #[derive(Debug)]
-struct SessionState<'a> {
-    client_id: String<64>,
-    packet_id: u16,
+struct SessionData<'a> {
+    packet_id: NonZeroU16,
     outbound: Inflight<'a>,
     pending_server_packet_ids: Vec<u16, MAX_INBOUND_QOS2>,
-    had_state: bool,
-    was_reset: bool,
+    session_present: bool,
+    reset_pending: bool,
 }
 
-impl<'a> SessionState<'a> {
-    fn new(client_id: String<64>, inflight: &'a mut [u8]) -> Self {
+impl<'a> SessionData<'a> {
+    fn new(outbound: &'a mut [u8]) -> Self {
         Self {
-            client_id,
-            packet_id: 1,
-            outbound: Inflight::new(inflight),
+            packet_id: NonZeroU16::new(1).unwrap(),
+            outbound: Inflight::new(outbound),
             pending_server_packet_ids: Vec::new(),
-            had_state: false,
-            was_reset: false,
+            session_present: false,
+            reset_pending: false,
         }
     }
 
     fn register_connected(&mut self) {
-        self.had_state = true;
+        self.session_present = true;
     }
 
     fn reset(&mut self) {
-        self.was_reset = self.had_state;
-        self.had_state = false;
-        self.packet_id = 1;
+        self.reset_pending = self.session_present;
+        self.session_present = false;
+        self.packet_id = NonZeroU16::new(1).unwrap();
         self.outbound.clear();
         self.pending_server_packet_ids.clear();
     }
 
     fn take_reset(&mut self) -> bool {
-        let reset = self.was_reset;
-        self.was_reset = false;
-        reset
+        mem::take(&mut self.reset_pending)
     }
 
     fn next_packet_id(&mut self) -> u16 {
-        let packet_id = self.packet_id;
-        self.packet_id = if self.packet_id == u16::MAX {
-            1
-        } else {
-            self.packet_id + 1
-        };
+        let packet_id = self.packet_id.get();
+        self.packet_id =
+            NonZeroU16::new(packet_id.wrapping_add(1)).unwrap_or(NonZeroU16::new(1).unwrap());
         packet_id
-    }
-
-    fn handshakes_pending(&self) -> bool {
-        !self.pending_server_packet_ids.is_empty() || self.outbound.pending_transactions()
     }
 }
 
 #[derive(Debug)]
 pub(super) struct Core<'buf> {
     broker: Broker<'buf>,
+    client_id: String<64>,
     packet_reader: PacketReader<'buf>,
-    tx_buffer: &'buf mut [u8],
-    session: SessionState<'buf>,
+    session: SessionData<'buf>,
     will: Option<WillSpec<'buf>>,
     auth: Option<Auth<'buf>>,
     downgrade_qos: bool,
-    keep_alive_interval: Duration,
+    keepalive_interval: Duration,
     send_quota: u16,
     max_send_quota: u16,
     maximum_packet_size: Option<u32>,
@@ -266,13 +280,13 @@ impl<'buf> Core<'buf> {
 
         Self {
             broker,
+            client_id,
             packet_reader: PacketReader::new(buffers.rx),
-            tx_buffer: buffers.tx,
-            session: SessionState::new(client_id, buffers.inflight),
+            session: SessionData::new(buffers.outbound),
             will,
             auth,
             downgrade_qos,
-            keep_alive_interval: keepalive_interval,
+            keepalive_interval,
             send_quota: u16::MAX,
             max_send_quota: u16::MAX,
             maximum_packet_size: None,
@@ -292,26 +306,18 @@ impl<'buf> Core<'buf> {
         self.state == State::Active
     }
 
-    pub(super) fn had_state(&self) -> bool {
-        self.session.had_state
-    }
-
-    pub(super) fn subscriptions_pending(&self) -> bool {
-        !self.pending_subscriptions.is_empty()
-    }
-
-    pub(super) fn pending_messages(&self) -> bool {
-        self.session.handshakes_pending()
+    pub(super) fn session_present(&self) -> bool {
+        self.session.session_present
     }
 
     pub(super) fn can_publish(&mut self, qos: QoS) -> bool {
         if self.state != State::Active {
             return false;
         }
-        if qos != QoS::AtMostOnce && self.send_quota == 0 {
-            return false;
+        if qos == QoS::AtMostOnce {
+            return !self.session.outbound.scratch().is_empty();
         }
-        self.session.outbound.can_publish(self.tx_buffer.len())
+        self.send_quota != 0 && self.session.outbound.can_publish()
     }
 
     pub(super) fn next_deadline(&self) -> Option<Instant> {
@@ -328,24 +334,27 @@ impl<'buf> Core<'buf> {
         C: Read + Write + ErrorType,
         C::Error: embedded_io_async::Error,
     {
-        let client_id = self.session.client_id.clone();
+        let client_id = self.client_id.clone();
         let properties = [
             Property::MaximumPacketSize(self.packet_reader.buffer.len() as u32),
             Property::SessionExpiryInterval(u32::MAX),
             Property::ReceiveMaximum(self.session.pending_server_packet_ids.capacity() as u16),
         ];
         let will = self.will.clone();
+        let keepalive = self.keepalive_secs();
+        let clean_start = !self.session.session_present;
+        let auth = self.auth;
 
         write_packet(
-            self.tx_buffer,
+            self.session.outbound.scratch(),
             connection,
             &Connect {
-                keep_alive: self.keepalive_seconds(),
+                keepalive,
                 properties: Properties::Slice(&properties),
                 client_id: Utf8String(client_id.as_str()),
-                auth: self.auth,
+                auth,
                 will: will.as_ref().map(WillSpec::as_will),
-                clean_start: !self.session.had_state,
+                clean_start,
             },
         )
         .await?;
@@ -408,24 +417,24 @@ impl<'buf> Core<'buf> {
             publish.qos = max_qos;
         }
 
-        if publish.qos > QoS::AtMostOnce && self.session.outbound.metadata_full() {
+        publish.packet_id = (publish.qos > QoS::AtMostOnce).then(|| self.session.next_packet_id());
+        publish.dup = false;
+
+        let packet_id = publish.packet_id;
+        let qos = publish.qos;
+        if packet_id.is_some() && self.session.outbound.metadata_full() {
             return Err(PubError::Error(
                 ProtocolError::InflightMetadataExhausted.into(),
             ));
         }
 
-        if !self.can_publish(publish.qos) {
+        if !self.can_publish(qos) {
             return Err(PubError::Error(Error::NotReady));
         }
 
-        publish.packet_id = (publish.qos > QoS::AtMostOnce).then(|| self.session.next_packet_id());
-        publish.dup = false;
-
-        let tx_ptr = self.tx_buffer.as_ptr() as usize;
-        let packet_id = publish.packet_id;
-        let qos = publish.qos;
-        let (packet_offset, packet_len) = {
-            let packet = self.serialize_publish(publish)?;
+        if let Some(packet_id) = packet_id {
+            let (offset, len) = self.session.outbound.encode_publish(publish)?;
+            let packet = self.session.outbound.packet(offset, len);
             if let Err(err) = connection.write_all(packet).await {
                 self.handle_disconnect();
                 return Err(PubError::Error(Error::Transport(err.kind())));
@@ -434,17 +443,22 @@ impl<'buf> Core<'buf> {
                 self.handle_disconnect();
                 return Err(PubError::Error(Error::Transport(err.kind())));
             }
-            let offset = packet.as_ptr() as usize - tx_ptr;
-            (offset, packet.len())
-        };
-
-        if let Some(packet_id) = packet_id {
-            let packet = &self.tx_buffer[packet_offset..packet_offset + packet_len];
             self.session
                 .outbound
-                .push_publish(packet_id, qos, packet)
+                .commit_publish(packet_id, qos, offset, len)
                 .map_err(|err| PubError::Error(err.into()))?;
             self.send_quota = self.send_quota.saturating_sub(1);
+            return Ok(());
+        }
+
+        let packet = self.serialize_publish(publish)?;
+        if let Err(err) = connection.write_all(packet).await {
+            self.handle_disconnect();
+            return Err(PubError::Error(Error::Transport(err.kind())));
+        }
+        if let Err(err) = connection.flush().await {
+            self.handle_disconnect();
+            return Err(PubError::Error(Error::Transport(err.kind())));
         }
 
         Ok(())
@@ -473,11 +487,10 @@ impl<'buf> Core<'buf> {
         }
 
         if self.session.outbound.replay_pending() {
+            self.session.outbound.mark_replay_dup();
             for packet in self.session.outbound.republish_packets() {
-                self.tx_buffer[..packet.len()].copy_from_slice(packet);
-                self.tx_buffer[0] |= 1 << 3;
                 connection
-                    .write_all(&self.tx_buffer[..packet.len()])
+                    .write_all(packet)
                     .await
                     .map_err(|err| Error::Transport(err.kind()))?;
             }
@@ -485,7 +498,7 @@ impl<'buf> Core<'buf> {
             let pending_pubrels: Vec<PendingPubrel, MAX_PENDING_PUBREL> =
                 self.session.outbound.pending_pubrels().collect();
             for pubrel in pending_pubrels {
-                self.write_packet(
+                write_control_packet(
                     connection,
                     &PubRel {
                         packet_id: pubrel.packet_id,
@@ -503,9 +516,9 @@ impl<'buf> Core<'buf> {
             .map(|deadline| now >= deadline)
             .unwrap_or(false)
         {
-            self.write_packet(connection, &PingReq {}).await?;
+            write_control_packet(connection, &PingReq {}).await?;
             self.ping_timeout = Some(now + Duration::from_millis(PING_TIMEOUT_MS));
-            self.next_ping = Some(now + self.keep_alive_interval / 2);
+            self.next_ping = Some(now + self.keepalive_interval / 2);
         }
 
         Ok(())
@@ -559,11 +572,11 @@ impl<'buf> Core<'buf> {
         info!("Received {:?}", packet);
         let (result, transport_error) = {
             let mut ctx = PacketContext {
-                tx_buffer: self.tx_buffer,
+                client_id: &mut self.client_id,
                 session: &mut self.session,
                 pending_subscriptions: &mut self.pending_subscriptions,
                 state: &mut self.state,
-                keep_alive_interval: &mut self.keep_alive_interval,
+                keepalive_interval: &mut self.keepalive_interval,
                 send_quota: &mut self.send_quota,
                 max_send_quota: &mut self.max_send_quota,
                 maximum_packet_size: &mut self.maximum_packet_size,
@@ -591,8 +604,8 @@ impl<'buf> Core<'buf> {
         self.ping_timeout = None;
     }
 
-    fn keepalive_seconds(&self) -> u16 {
-        self.keep_alive_interval.as_secs() as u16
+    fn keepalive_secs(&self) -> u16 {
+        self.keepalive_interval.as_secs() as u16
     }
 
     pub(super) fn reset_reader(&mut self) {
@@ -605,26 +618,28 @@ impl<'buf> Core<'buf> {
         C::Error: embedded_io_async::Error,
         T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
     {
-        write_packet(self.tx_buffer, connection, packet).await
+        write_packet(self.session.outbound.scratch(), connection, packet).await
     }
 
     fn serialize_publish<P: crate::publication::ToPayload>(
         &mut self,
         packet: Pub<'_, P>,
     ) -> Result<&[u8], PubError<P::Error>> {
-        crate::ser::MqttSerializer::pub_to_buffer(self.tx_buffer, packet).map_err(|err| match err {
-            crate::ser::PubError::Error(err) => PubError::Error(Error::Protocol(err.into())),
-            crate::ser::PubError::Other(err) => PubError::Serialization(err),
-        })
+        crate::ser::MqttSerializer::pub_to_buffer(self.session.outbound.scratch(), packet).map_err(
+            |err| match err {
+                crate::ser::PubError::Error(err) => PubError::Error(Error::Protocol(err.into())),
+                crate::ser::PubError::Other(err) => PubError::Serialization(err),
+            },
+        )
     }
 }
 
 struct PacketContext<'a, 'buf> {
-    tx_buffer: &'a mut [u8],
-    session: &'a mut SessionState<'buf>,
+    client_id: &'a mut String<64>,
+    session: &'a mut SessionData<'buf>,
     pending_subscriptions: &'a mut Vec<u16, MAX_PENDING_SUBSCRIPTIONS>,
     state: &'a mut State,
-    keep_alive_interval: &'a mut Duration,
+    keepalive_interval: &'a mut Duration,
     send_quota: &'a mut u16,
     max_send_quota: &'a mut u16,
     maximum_packet_size: &'a mut Option<u32>,
@@ -670,11 +685,11 @@ where
                 match property? {
                     Property::MaximumPacketSize(size) => *cx.maximum_packet_size = Some(size),
                     Property::AssignedClientIdentifier(id) => {
-                        cx.session.client_id = String::try_from(id.0)
+                        *cx.client_id = String::try_from(id.0)
                             .map_err(|_| ProtocolError::ProvidedClientIdTooLong)?;
                     }
-                    Property::ServerKeepAlive(keep_alive) => {
-                        *cx.keep_alive_interval = Duration::from_secs(keep_alive as u64);
+                    Property::ServerKeepAlive(keepalive) => {
+                        *cx.keepalive_interval = Duration::from_secs(keepalive as u64);
                     }
                     Property::ReceiveMaximum(max) => {
                         let local = cx.session.outbound.max_send_quota();
@@ -691,7 +706,7 @@ where
 
             *cx.state = State::Active;
             cx.session.register_connected();
-            *cx.next_ping = Some(now + *cx.keep_alive_interval / 2);
+            *cx.next_ping = Some(now + *cx.keepalive_interval / 2);
             *cx.ping_timeout = None;
             if cx.session.take_reset() {
                 return Err(Error::SessionReset);
@@ -722,8 +737,7 @@ where
             cx.session
                 .outbound
                 .queue_pubrel(rec.packet_id, ReasonCode::Success)?;
-            write_packet(
-                cx.tx_buffer,
+            write_control_packet(
                 connection,
                 &PubRel {
                     packet_id: rec.packet_id,
@@ -747,8 +761,7 @@ where
             } else {
                 ReasonCode::PacketIdNotFound
             };
-            write_packet(
-                cx.tx_buffer,
+            write_control_packet(
                 connection,
                 &PubComp {
                     packet_id: rel.packet_id,
@@ -769,8 +782,7 @@ where
                     } else {
                         ReasonCode::Success
                     };
-                    write_packet(
-                        cx.tx_buffer,
+                    write_control_packet(
                         connection,
                         &PubAck {
                             packet_identifier: packet_id,
@@ -791,8 +803,7 @@ where
                     } else {
                         ReasonCode::Success
                     };
-                    write_packet(
-                        cx.tx_buffer,
+                    write_control_packet(
                         connection,
                         &PubRec {
                             packet_id,
@@ -806,7 +817,7 @@ where
                 }
             }
 
-            *cx.next_ping = Some(now + *cx.keep_alive_interval / 2);
+            *cx.next_ping = Some(now + *cx.keepalive_interval / 2);
             return Ok(Some(InboundPublish {
                 topic: info.topic.0,
                 payload: info.payload,
@@ -823,17 +834,13 @@ where
     Ok(None)
 }
 
-async fn write_packet<C, T>(
-    tx_buffer: &mut [u8],
-    connection: &mut C,
-    packet: &T,
-) -> Result<(), Error>
+async fn write_packet<C, T>(buffer: &mut [u8], connection: &mut C, packet: &T) -> Result<(), Error>
 where
     C: Read + Write + ErrorType,
     C::Error: embedded_io_async::Error,
     T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
 {
-    let bytes = crate::ser::MqttSerializer::to_buffer(tx_buffer, packet)
+    let bytes = crate::ser::MqttSerializer::to_buffer(buffer, packet)
         .map_err(|err| Error::Protocol(err.into()))?;
     connection
         .write_all(bytes)
@@ -844,4 +851,14 @@ where
         .await
         .map_err(|err| Error::Transport(err.kind()))?;
     Ok(())
+}
+
+async fn write_control_packet<C, T>(connection: &mut C, packet: &T) -> Result<(), Error>
+where
+    C: Read + Write + ErrorType,
+    C::Error: embedded_io_async::Error,
+    T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
+{
+    let mut buffer = [0u8; CONTROL_PACKET_LEN];
+    write_packet(&mut buffer, connection, packet).await
 }

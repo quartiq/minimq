@@ -3,82 +3,161 @@
 
 # Minimq
 
-Minimq provides a minimal MQTTv5 client and message parsing for the MQTT version 5 protocol. It
-now centers on a single long-lived `Session` that owns reconnects, connection state, and timing.
-The client uses explicit caller-owned buffers and async byte streams via
-[`embedded-io-async`](https://docs.rs/embedded-io-async/latest/embedded_io_async/), while the
-provided transport adapters target
-[`embedded-nal-async`](https://docs.rs/embedded-nal-async/latest/embedded_nal_async/) and timing
-is driven by [`embassy-time`](https://docs.rs/embassy-time/latest/embassy_time/).
+`minimq` is a small `no_std` MQTT v5 client for embedded systems.
 
-Minimq provides a simple, `no_std` interface to connect to an MQTT broker to publish messages and
-subscribe to topics.
+It is built for applications that want:
 
-## Features
+- one long-lived MQTT session object
+- explicit caller-owned buffers
+- async transport over [`embedded-io-async`](https://docs.rs/embedded-io-async/latest/embedded_io_async/)
+- MQTT request/reply support without extra glue
 
-Minimq supports all of the fundamental operations of MQTT, such as message subscription and
-publication. Below is a detailed list of features, indicating what aspects are supported:
+The main API is [`Session`](https://docs.rs/minimq/latest/minimq/struct.Session.html).
 
-* Publication at all quality-of-service levels (at-most-once, at-least-once, and exactly-once)
-* Retained messages
-* Connection will messages
-* Session state reconnection and republication
-* Topic subscriptions at all quality-of-service levels
-* Subscription option flags
-* Zero-copy message deserialization
-* Serde-compatible MQTT message serialization and deserialization
+## What It Gives You
 
-If there are features that you would like to have that are not yet supported, we are always
-accepting pull requests to extend Minimq's capabilities.
+- MQTT v5 publish and subscribe
+- QoS 0, 1, and 2 for outgoing publishes
+- reconnect and session resumption
+- retained publishes and will messages
+- explicit connection lifecycle events
+- zero-copy inbound payload access
+- no allocator requirement
 
-Minimq also provides convenient APIs to implement request-response interfaces over MQTT leveraging
-the `ResponseTopic` and `CorrelationData` properties for in-bound and out-bound messages.
+`minimq` is a good fit when you already have an async TCP stack and want a focused MQTT client,
+not a whole application framework.
 
-## Transport Model
+## Example
 
-The crate is split into:
+```ignore
+use core::net::SocketAddr;
+use minimq::{
+    Broker, BufferLayout, ConfigBuilder, Event, QoS, Session, types::TopicFilter,
+};
+use std_embedded_nal_async::Stack;
 
-* MQTT session logic
-* Broker endpoint configuration
-* Async transport adapters
+async fn run() -> Result<(), minimq::Error> {
+    let mut storage = [0u8; 1024];
+    let broker: Broker<'_> = "127.0.0.1:1883".parse::<SocketAddr>()?.into();
+    let config = ConfigBuilder::from_buffer_layout(
+        broker,
+        &mut storage,
+        BufferLayout { rx: 256, outbound: 768 },
+    )?
+    .client_id("demo")?
+    .build();
 
-The main configuration surface takes explicit buffers:
+    let connector = Stack::default();
+    let mut session = Session::new(config, &connector);
 
-* `Buffers::rx` for inbound packet data
-* `Buffers::tx` for outbound packet encoding
-* `Buffers::inflight` for retransmission storage
+    loop {
+        match session.poll().await? {
+            Event::Connected | Event::Reconnected => {
+                session.subscribe(&[TopicFilter::new("demo/in")], &[]).await?;
+            }
+            Event::Inbound(message) => {
+                if let Some(reply) = message.reply("ack") {
+                    session.publish(reply.qos(QoS::AtLeastOnce)).await?;
+                }
+            }
+            Event::Idle => {}
+        }
+    }
+}
+```
 
-If a single shared byte slab is still convenient for a target, use `BufferLayout::split()` as a
-fallible helper instead of building layout assumptions into the client API.
+## What Using It Looks Like
 
-`Session` owns the live transport connection. Call `poll()` to drive reconnect, keepalive, and
-inbound message delivery. It returns:
+You provide:
 
-* `Event::Connected` when this call establishes the first active session
-* `Event::Reconnected` when this call established or re-established an active session
-* `Event::Inbound(_)` for the next received publish
-* `Event::Idle` when no application-visible work was produced
+1. a broker endpoint
+2. three byte buffers
+3. a transport connector
+4. a loop that keeps calling `poll()`
 
-Call `publish()` / `subscribe()` directly on the session after the borrowed inbound message has
-been dropped.
+The session then owns reconnects, keepalive, packet flow, and inbound message delivery.
 
-For request/response patterns, [`InboundPublish`] also exposes MQTT-level helpers for
-`ResponseTopic` and `CorrelationData`, plus `reply()` / `response_target()` to build replies
-without re-parsing properties in the application layer.
+Core types:
 
-For RTIC or other non-Embassy executors, enable an `embassy-time` `generic-queue-*` feature in
-the final binary crate together with an `embassy-stm32` `time-driver-*` feature. `minimq` does
-not choose the timer queue feature itself.
+- [`Broker`](https://docs.rs/minimq/latest/minimq/enum.Broker.html): broker endpoint config
+- [`Buffers`](https://docs.rs/minimq/latest/minimq/struct.Buffers.html): caller-owned RX/outbound memory
+- [`ConfigBuilder`](https://docs.rs/minimq/latest/minimq/struct.ConfigBuilder.html): session configuration
+- [`Session`](https://docs.rs/minimq/latest/minimq/struct.Session.html): the MQTT client you drive
+- [`Event`](https://docs.rs/minimq/latest/minimq/enum.Event.html): what `poll()` produced
 
-## Examples
+Typical flow:
 
-The deterministic protocol regression tests live in
-[`tests/async_client.rs`](https://github.com/quartiq/minimq/blob/master/tests/async_client.rs).
+- build a `ConfigBuilder`
+- construct a `Session`
+- call `poll()` regularly
+- react to:
+  - `Event::Connected`
+  - `Event::Reconnected`
+  - `Event::Inbound(message)`
+  - `Event::Idle`
+- call `publish()` and `subscribe()` on the same session
 
-Real broker smoke tests live in
-[`tests/real_broker.rs`](https://github.com/quartiq/minimq/blob/master/tests/real_broker.rs).
-They are enabled by providing broker coordinates through environment variables:
+## Buffers
 
-* `MINIMQ_REAL_BROKER_ADDR=127.0.0.1:1883` for socket-address coverage
-* `MINIMQ_REAL_BROKER_HOST=localhost` to additionally exercise hostname-plus-DNS transport
-  resolution
+`minimq` keeps memory explicit.
+
+You supply two buffers:
+
+- `rx`: inbound packet storage
+- `outbound`: outbound packet encoding plus retransmission storage for QoS/session handling
+
+If you prefer one contiguous slab, use
+[`BufferLayout::split()`](https://docs.rs/minimq/latest/minimq/struct.BufferLayout.html#method.split)
+to carve it into named regions.
+
+## Request / Reply
+
+`minimq` understands MQTT request/reply properties directly.
+
+On inbound publishes, [`InboundPublish`](https://docs.rs/minimq/latest/minimq/struct.InboundPublish.html)
+can:
+
+- inspect `ResponseTopic`
+- inspect `CorrelationData`
+- build a direct reply with `reply(...)`
+- capture an owned reply target with `reply_owned(...)`
+
+That is useful for protocol layers such as settings, RPC, or telemetry control built on top of
+MQTT.
+
+## Transport And Time
+
+`minimq` uses:
+
+- [`embedded-io-async`](https://docs.rs/embedded-io-async/latest/embedded_io_async/) for byte I/O
+- [`embedded-nal-async`](https://docs.rs/embedded-nal-async/latest/embedded_nal_async/) adapters in `transport`
+- [`embassy-time`](https://docs.rs/embassy-time/latest/embassy_time/) for timing
+
+For RTIC or any non-Embassy executor, the final binary crate must enable an
+`embassy-time` `generic-queue-*` feature. `minimq` does not choose the queue feature for you.
+
+If you use `embassy-stm32`, the final binary also needs an `embassy-stm32` `time-driver-*`
+feature.
+
+## Current Shape
+
+The crate is intentionally narrow:
+
+- one preferred session API
+- no allocator
+- no sync transport compatibility layer
+- no attempt to abstract over every possible runtime or socket model
+
+That keeps the dominant embedded async use case simple.
+
+## Repository Tests
+
+The repository contains:
+
+- deterministic protocol tests in
+  [`tests/async_client.rs`](https://github.com/quartiq/minimq/blob/master/tests/async_client.rs)
+- optional live-broker smoke tests in
+  [`tests/real_broker.rs`](https://github.com/quartiq/minimq/blob/master/tests/real_broker.rs)
+
+The real-broker tests are only for integration coverage. They are skipped unless broker
+environment variables are provided.

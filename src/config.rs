@@ -5,28 +5,41 @@ use heapless::String;
 #[derive(Debug)]
 pub struct Buffers<'a> {
     pub rx: &'a mut [u8],
-    pub tx: &'a mut [u8],
-    pub inflight: &'a mut [u8],
+    pub outbound: &'a mut [u8],
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct BufferLayout {
     pub rx: usize,
-    pub tx: usize,
-    pub inflight: usize,
+    pub outbound: usize,
 }
 
 impl BufferLayout {
+    /// Split one backing buffer into explicit RX and outbound regions.
+    ///
+    /// ```rust
+    /// use minimq::BufferLayout;
+    ///
+    /// let mut storage = [0u8; 16];
+    /// let buffers = BufferLayout {
+    ///     rx: 4,
+    ///     outbound: 12,
+    /// }
+    /// .split(&mut storage)
+    /// .unwrap();
+    ///
+    /// assert_eq!(buffers.rx.len(), 4);
+    /// assert_eq!(buffers.outbound.len(), 12);
+    /// ```
     pub fn split<'a>(self, buffer: &'a mut [u8]) -> Result<Buffers<'a>, ConfigError> {
-        let total = self.rx + self.tx + self.inflight;
+        let total = self.rx + self.outbound;
         if total > buffer.len() {
             return Err(ConfigError::BufferLayout);
         }
 
         let (rx, tail) = buffer.split_at_mut(self.rx);
-        let (tx, tail) = tail.split_at_mut(self.tx);
-        let (inflight, _) = tail.split_at_mut(self.inflight);
-        Ok(Buffers { rx, tx, inflight })
+        let (outbound, _) = tail.split_at_mut(self.outbound);
+        Ok(Buffers { rx, outbound })
     }
 }
 
@@ -143,20 +156,18 @@ impl<'a> ConfigBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::net::IpAddr;
+    use core::net::SocketAddr;
 
     #[test]
     fn split_layout() {
         let mut buffer = [0; 30];
         let layout = BufferLayout {
             rx: 10,
-            tx: 12,
-            inflight: 8,
+            outbound: 20,
         };
         let buffers = layout.split(&mut buffer).unwrap();
         assert_eq!(buffers.rx.len(), 10);
-        assert_eq!(buffers.tx.len(), 12);
-        assert_eq!(buffers.inflight.len(), 8);
+        assert_eq!(buffers.outbound.len(), 20);
     }
 
     #[test]
@@ -164,8 +175,7 @@ mod tests {
         let mut buffer = [0; 30];
         let layout = BufferLayout {
             rx: 10,
-            tx: 12,
-            inflight: 9,
+            outbound: 21,
         };
         assert!(matches!(
             layout.split(&mut buffer),
@@ -176,41 +186,36 @@ mod tests {
     #[test]
     fn builder() {
         let mut rx = [0; 10];
-        let mut tx = [0; 12];
-        let mut inflight = [0; 8];
-        let broker = Broker::from("127.0.0.1".parse::<IpAddr>().unwrap());
+        let mut outbound = [0; 20];
+        let broker: Broker<'_> = "127.0.0.1:1883".parse::<SocketAddr>().unwrap().into();
         let config = ConfigBuilder::new(
             broker,
             Buffers {
                 rx: &mut rx,
-                tx: &mut tx,
-                inflight: &mut inflight,
+                outbound: &mut outbound,
             },
         )
         .build();
         assert_eq!(config.buffers.rx.len(), 10);
-        assert_eq!(config.buffers.tx.len(), 12);
-        assert_eq!(config.buffers.inflight.len(), 8);
+        assert_eq!(config.buffers.outbound.len(), 20);
     }
 
     #[test]
-    fn will_does_not_consume_inflight_buffer() {
+    fn will_does_not_consume_outbound_buffer() {
         let mut rx = [0; 10];
-        let mut tx = [0; 12];
-        let mut inflight = [0; 8];
-        let broker = Broker::from("127.0.0.1".parse::<IpAddr>().unwrap());
+        let mut outbound = [0; 20];
+        let broker: Broker<'_> = "127.0.0.1:1883".parse::<SocketAddr>().unwrap().into();
         let will = Will::new("topic", b"x", &[]).unwrap();
         let config = ConfigBuilder::new(
             broker,
             Buffers {
                 rx: &mut rx,
-                tx: &mut tx,
-                inflight: &mut inflight,
+                outbound: &mut outbound,
             },
         )
         .will(will)
         .unwrap()
         .build();
-        assert_eq!(config.buffers.inflight.len(), 8);
+        assert_eq!(config.buffers.outbound.len(), 20);
     }
 }

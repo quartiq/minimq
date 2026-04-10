@@ -40,14 +40,6 @@ where
         self.core.can_publish(qos)
     }
 
-    pub fn subscriptions_pending(&self) -> bool {
-        self.core.subscriptions_pending()
-    }
-
-    pub fn pending_messages(&self) -> bool {
-        self.core.pending_messages()
-    }
-
     pub async fn subscribe(
         &mut self,
         topics: &[TopicFilter<'_>],
@@ -102,7 +94,7 @@ where
             }
 
             if self.connection.is_none() {
-                let first_connect = !self.core.had_state();
+                let first_connect = !self.core.session_present();
                 let connection = self.connector.connect(self.core.broker()).await?;
                 self.connection = Some(connection);
                 let mut connection = self.take_connection()?;
