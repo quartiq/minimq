@@ -222,19 +222,16 @@ impl<'buf> Core<'buf> {
 
         self.require_retained_slot()?;
         let packet_id = self.session.next_packet_id();
-        let (offset, len) = {
-            let (offset, packet) = crate::ser::MqttSerializer::to_buffer_meta(
-                self.session.outbound.scratch_space(),
-                &Subscribe {
-                    packet_id,
-                    dup: false,
-                    properties: Properties::Slice(properties),
-                    topics,
-                },
-            )
-            .map_err(|err| Error::Protocol(err.into()))?;
-            (offset, packet.len())
-        };
+        let (offset, len) = self
+            .session
+            .outbound
+            .encode_packet(&Subscribe {
+                packet_id,
+                dup: false,
+                properties: Properties::Slice(properties),
+                topics,
+            })
+            .map_err(Error::Protocol)?;
         Self::require_packet_size(self.runtime.maximum_packet_size, len)?;
         self.write_retained_packet(connection, packet_id, offset, len)
             .await
@@ -255,19 +252,16 @@ impl<'buf> Core<'buf> {
 
         self.require_retained_slot()?;
         let packet_id = self.session.next_packet_id();
-        let (offset, len) = {
-            let (offset, packet) = crate::ser::MqttSerializer::to_buffer_meta(
-                self.session.outbound.scratch_space(),
-                &Unsubscribe {
-                    packet_id,
-                    dup: false,
-                    properties: Properties::Slice(properties),
-                    topics,
-                },
-            )
-            .map_err(|err| Error::Protocol(err.into()))?;
-            (offset, packet.len())
-        };
+        let (offset, len) = self
+            .session
+            .outbound
+            .encode_packet(&Unsubscribe {
+                packet_id,
+                dup: false,
+                properties: Properties::Slice(properties),
+                topics,
+            })
+            .map_err(Error::Protocol)?;
         Self::require_packet_size(self.runtime.maximum_packet_size, len)?;
         self.write_retained_packet(connection, packet_id, offset, len)
             .await

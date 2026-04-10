@@ -401,4 +401,35 @@ mod test {
             _ => panic!("Invalid message"),
         }
     }
+
+    #[test]
+    fn deserialize_disconnect_with_reason_only() {
+        let serialized_disconnect: [u8; 3] = [
+            14 << 4, // Disconnect
+            0x01,    // Remaining length
+            0x82,    // Protocol Error
+        ];
+        let packet = ReceivedPacket::from_buffer(&serialized_disconnect).unwrap();
+        match packet {
+            ReceivedPacket::Disconnect(disconnect) => {
+                assert_eq!(disconnect.reason_code, ReasonCode::ProtocolError);
+            }
+            _ => panic!("Invalid message"),
+        }
+    }
+
+    #[test]
+    fn deserialize_disconnect_without_reason() {
+        let serialized_disconnect: [u8; 2] = [
+            14 << 4, // Disconnect
+            0x00,    // Remaining length
+        ];
+        let packet = ReceivedPacket::from_buffer(&serialized_disconnect).unwrap();
+        match packet {
+            ReceivedPacket::Disconnect(disconnect) => {
+                assert_eq!(disconnect.reason_code, ReasonCode::Success);
+            }
+            _ => panic!("Invalid message"),
+        }
+    }
 }
