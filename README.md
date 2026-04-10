@@ -141,16 +141,4 @@ MQTT.
 - [`embedded_nal_async`] adapters in `transport`
 - [`embassy_time`] for timing. It does not choose a queue feature for you.
 
-Secure MQTT over TLS works fine using, for example, embedded-tls: `examples/tls_public_broker.rs`.
-
-## Repository Tests
-
-The repository contains:
-
-- deterministic protocol tests in
-  `tests/async_client.rs`
-- optional live-broker smoke tests in
-  `tests/real_broker.rs`
-
-The real-broker tests are only for integration coverage. They are skipped unless broker
-environment variables are provided.
+Secure MQTT over TLS works fine, for example with embedded-tls: `examples/tls_public_broker.rs`.

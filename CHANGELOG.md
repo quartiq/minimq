@@ -11,6 +11,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Changed
 
 * Edition 2024, MSRV 1.85
+* Redesign and rebase onto async (`embedded-io-async`). This breaks most of the API surface.
+  There is no sync compat layer.
+* Broker session handling is now explicit: `Event::Connected` means a fresh broker session,
+  `Event::Reconnected` means the broker resumed the existing session.
+* Caller-owned packet buffers are now documented as `rx` and `tx`. `rx` holds one inbound packet;
+  `tx` is the shared outbound encode/replay arena.
+* Plain MQTT username/password auth is always available. The crate-local `unsecure` feature was
+  removed.
+* Logging now goes directly through `log`. The crate-local `logging` feature was removed.
+
+## Added
+
+* Configurable MQTT v5 session expiry via `ConfigBuilder::session_expiry_interval()`.
+* `UNSUBSCRIBE` / `UNSUBACK` support.
+* A std-side TLS example using `embedded-tls` against a public broker.
+
+## Fixed
+
+* QoS 1 and 2 publish failures from `PUBACK`, `PUBREC`, and `PUBCOMP` are now surfaced instead of
+  being silently accepted.
+* `SUBSCRIBE` and `UNSUBSCRIBE` are retained and replayed correctly across resumed reconnects.
+* Broker `MaximumPacketSize` is now enforced for outbound packets and required MQTT responses.
+* Empty `SUBSCRIBE` and `UNSUBSCRIBE` requests are rejected locally instead of serializing invalid
+  packets.
 
 ## [0.10.0](https://github.com/quartiq/minimq/compare/v0.9.0...v0.10.0) - 2025-01-27
 
