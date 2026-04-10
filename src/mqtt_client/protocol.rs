@@ -4,33 +4,22 @@ use crate::{Error, Property, ProtocolError, QoS, ReasonCode, debug};
 use core::convert::TryFrom;
 use embassy_time::{Duration, Instant};
 use embedded_io_async::{ErrorType, Read, Write};
-use heapless::{String, Vec};
+use heapless::String;
 
 use super::InboundPublish;
-use super::core::{ConnectionState, MAX_PENDING_SUBSCRIPTIONS, SessionData};
+use super::core::{ConnectionState, RuntimeState, SessionData};
 use super::outbound::write_control_packet;
 
 pub(super) struct PacketContext<'a, 'buf> {
     pub(super) client_id: &'a mut String<64>,
     pub(super) session: &'a mut SessionData<'buf>,
-    pub(super) pending_subscriptions: &'a mut Vec<u16, MAX_PENDING_SUBSCRIPTIONS>,
-    pub(super) state: &'a mut ConnectionState,
-    pub(super) keepalive_interval: &'a mut Duration,
-    pub(super) send_quota: &'a mut u16,
-    pub(super) max_send_quota: &'a mut u16,
-    pub(super) maximum_packet_size: &'a mut Option<u32>,
-    pub(super) max_qos: &'a mut Option<QoS>,
-    pub(super) next_ping: &'a mut Option<Instant>,
-    pub(super) ping_timeout: &'a mut Option<Instant>,
+    pub(super) runtime: &'a mut RuntimeState,
 }
 
 impl PacketContext<'_, '_> {
     pub(super) fn mark_disconnected(&mut self) {
         self.session.outbound.arm_replay();
-        *self.state = ConnectionState::Disconnected;
-        self.pending_subscriptions.clear();
-        *self.next_ping = None;
-        *self.ping_timeout = None;
+        self.runtime.disconnect();
     }
 }
 
@@ -49,66 +38,77 @@ where
             ack.reason_code.as_result()?;
             if !ack.session_present {
                 cx.session.reset();
-                cx.pending_subscriptions.clear();
+                cx.runtime.pending_subscriptions.clear();
             }
 
-            *cx.send_quota = cx.session.outbound.max_inflight();
-            *cx.max_send_quota = cx.session.outbound.max_inflight();
-            *cx.max_qos = None;
-            *cx.maximum_packet_size = None;
+            cx.runtime.send_quota = cx.session.outbound.max_inflight();
+            cx.runtime.max_send_quota = cx.session.outbound.max_inflight();
+            cx.runtime.max_qos = None;
+            cx.runtime.maximum_packet_size = None;
 
             for property in ack.properties.into_iter() {
                 match property? {
-                    Property::MaximumPacketSize(size) => *cx.maximum_packet_size = Some(size),
+                    Property::MaximumPacketSize(size) => {
+                        cx.runtime.maximum_packet_size = Some(size)
+                    }
                     Property::AssignedClientIdentifier(id) => {
                         *cx.client_id = String::try_from(id.0)
                             .map_err(|_| ProtocolError::ProvidedClientIdTooLong)?;
                     }
                     Property::ServerKeepAlive(keepalive) => {
-                        *cx.keepalive_interval = Duration::from_secs(keepalive as u64);
+                        cx.runtime.keepalive_interval = Duration::from_secs(keepalive as u64);
                     }
                     Property::ReceiveMaximum(max) => {
                         let local = cx.session.outbound.max_inflight();
-                        *cx.send_quota = max.min(local);
-                        *cx.max_send_quota = max.min(local);
+                        cx.runtime.send_quota = max.min(local);
+                        cx.runtime.max_send_quota = max.min(local);
                     }
                     Property::MaximumQoS(max) => {
-                        *cx.max_qos =
+                        cx.runtime.max_qos =
                             Some(QoS::try_from(max).map_err(|_| ProtocolError::WrongQos)?);
                     }
                     _ => {}
                 }
             }
 
-            *cx.state = ConnectionState::Active;
+            cx.runtime.state = ConnectionState::Active;
             cx.session.register_connected();
-            *cx.next_ping = Some(now + *cx.keepalive_interval / 2);
-            *cx.ping_timeout = None;
+            cx.runtime.next_ping = Some(now + cx.runtime.keepalive_interval / 2);
+            cx.runtime.ping_timeout = None;
             if cx.session.take_reset() {
                 return Err(Error::SessionReset);
             }
         }
         ReceivedPacket::SubAck(ack) => {
             let index = cx
+                .runtime
                 .pending_subscriptions
                 .iter()
                 .position(|id| *id == ack.packet_identifier)
                 .ok_or(ProtocolError::BadIdentifier)?;
-            cx.pending_subscriptions.swap_remove(index);
+            cx.runtime.pending_subscriptions.swap_remove(index);
             for &code in ack.codes {
                 ReasonCode::from(code).as_result()?;
             }
         }
         ReceivedPacket::PingResp => {
-            *cx.ping_timeout = None;
+            cx.runtime.ping_timeout = None;
         }
         ReceivedPacket::PubAck(ack) => {
-            *cx.send_quota = cx.send_quota.saturating_add(1).min(*cx.max_send_quota);
+            cx.runtime.send_quota = cx
+                .runtime
+                .send_quota
+                .saturating_add(1)
+                .min(cx.runtime.max_send_quota);
             cx.session.outbound.ack_publish(ack.packet_identifier)?;
         }
         ReceivedPacket::PubRec(rec) => {
             rec.reason.code().as_result()?;
-            *cx.send_quota = cx.send_quota.saturating_add(1).min(*cx.max_send_quota);
+            cx.runtime.send_quota = cx
+                .runtime
+                .send_quota
+                .saturating_add(1)
+                .min(cx.runtime.max_send_quota);
             cx.session.outbound.ack_publish(rec.packet_id)?;
             cx.session
                 .outbound
@@ -193,7 +193,7 @@ where
                 }
             }
 
-            *cx.next_ping = Some(now + *cx.keepalive_interval / 2);
+            cx.runtime.next_ping = Some(now + cx.runtime.keepalive_interval / 2);
             return Ok(Some(InboundPublish {
                 topic: info.topic.0,
                 payload: info.payload,

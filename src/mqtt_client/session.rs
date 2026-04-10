@@ -7,10 +7,7 @@ use crate::{
     types::TopicFilter,
 };
 
-use super::{
-    Event, InboundPublish,
-    core::{ConnectionState, Core},
-};
+use super::{Event, InboundPublish, core::Core};
 
 pub struct Session<'a, 'buf, C: Connector> {
     core: Core<'buf>,
@@ -88,7 +85,7 @@ where
     async fn ensure_connected(&mut self) -> Result<Option<bool>, Error> {
         let mut activated = None;
         loop {
-            if self.core.state == ConnectionState::Disconnected {
+            if self.core.is_disconnected() {
                 self.core.reset_reader();
                 self.connection = None;
             }
@@ -122,7 +119,7 @@ where
             result?;
         }
 
-        if self.core.state == ConnectionState::Disconnected {
+        if self.core.is_disconnected() {
             self.connection = None;
             return Ok(None);
         }
