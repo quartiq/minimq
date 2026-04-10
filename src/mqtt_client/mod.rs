@@ -5,11 +5,26 @@ mod session;
 
 pub use session::Session;
 
+use embedded_io_async::{ErrorType, Read, Write};
+
 use crate::{
     ProtocolError, QoS, Retain,
     publication::{OwnedResponseTarget, Publication, ResponseTarget},
     types::Properties,
 };
+
+pub(super) trait Io: Read + Write + ErrorType
+where
+    Self::Error: embedded_io_async::Error,
+{
+}
+
+impl<T> Io for T
+where
+    T: Read + Write + ErrorType,
+    T::Error: embedded_io_async::Error,
+{
+}
 
 #[derive(Debug)]
 pub struct InboundPublish<'a> {

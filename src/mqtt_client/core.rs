@@ -5,14 +5,14 @@ use crate::will::WillSpec;
 use crate::{Broker, Config, Error, Property, ProtocolError, PubError, QoS, debug, info};
 use core::num::NonZeroU16;
 use embassy_time::{Duration, Instant};
-use embedded_io_async::{Error as _, ErrorKind, ErrorType, Read, Write};
+use embedded_io_async::{Error as _, ErrorKind};
 use heapless::{String, Vec};
 
-use super::InboundPublish;
 use super::outbound::{
     MAX_PENDING_RELEASE, Outbound, PendingRelease, write_control_packet, write_packet,
 };
 use super::protocol::{PacketContext, handle_packet};
+use super::{InboundPublish, Io};
 
 const PING_TIMEOUT_MS: u64 = 5_000;
 const MAX_INBOUND_QOS2: usize = 4;
@@ -172,11 +172,7 @@ impl<'buf> Core<'buf> {
         self.runtime.next_deadline()
     }
 
-    pub(super) async fn connect<C>(&mut self, connection: &mut C) -> Result<(), Error>
-    where
-        C: Read + Write + ErrorType,
-        C::Error: embedded_io_async::Error,
-    {
+    pub(super) async fn connect<C: Io>(&mut self, connection: &mut C) -> Result<(), Error> {
         let client_id = self.client_id.clone();
         let properties = [
             Property::MaximumPacketSize(self.packet_reader.buffer.len() as u32),
@@ -208,16 +204,12 @@ impl<'buf> Core<'buf> {
         Ok(())
     }
 
-    pub(super) async fn subscribe<C>(
+    pub(super) async fn subscribe<C: Io>(
         &mut self,
         connection: &mut C,
         topics: &[TopicFilter<'_>],
         properties: &[Property<'_>],
-    ) -> Result<(), Error>
-    where
-        C: Read + Write + ErrorType,
-        C::Error: embedded_io_async::Error,
-    {
+    ) -> Result<(), Error> {
         if self.runtime.state != ConnectionState::Active {
             return Err(Error::Disconnected);
         }
@@ -241,14 +233,12 @@ impl<'buf> Core<'buf> {
             .await
     }
 
-    pub(super) async fn publish<C, P>(
+    pub(super) async fn publish<C: Io, P>(
         &mut self,
         connection: &mut C,
         publish: crate::publication::Publication<'_, P>,
     ) -> Result<(), PubError<P::Error>>
     where
-        C: Read + Write + ErrorType,
-        C::Error: embedded_io_async::Error,
         P: crate::publication::ToPayload,
     {
         if self.runtime.state != ConnectionState::Active {
@@ -298,15 +288,11 @@ impl<'buf> Core<'buf> {
         Ok(())
     }
 
-    pub(super) async fn maintain<C>(
+    pub(super) async fn maintain<C: Io>(
         &mut self,
         connection: &mut C,
         now: Instant,
-    ) -> Result<(), Error>
-    where
-        C: Read + Write + ErrorType,
-        C::Error: embedded_io_async::Error,
-    {
+    ) -> Result<(), Error> {
         if self.runtime.state != ConnectionState::Active {
             return Ok(());
         }
@@ -360,15 +346,11 @@ impl<'buf> Core<'buf> {
         Ok(())
     }
 
-    pub(super) async fn read<C>(
+    pub(super) async fn read<C: Io>(
         &mut self,
         connection: &mut C,
         now: Instant,
-    ) -> Result<Option<InboundPublish<'_>>, Error>
-    where
-        C: Read + Write + ErrorType,
-        C::Error: embedded_io_async::Error,
-    {
+    ) -> Result<Option<InboundPublish<'_>>, Error> {
         if self.runtime.state == ConnectionState::Disconnected {
             self.packet_reader.reset();
         }
@@ -444,17 +426,13 @@ impl<'buf> Core<'buf> {
         Ok(())
     }
 
-    async fn write_retained_packet<C>(
+    async fn write_retained_packet<C: Io>(
         &mut self,
         connection: &mut C,
         packet_id: u16,
         offset: usize,
         len: usize,
-    ) -> Result<(), Error>
-    where
-        C: Read + Write + ErrorType,
-        C::Error: embedded_io_async::Error,
-    {
+    ) -> Result<(), Error> {
         let packet = self.session.outbound.retained_packet(offset, len);
         if let Err(err) = connection.write_all(packet).await {
             self.handle_disconnect();

@@ -3,12 +3,11 @@ use crate::packets::{PubAck, PubComp, PubRec, PubRel};
 use crate::{Error, Property, ProtocolError, QoS, ReasonCode, debug};
 use core::convert::TryFrom;
 use embassy_time::{Duration, Instant};
-use embedded_io_async::{ErrorType, Read, Write};
 use heapless::String;
 
-use super::InboundPublish;
 use super::core::{ConnectionState, RuntimeState, SessionData};
 use super::outbound::write_control_packet;
+use super::{InboundPublish, Io};
 
 pub(super) struct PacketContext<'a, 'buf> {
     pub(super) client_id: &'a mut String<64>,
@@ -23,16 +22,12 @@ impl PacketContext<'_, '_> {
     }
 }
 
-pub(super) async fn handle_packet<'pkt, 'state, C>(
+pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
     cx: &mut PacketContext<'_, 'state>,
     connection: &mut C,
     packet: ReceivedPacket<'pkt>,
     now: Instant,
-) -> Result<Option<InboundPublish<'pkt>>, Error>
-where
-    C: Read + Write + ErrorType,
-    C::Error: embedded_io_async::Error,
-{
+) -> Result<Option<InboundPublish<'pkt>>, Error> {
     match packet {
         ReceivedPacket::ConnAck(ack) => {
             ack.reason_code.as_result()?;

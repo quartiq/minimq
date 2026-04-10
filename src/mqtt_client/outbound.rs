@@ -1,7 +1,9 @@
 use crate::packets::Pub;
 use crate::{Error, ProtocolError, PubError, ReasonCode};
-use embedded_io_async::{Error as _, ErrorType, Read, Write};
+use embedded_io_async::Error as _;
 use heapless::Vec;
+
+use super::Io;
 
 const CONTROL_PACKET_LEN: usize = 9;
 pub(super) const MAX_RETAINED: usize = 4;
@@ -182,14 +184,12 @@ impl<'a> Outbound<'a> {
     }
 }
 
-pub(super) async fn write_packet<C, T>(
+pub(super) async fn write_packet<C: Io, T>(
     buffer: &mut [u8],
     connection: &mut C,
     packet: &T,
 ) -> Result<(), Error>
 where
-    C: Read + Write + ErrorType,
-    C::Error: embedded_io_async::Error,
     T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
 {
     let bytes = crate::ser::MqttSerializer::to_buffer(buffer, packet)
@@ -205,10 +205,11 @@ where
     Ok(())
 }
 
-pub(super) async fn write_control_packet<C, T>(connection: &mut C, packet: &T) -> Result<(), Error>
+pub(super) async fn write_control_packet<C: Io, T>(
+    connection: &mut C,
+    packet: &T,
+) -> Result<(), Error>
 where
-    C: Read + Write + ErrorType,
-    C::Error: embedded_io_async::Error,
     T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
 {
     let mut buffer = [0u8; CONTROL_PACKET_LEN];
