@@ -106,12 +106,12 @@ impl Connector for MockConnector {
 
 fn config() -> minimq::Config<'static> {
     let rx = Box::leak(Box::new([0; 128]));
-    let outbound = Box::leak(Box::new([0; 1152]));
+    let tx = Box::leak(Box::new([0; 1152]));
     let broker = "127.0.0.1:1883"
         .parse::<std::net::SocketAddr>()
         .unwrap()
         .into();
-    ConfigBuilder::new(broker, Buffers { rx, outbound })
+    ConfigBuilder::new(broker, Buffers { rx, tx })
         .client_id("test")
         .unwrap()
         .build()
@@ -412,6 +412,34 @@ fn subscribe_reports_inflight_metadata_exhaustion_before_send() {
 }
 
 #[test]
+fn subscribe_rejects_empty_topic_list() {
+    let mut connection = MockConnection::default();
+    connection.push_rx(&connack());
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    let result = block_on(session.subscribe(&[], &[]));
+    assert!(matches!(
+        result,
+        Err(Error::Protocol(ProtocolError::NoTopic))
+    ));
+}
+
+#[test]
+fn unsubscribe_rejects_empty_topic_list() {
+    let mut connection = MockConnection::default();
+    connection.push_rx(&connack());
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    let result = block_on(session.unsubscribe(&[], &[]));
+    assert!(matches!(
+        result,
+        Err(Error::Protocol(ProtocolError::NoTopic))
+    ));
+}
+
+#[test]
 fn outbound_qos2_flow_allows_out_of_order_pubrec_and_pubcomp() {
     let mut connection = MockConnection::default();
     connection.push_rx(&connack());
@@ -505,7 +533,7 @@ fn full_retained_outbound_still_sends_pingreq() {
                 .into(),
             Buffers {
                 rx: Box::leak(Box::new([0; 128])),
-                outbound: Box::leak(Box::new([0; 1152])),
+                tx: Box::leak(Box::new([0; 1152])),
             },
         )
         .client_id("test")
@@ -673,7 +701,7 @@ fn connect_uses_configured_session_expiry_interval() {
             broker,
             Buffers {
                 rx: Box::leak(Box::new([0; 128])),
-                outbound: Box::leak(Box::new([0; 1152])),
+                tx: Box::leak(Box::new([0; 1152])),
             },
         )
         .client_id("test")
@@ -713,6 +741,30 @@ fn publish_rejects_packets_larger_than_broker_maximum() {
         ))))
     ));
     assert_eq!(inspect.tx().len(), 1);
+}
+
+#[test]
+fn oversized_required_ack_disconnects_session() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack_max_packet_size(5));
+    first.push_rx(&inbound_publish_qos1(9, "data", b"x"));
+
+    let mut second = MockConnection::default();
+    second.push_rx(&connack());
+
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = connected_session(&connector);
+
+    assert!(matches!(
+        block_on(session.poll()),
+        Err(Error::Protocol(ProtocolError::Failed(
+            minimq::ReasonCode::PacketTooLarge
+        )))
+    ));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
 }
 
 #[test]

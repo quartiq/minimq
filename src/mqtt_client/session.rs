@@ -9,6 +9,10 @@ use crate::{
 
 use super::{Event, InboundPublish, core::Core};
 
+/// One long-lived MQTT client session.
+///
+/// Drive the session by calling [`poll`](Self::poll) regularly. The same session is also used for
+/// outbound `publish`, `subscribe`, and `unsubscribe` operations.
 pub struct Session<'a, 'buf, C: Connector> {
     core: Core<'buf>,
     connector: &'a C,
@@ -20,6 +24,7 @@ impl<'a, 'buf, C> Session<'a, 'buf, C>
 where
     C: Connector,
 {
+    /// Construct a session from a built [`Config`](crate::Config) and transport connector.
     pub fn new(config: Config<'buf>, connector: &'a C) -> Self {
         Self {
             core: Core::new(config),
@@ -33,10 +38,19 @@ where
         self.core.is_connected()
     }
 
+    /// Returns whether the session currently has local transport/inflight capacity for a publish.
+    ///
+    /// This is intentionally a local readiness check. It does not account for payload-dependent
+    /// serialization failures or broker-advertised `MaximumPacketSize`, so `publish()` remains the
+    /// authoritative operation.
     pub fn can_publish(&mut self, qos: QoS) -> bool {
         self.core.can_publish(qos)
     }
 
+    /// Send a `SUBSCRIBE`.
+    ///
+    /// Call this after [`Event::Connected`](crate::Event::Connected). A resumed
+    /// [`Event::Reconnected`](crate::Event::Reconnected) already kept broker-side subscriptions.
     pub async fn subscribe(
         &mut self,
         topics: &[TopicFilter<'_>],
@@ -52,6 +66,7 @@ where
         result
     }
 
+    /// Send an `UNSUBSCRIBE`.
     pub async fn unsubscribe(
         &mut self,
         topics: &[&str],
@@ -67,6 +82,10 @@ where
         result
     }
 
+    /// Send a `PUBLISH`.
+    ///
+    /// For QoS 1 and 2, the session retains the encoded packet in its TX buffer until the broker
+    /// acknowledges it.
     pub async fn publish<P>(
         &mut self,
         publication: Publication<'_, P>,
@@ -81,6 +100,10 @@ where
         result
     }
 
+    /// Advance the session once.
+    ///
+    /// `poll()` drives reconnect, keepalive, retransmission, and inbound packet handling. Call it
+    /// regularly from your main loop.
     pub async fn poll(&mut self) -> Result<Event<'_>, Error> {
         let _ = self.ensure_connected().await?;
         if let Some(resumed) = self.pending_activation.take() {

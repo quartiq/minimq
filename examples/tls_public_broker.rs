@@ -129,10 +129,7 @@ async fn main() -> Result<(), ExampleError> {
     let sub_config = ConfigBuilder::from_buffer_layout(
         broker,
         &mut sub_storage,
-        BufferLayout {
-            rx: 1024,
-            outbound: 3072,
-        },
+        BufferLayout { rx: 1024, tx: 3072 },
     )?
     .client_id(&unique_id("sub"))?
     .set_auth(USERNAME, PASSWORD)?
@@ -141,10 +138,7 @@ async fn main() -> Result<(), ExampleError> {
     let pub_config = ConfigBuilder::from_buffer_layout(
         broker,
         &mut pub_storage,
-        BufferLayout {
-            rx: 1024,
-            outbound: 3072,
-        },
+        BufferLayout { rx: 1024, tx: 3072 },
     )?
     .client_id(&unique_id("pub"))?
     .set_auth(USERNAME, PASSWORD)?

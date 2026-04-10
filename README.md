@@ -8,7 +8,7 @@
 It is built for applications that want:
 
 - one long-lived MQTT session object with automatic reconnect
-- explicit caller-owned buffers
+- explicit caller-owned RX/TX packet buffers
 - async transport over [`embedded_io_async`]
 - MQTT5 request/reply support without extra glue
 
@@ -43,7 +43,7 @@ async fn run() -> Result<(), minimq::Error> {
     let config = ConfigBuilder::from_buffer_layout(
         broker,
         &mut storage,
-        BufferLayout { rx: 256, outbound: 768 },
+        BufferLayout { rx: 256, tx: 768 },
     )?
     .client_id("demo")?
     .build();
@@ -82,7 +82,7 @@ The session then owns reconnects, keepalive, packet flow, and inbound message de
 Core types:
 
 - [`Broker`]: broker endpoint config
-- [`Buffers`]: caller-owned RX/outbound memory
+- [`Buffers`]: caller-owned RX/TX memory
 - [`ConfigBuilder`]: session configuration
 - [`Session`]: the MQTT client you drive
 - [`Event`]: what `poll()` produced
@@ -109,23 +109,14 @@ subscriptions and in-flight QoS state were kept.
 
 You supply two buffers:
 
-- `rx`: inbound packet storage
-- `outbound`: outbound packet encoding plus retransmission storage for QoS/session handling
+- `rx`: storage for one inbound MQTT packet. Size it for the largest packet you expect to receive.
+- `tx`: outbound encode and replay storage. It must cover the largest outbound packet and any
+  retained in-flight QoS/session state.
 
-The outbound buffer is shared:
+If `tx` is full, `publish()` can return [`Error::NotReady`] until the broker advances the in-flight
+state.
 
-- QoS 1 and 2 publishes are retained there until the broker acknowledges them
-- the same bytes are reused to replay those publishes after a reconnect
-- QoS 0 publishes and larger control packets also encode there transiently
-
-That means outbound capacity is not just "how big a single publish may be". It also bounds how much
-unacknowledged QoS traffic the session can retain. If that arena is full, `publish()` can return
-[`Error::NotReady`] until
-the broker advances the in-flight state.
-
-If you prefer one contiguous slab, use
-[`BufferLayout::split()`]
-to carve it into named regions.
+Use [`BufferLayout::split()`] if you prefer one contiguous slab.
 
 ## Request / Reply
 

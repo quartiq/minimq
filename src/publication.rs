@@ -44,14 +44,17 @@ pub struct OwnedResponseTarget<const TOPIC: usize, const CORRELATION: usize> {
 }
 
 impl<const TOPIC: usize, const CORRELATION: usize> OwnedResponseTarget<TOPIC, CORRELATION> {
+    /// Return the response topic.
     pub fn topic(&self) -> &str {
         self.topic.as_str()
     }
 
+    /// Return the response correlation data, if present.
     pub fn correlation_data(&self) -> Option<&[u8]> {
         self.correlation_data.as_deref()
     }
 
+    /// Build a publication addressed to this response target.
     pub fn publication<'a, P>(&'a self, payload: P) -> Publication<'a, P> {
         let publication = Publication::new(self.topic.as_str(), payload);
         match self.correlation_data.as_deref() {
@@ -96,6 +99,7 @@ impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for F {
     }
 }
 
+/// Builder for an outbound MQTT `PUBLISH`.
 pub struct Publication<'a, P> {
     pub(crate) topic: &'a str,
     pub(crate) properties: Properties<'a>,
@@ -105,6 +109,7 @@ pub struct Publication<'a, P> {
 }
 
 impl<'a, P> Publication<'a, P> {
+    /// Construct a publication with QoS 0, no retain flag, and no user properties.
     pub fn new(topic: &'a str, payload: P) -> Self {
         Self {
             payload,
@@ -119,16 +124,19 @@ impl<'a, P> Publication<'a, P> {
         &self.properties
     }
 
+    /// Set the requested publish QoS.
     pub fn qos(mut self, qos: QoS) -> Self {
         self.qos = qos;
         self
     }
 
+    /// Mark the publication as retained.
     pub fn retain(mut self) -> Self {
         self.retain = Retain::Retained;
         self
     }
 
+    /// Attach MQTT v5 publish properties.
     pub fn properties(mut self, properties: &'a [Property<'a>]) -> Self {
         self.properties = match self.properties {
             Properties::Slice(_) => Properties::Slice(properties),
@@ -141,6 +149,7 @@ impl<'a, P> Publication<'a, P> {
         self
     }
 
+    /// Attach MQTT v5 correlation data.
     pub fn correlate(mut self, data: &'a [u8]) -> Self {
         self.properties = match self.properties {
             Properties::Slice(properties) | Properties::CorrelatedSlice { properties, .. } => {

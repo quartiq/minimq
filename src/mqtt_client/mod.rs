@@ -26,24 +26,33 @@ where
 {
 }
 
+/// Inbound MQTT `PUBLISH` delivered by [`Event::Inbound`].
 #[derive(Debug)]
 pub struct InboundPublish<'a> {
+    /// Topic name from the broker.
     pub topic: &'a str,
+    /// Borrowed payload bytes.
     pub payload: &'a [u8],
+    /// MQTT v5 publish properties.
     pub properties: Properties<'a>,
+    /// Retain flag from the inbound publish.
     pub retain: Retain,
+    /// QoS level from the inbound publish.
     pub qos: QoS,
 }
 
 impl<'a> InboundPublish<'a> {
+    /// Return the MQTT v5 response topic, if present.
     pub fn response_topic(&'a self) -> Option<&'a str> {
         self.properties.response_topic()
     }
 
+    /// Return MQTT v5 correlation data, if present.
     pub fn correlation_data(&'a self) -> Option<&'a [u8]> {
         self.properties.correlation_data()
     }
 
+    /// Build a direct reply publication when the inbound message carries a response topic.
     pub fn reply<P>(&'a self, payload: P) -> Option<Publication<'a, P>> {
         Some(ResponseTarget {
             topic: self.response_topic()?,
@@ -67,10 +76,15 @@ impl<'a> InboundPublish<'a> {
     }
 }
 
+/// Output of [`Session::poll`](crate::Session::poll).
 #[derive(Debug)]
 pub enum Event<'a> {
+    /// No inbound message was produced.
     Idle,
+    /// The transport connected and the broker created a fresh session.
     Connected,
+    /// The transport reconnected and the broker resumed the existing session.
     Reconnected,
+    /// An inbound publish was received.
     Inbound(InboundPublish<'a>),
 }

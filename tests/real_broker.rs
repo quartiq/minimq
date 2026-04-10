@@ -47,8 +47,8 @@ fn unique_topic() -> String {
 
 fn config<'a>(broker: Broker<'a>, client_id: &str) -> minimq::Config<'a> {
     let rx = Box::leak(Box::new([0; 1024]));
-    let outbound = Box::leak(Box::new([0; 2048]));
-    ConfigBuilder::new(broker, Buffers { rx, outbound })
+    let tx = Box::leak(Box::new([0; 2048]));
+    ConfigBuilder::new(broker, Buffers { rx, tx })
         .client_id(client_id)
         .unwrap()
         .build()

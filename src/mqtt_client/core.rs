@@ -136,7 +136,7 @@ impl<'buf> Core<'buf> {
             broker,
             client_id,
             packet_reader: PacketReader::new(buffers.rx),
-            session: SessionData::new(buffers.outbound),
+            session: SessionData::new(buffers.tx),
             runtime: RuntimeState::new(keepalive_interval),
             will,
             auth,
@@ -216,6 +216,9 @@ impl<'buf> Core<'buf> {
         if self.runtime.state != ConnectionState::Active {
             return Err(Error::Disconnected);
         }
+        if topics.is_empty() {
+            return Err(ProtocolError::NoTopic.into());
+        }
 
         self.require_retained_slot()?;
         let packet_id = self.session.next_packet_id();
@@ -245,6 +248,9 @@ impl<'buf> Core<'buf> {
     ) -> Result<(), Error> {
         if self.runtime.state != ConnectionState::Active {
             return Err(Error::Disconnected);
+        }
+        if topics.is_empty() {
+            return Err(ProtocolError::NoTopic.into());
         }
 
         self.require_retained_slot()?;
@@ -435,10 +441,17 @@ impl<'buf> Core<'buf> {
                 runtime: &mut self.runtime,
             };
             let result = handle_packet(&mut ctx, connection, packet, now).await;
-            let transport_error = matches!(result, Err(Error::Transport(_)));
-            if transport_error {
+            let disconnect = matches!(result, Err(Error::Transport(_)))
+                || matches!(
+                    result,
+                    Err(Error::Protocol(ProtocolError::Failed(
+                        crate::ReasonCode::PacketTooLarge
+                    )))
+                );
+            if disconnect {
                 ctx.mark_disconnected();
             }
+            let transport_error = matches!(result, Err(Error::Transport(_)));
             (result, transport_error)
         };
         debug_assert!(!transport_error || self.runtime.state == ConnectionState::Disconnected);
