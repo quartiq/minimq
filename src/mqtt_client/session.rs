@@ -125,6 +125,17 @@ where
         }
 
         if let Some(deadline) = self.core.next_deadline() {
+            if deadline <= Instant::now() {
+                let mut connection = self.take_connection()?;
+                let result = self.core.maintain(&mut connection, Instant::now()).await;
+                self.connection = Some(connection);
+                result?;
+                if self.core.is_disconnected() {
+                    self.connection = None;
+                }
+                return Ok(None);
+            }
+
             let mut connection = self.take_connection()?;
             let result =
                 match select(self.core.read(&mut connection, now), Timer::at(deadline)).await {

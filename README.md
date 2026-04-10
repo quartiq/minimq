@@ -106,6 +106,17 @@ You supply two buffers:
 - `rx`: inbound packet storage
 - `outbound`: outbound packet encoding plus retransmission storage for QoS/session handling
 
+The outbound buffer is shared:
+
+- QoS 1 and 2 publishes are retained there until the broker acknowledges them
+- the same bytes are reused to replay those publishes after a reconnect
+- QoS 0 publishes and larger control packets also encode there transiently
+
+That means outbound capacity is not just "how big a single publish may be". It also bounds how much
+unacknowledged QoS traffic the session can retain. If that arena is full, `publish()` can return
+[`Error::NotReady`](https://docs.rs/minimq/latest/minimq/enum.Error.html#variant.NotReady) until
+the broker advances the in-flight state.
+
 If you prefer one contiguous slab, use
 [`BufferLayout::split()`](https://docs.rs/minimq/latest/minimq/struct.BufferLayout.html#method.split)
 to carve it into named regions.
