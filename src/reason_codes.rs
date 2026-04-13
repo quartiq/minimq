@@ -12,7 +12,7 @@ pub enum ReasonCode {
     NoMatchingSubscribers = 0x10,
     NoSubscriptionExisted = 0x11,
     ContinueAuthentication = 0x18,
-    Reuathenticate = 0x19,
+    Reauthenticate = 0x19,
 
     UnspecifiedError = 0x80,
     MalformedPacket = 0x81,
@@ -32,14 +32,14 @@ pub enum ReasonCode {
     PacketIdInUse = 0x91,
     PacketIdNotFound = 0x92,
     ReceiveMaxExceeded = 0x93,
-    TopicAliasINvalid = 0x94,
+    TopicAliasInvalid = 0x94,
     PacketTooLarge = 0x95,
     MessageRateTooHigh = 0x96,
     QuotaExceeded = 0x97,
     AdministrativeAction = 0x98,
     PayloadFormatInvalid = 0x99,
     RetainNotSupported = 0x9A,
-    QosNotSupported = 0x9b,
+    QoSNotSupported = 0x9b,
     UseAnotherServer = 0x9c,
     ServerMoved = 0x9d,
     SharedSubscriptionsNotSupported = 0x9e,
@@ -85,26 +85,12 @@ impl From<&ReasonCode> for u8 {
     }
 }
 
-impl<T, E: Into<ReasonCode>> From<Result<T, E>> for ReasonCode {
-    fn from(result: Result<T, E>) -> ReasonCode {
-        match result {
-            Ok(_) => ReasonCode::Success,
-            Err(code) => code.into(),
-        }
-    }
-}
-
-impl From<ReasonCode> for Result<(), ReasonCode> {
-    fn from(code: ReasonCode) -> Result<(), ReasonCode> {
-        if code.success() { Ok(()) } else { Err(code) }
-    }
-}
-
 impl ReasonCode {
     pub fn as_result(&self) -> Result<(), ProtocolError> {
-        let result: Result<(), ReasonCode> = (*self).into();
-        result?;
-        Ok(())
+        if self.success() {
+            return Ok(());
+        }
+        Err(ProtocolError::Failed(*self))
     }
 
     pub fn success(&self) -> bool {

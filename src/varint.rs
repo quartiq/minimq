@@ -7,9 +7,12 @@ pub struct Varint(pub u32);
 
 impl Varint {
     pub fn len(&self) -> usize {
-        let mut buffer = VarintBuffer::new();
-        buffer.write_u32_varint(self.0).unwrap();
-        buffer.data.len()
+        match self.0 {
+            0..=0x7F => 1,
+            0x80..=0x3FFF => 2,
+            0x4000..=0x1F_FFFF => 3,
+            _ => 4,
+        }
     }
 }
 

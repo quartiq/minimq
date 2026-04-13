@@ -8,14 +8,12 @@ use embassy_time::{Duration, Instant};
 use embedded_io_async::{Error as _, ErrorKind};
 use heapless::{String, Vec};
 
-use super::outbound::{
-    MAX_PENDING_RELEASE, Outbound, PendingRelease, write_control_packet, write_packet,
-};
+use super::outbound::{Outbound, write_control_packet, write_packet};
 use super::protocol::{PacketContext, handle_packet};
 use super::{InboundPublish, Io};
 
 const PING_TIMEOUT_MS: u64 = 5_000;
-const MAX_INBOUND_QOS2: usize = 4;
+const MAX_INBOUND_QOS2: usize = 8;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(super) enum ConnectionState {
@@ -161,7 +159,7 @@ impl<'buf> Core<'buf> {
         self.runtime.session_resumed
     }
 
-    pub(super) fn is_publish_ready(&mut self, qos: QoS) -> bool {
+    pub(super) fn ensure_ready(&mut self, qos: QoS) -> bool {
         if self.runtime.state != ConnectionState::Active {
             return false;
         }
@@ -296,7 +294,7 @@ impl<'buf> Core<'buf> {
             self.require_retained_slot().map_err(PubError::Error)?;
         }
 
-        if !self.is_publish_ready(qos) {
+        if !self.ensure_ready(qos) {
             return Err(PubError::Error(Error::NotReady));
         }
 
@@ -347,18 +345,31 @@ impl<'buf> Core<'buf> {
 
         if self.session.outbound.needs_replay() {
             self.session.outbound.mark_retained_dup();
-            for packet in self.session.outbound.retained_packets() {
-                Self::require_packet_size(self.runtime.maximum_packet_size, packet.len())?;
-                connection
-                    .write_all(packet)
-                    .await
-                    .map_err(|err| Error::Transport(err.kind()))?;
+            let mut retained_index = 0;
+            while let Some(packet) = self.session.outbound.retained_packet_meta(retained_index) {
+                if let Err(err) =
+                    Self::require_packet_size(self.runtime.maximum_packet_size, packet.len)
+                {
+                    self.handle_disconnect();
+                    return Err(err);
+                }
+                let write = {
+                    let packet = self
+                        .session
+                        .outbound
+                        .retained_packet(packet.offset, packet.len);
+                    connection.write_all(packet).await
+                };
+                if let Err(err) = write {
+                    self.handle_disconnect();
+                    return Err(Error::Transport(err.kind()));
+                }
+                retained_index += 1;
             }
 
-            let pending_releases: Vec<PendingRelease, MAX_PENDING_RELEASE> =
-                self.session.outbound.pending_releases().collect();
-            for release in pending_releases {
-                write_control_packet(
+            let mut release_index = 0;
+            while let Some(release) = self.session.outbound.pending_release(release_index) {
+                if let Err(err) = write_control_packet(
                     connection,
                     &PubRel {
                         packet_id: release.packet_id,
@@ -366,7 +377,12 @@ impl<'buf> Core<'buf> {
                     },
                     self.runtime.maximum_packet_size,
                 )
-                .await?;
+                .await
+                {
+                    self.handle_disconnect();
+                    return Err(err);
+                }
+                release_index += 1;
             }
 
             self.session.outbound.finish_replay();
@@ -375,10 +391,15 @@ impl<'buf> Core<'buf> {
         if self
             .runtime
             .next_ping
-            .map(|deadline| now >= deadline)
-            .unwrap_or(false)
+            .is_some_and(|deadline| now >= deadline)
         {
-            write_control_packet(connection, &PingReq {}, self.runtime.maximum_packet_size).await?;
+            if let Err(err) =
+                write_control_packet(connection, &PingReq {}, self.runtime.maximum_packet_size)
+                    .await
+            {
+                self.handle_disconnect();
+                return Err(err);
+            }
             self.runtime.ping_timeout = Some(now + Duration::from_millis(PING_TIMEOUT_MS));
             self.runtime.next_ping = Some(now + self.runtime.keepalive_interval / 2);
         }
@@ -453,7 +474,8 @@ impl<'buf> Core<'buf> {
                     )))
                 );
             if disconnect {
-                ctx.mark_disconnected();
+                ctx.session.outbound.arm_replay();
+                ctx.runtime.disconnect();
             }
             let transport_error = matches!(result, Err(Error::Transport(_)));
             (result, transport_error)
@@ -470,10 +492,6 @@ impl<'buf> Core<'buf> {
 
     fn keepalive_secs(&self) -> u16 {
         self.runtime.keepalive_interval.as_secs() as u16
-    }
-
-    pub(super) fn reset_reader(&mut self) {
-        self.packet_reader.reset();
     }
 
     fn require_retained_slot(&self) -> Result<(), Error> {

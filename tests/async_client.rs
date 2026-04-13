@@ -245,6 +245,19 @@ fn connected_session<'a>(connector: &'a MockConnector) -> Session<'a, 'static, M
     session
 }
 
+fn fill_inflight_publish_slots(session: &mut Session<'_, 'static, MockConnector>) -> usize {
+    let mut count = 0;
+    loop {
+        match block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))) {
+            Ok(()) => count += 1,
+            Err(PubError::Error(Error::Protocol(ProtocolError::InflightMetadataExhausted))) => {
+                return count;
+            }
+            other => panic!("unexpected publish result while filling inflight slots: {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn publish_connects_session_on_demand() {
     let mut connection = MockConnection::default();
@@ -329,18 +342,8 @@ fn inflight_metadata_exhaustion_is_reported() {
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    for index in 0..4 {
-        block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce)))
-            .unwrap_or_else(|_| panic!("publish {index} failed"));
-    }
-
-    let result = block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce)));
-    assert!(matches!(
-        result,
-        Err(PubError::Error(Error::Protocol(
-            ProtocolError::InflightMetadataExhausted
-        )))
-    ));
+    let capacity = fill_inflight_publish_slots(&mut session);
+    assert!(capacity > 0);
 }
 
 #[test]
@@ -403,16 +406,14 @@ fn subscribe_reports_inflight_metadata_exhaustion_before_send() {
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    for _ in 0..4 {
-        block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
-    }
+    let capacity = fill_inflight_publish_slots(&mut session);
 
     let result = block_on(session.subscribe(&[minimq::types::TopicFilter::new("data")], &[]));
     assert!(matches!(
         result,
         Err(Error::Protocol(ProtocolError::InflightMetadataExhausted))
     ));
-    assert_eq!(inspect.tx().len(), 5);
+    assert_eq!(inspect.tx().len(), capacity + 1);
 }
 
 #[test]
@@ -490,9 +491,8 @@ fn full_retained_outbound_still_sends_puback() {
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    for _ in 0..4 {
-        block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
-    }
+    let capacity = fill_inflight_publish_slots(&mut session);
+    assert!(capacity > 0);
 
     match block_on(session.poll()).unwrap() {
         Event::Inbound(message) => assert_eq!(message.topic, "data"),
@@ -511,9 +511,8 @@ fn full_retained_outbound_still_sends_pubrec() {
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    for _ in 0..4 {
-        block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
-    }
+    let capacity = fill_inflight_publish_slots(&mut session);
+    assert!(capacity > 0);
 
     match block_on(session.poll()).unwrap() {
         Event::Inbound(message) => assert_eq!(message.topic, "data"),
@@ -551,9 +550,8 @@ fn full_retained_outbound_still_sends_pingreq() {
         block_on(session.poll()).unwrap(),
         Event::Connected
     ));
-    for _ in 0..4 {
-        block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
-    }
+    let capacity = fill_inflight_publish_slots(&mut session);
+    assert!(capacity > 0);
 
     std::thread::sleep(std::time::Duration::from_millis(600));
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
@@ -619,6 +617,51 @@ fn session_reconnects_after_write_error() {
     ));
 
     block_on(session.publish(Publication::new("reply", b"ok").qos(QoS::AtLeastOnce))).unwrap();
+}
+
+#[test]
+fn session_reconnects_after_ping_write_error() {
+    let mut first = MockConnection::default();
+    let mut inspect = first.clone();
+    first.push_rx(&connack());
+
+    let mut second = MockConnection::default();
+    second.push_rx(&connack_session_present());
+
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(
+        ConfigBuilder::new(
+            "127.0.0.1:1883"
+                .parse::<std::net::SocketAddr>()
+                .unwrap()
+                .into(),
+            Buffers {
+                rx: Box::leak(Box::new([0; 128])),
+                tx: Box::leak(Box::new([0; 1152])),
+            },
+        )
+        .client_id("test")
+        .unwrap()
+        .keepalive_interval(1)
+        .build(),
+        &connector,
+    );
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    inspect.fail_write_after(0, ErrorKind::ConnectionReset);
+
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert!(matches!(
+        block_on(session.poll()),
+        Err(Error::Transport(ErrorKind::ConnectionReset))
+    ));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Reconnected
+    ));
 }
 
 #[test]
@@ -702,6 +745,43 @@ fn disconnect_sends_disconnect_packet_and_drops_connection() {
 
     assert!(!session.is_connected());
     assert_eq!(inspect.tx().last().unwrap(), &disconnect_req());
+}
+
+#[test]
+fn session_reconnects_after_replay_write_error() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.push_rx(&disconnect());
+
+    let mut second = MockConnection::default();
+    second.push_rx(&connack_session_present());
+    second.fail_write_after(1, ErrorKind::ConnectionReset);
+
+    let mut third = MockConnection::default();
+    third.push_rx(&connack_session_present());
+
+    let connector = MockConnector::with_connections([first, second, third]);
+    let mut session = Session::new(config(), &connector);
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Reconnected
+    ));
+    assert!(matches!(
+        block_on(session.poll()),
+        Err(Error::Transport(ErrorKind::ConnectionReset))
+    ));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Reconnected
+    ));
 }
 
 #[test]

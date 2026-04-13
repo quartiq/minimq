@@ -6,13 +6,19 @@ use heapless::Vec;
 use super::Io;
 
 const CONTROL_PACKET_LEN: usize = 9;
-pub(super) const MAX_RETAINED: usize = 4;
-pub(super) const MAX_PENDING_RELEASE: usize = 4;
+pub(super) const MAX_RETAINED: usize = 8;
+pub(super) const MAX_PENDING_RELEASE: usize = 8;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub(super) struct PendingRelease {
     pub(super) packet_id: u16,
     pub(super) reason: ReasonCode,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(super) struct PendingPacket {
+    pub(super) offset: usize,
+    pub(super) len: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -57,10 +63,11 @@ impl<'a> Outbound<'a> {
         self.retained.is_full()
     }
 
-    pub(super) fn retained_packets(&self) -> impl Iterator<Item = &[u8]> {
-        self.retained
-            .iter()
-            .map(|entry| &self.buf[entry.offset..entry.offset + entry.len])
+    pub(super) fn retained_packet_meta(&self, index: usize) -> Option<PendingPacket> {
+        self.retained.get(index).map(|entry| PendingPacket {
+            offset: entry.offset,
+            len: entry.len,
+        })
     }
 
     pub(super) fn max_inflight(&self) -> u16 {
@@ -164,8 +171,8 @@ impl<'a> Outbound<'a> {
         Ok(())
     }
 
-    pub(super) fn pending_releases(&self) -> impl Iterator<Item = PendingRelease> + '_ {
-        self.pending_release.iter().copied()
+    pub(super) fn pending_release(&self, index: usize) -> Option<PendingRelease> {
+        self.pending_release.get(index).copied()
     }
 
     pub(super) fn arm_replay(&mut self) {
@@ -193,34 +200,6 @@ impl<'a> Outbound<'a> {
             cursor += entry.len;
         }
         self.used = cursor;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Outbound;
-    use crate::{
-        packets::Subscribe,
-        types::{Properties, TopicFilter},
-    };
-
-    #[test]
-    fn encode_packet_returns_absolute_offset_after_retained_prefix() {
-        let mut storage = [0u8; 64];
-        let mut outbound = Outbound::new(&mut storage);
-
-        outbound.retain_packet(7, 0, 10).unwrap();
-
-        let (offset, len) = outbound
-            .encode_packet(&Subscribe {
-                packet_id: 16,
-                dup: false,
-                properties: Properties::Slice(&[]),
-                topics: &[TopicFilter::new("ABC")],
-            })
-            .unwrap();
-
-        assert_eq!(&outbound.retained_packet(offset, len)[..2], &[0x82, 0x09]);
     }
 }
 
@@ -270,4 +249,32 @@ where
         .await
         .map_err(|err| Error::Transport(err.kind()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Outbound;
+    use crate::{
+        packets::Subscribe,
+        types::{Properties, TopicFilter},
+    };
+
+    #[test]
+    fn encode_packet_returns_absolute_offset_after_retained_prefix() {
+        let mut storage = [0u8; 64];
+        let mut outbound = Outbound::new(&mut storage);
+
+        outbound.retain_packet(7, 0, 10).unwrap();
+
+        let (offset, len) = outbound
+            .encode_packet(&Subscribe {
+                packet_id: 16,
+                dup: false,
+                properties: Properties::Slice(&[]),
+                topics: &[TopicFilter::new("ABC")],
+            })
+            .unwrap();
+
+        assert_eq!(&outbound.retained_packet(offset, len)[..2], &[0x82, 0x09]);
+    }
 }

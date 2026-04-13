@@ -38,14 +38,14 @@ where
         self.core.is_connected()
     }
 
-    /// Return whether the session currently has local transport and in-flight capacity for a
+    /// Ensure the session currently has local transport and in-flight capacity for a
     /// publish at the requested QoS.
     ///
     /// This is intentionally a local readiness check. It does not account for payload-dependent
     /// serialization failures or broker-advertised `MaximumPacketSize`, so `publish()` remains the
     /// authoritative operation.
-    pub fn is_publish_ready(&mut self, qos: QoS) -> bool {
-        self.core.is_publish_ready(qos)
+    pub fn ensure_ready(&mut self, qos: QoS) -> bool {
+        self.core.ensure_ready(qos)
     }
 
     /// Gracefully close the current MQTT transport with `DISCONNECT`.
@@ -53,12 +53,12 @@ where
     /// This only closes the current transport. A later [`poll`](Self::poll) will connect again.
     /// If the broker preserves the MQTT session, subscriptions and in-flight state may resume.
     pub async fn disconnect(&mut self) -> Result<(), Error> {
-        let Some(mut connection) = self.connection.take() else {
-            self.pending_activation = None;
+        self.pending_activation = None;
+        let Some(connection) = self.connection.as_mut() else {
             return Ok(());
         };
-        let result = self.core.disconnect(&mut connection).await;
-        self.pending_activation = None;
+        let result = self.core.disconnect(connection).await;
+        self.connection = None;
         result
     }
 
@@ -72,13 +72,10 @@ where
         properties: &[Property<'_>],
     ) -> Result<(), Error> {
         let _ = self.ensure_connected().await?;
-        let mut connection = self.take_connection()?;
-        let result = self
-            .core
-            .subscribe(&mut connection, topics, properties)
-            .await;
-        self.connection = Some(connection);
-        result
+        let Some(connection) = self.connection.as_mut() else {
+            return Err(Error::Disconnected);
+        };
+        self.core.subscribe(connection, topics, properties).await
     }
 
     /// Send an `UNSUBSCRIBE`.
@@ -88,13 +85,10 @@ where
         properties: &[Property<'_>],
     ) -> Result<(), Error> {
         let _ = self.ensure_connected().await?;
-        let mut connection = self.take_connection()?;
-        let result = self
-            .core
-            .unsubscribe(&mut connection, topics, properties)
-            .await;
-        self.connection = Some(connection);
-        result
+        let Some(connection) = self.connection.as_mut() else {
+            return Err(Error::Disconnected);
+        };
+        self.core.unsubscribe(connection, topics, properties).await
     }
 
     /// Send a `PUBLISH`.
@@ -109,10 +103,10 @@ where
         P: crate::publication::ToPayload,
     {
         let _ = self.ensure_connected().await.map_err(PubError::Error)?;
-        let mut connection = self.take_connection().map_err(PubError::Error)?;
-        let result = self.core.publish(&mut connection, publication).await;
-        self.connection = Some(connection);
-        result
+        let Some(connection) = self.connection.as_mut() else {
+            return Err(PubError::Error(Error::Disconnected));
+        };
+        self.core.publish(connection, publication).await
     }
 
     /// Advance the session once.
@@ -139,17 +133,16 @@ where
         let mut activated = false;
         loop {
             if self.core.is_disconnected() {
-                self.core.reset_reader();
                 self.connection = None;
             }
 
             if self.connection.is_none() {
                 let connection = self.connector.connect(self.core.broker()).await?;
                 self.connection = Some(connection);
-                let mut connection = self.take_connection()?;
-                let result = self.core.connect(&mut connection).await;
-                self.connection = Some(connection);
-                result?;
+                let Some(connection) = self.connection.as_mut() else {
+                    return Err(Error::Disconnected);
+                };
+                self.core.connect(connection).await?;
                 activated = true;
             }
 
@@ -166,12 +159,10 @@ where
 
     async fn step(&mut self) -> Result<Option<InboundPublish<'_>>, Error> {
         let now = Instant::now();
-        {
-            let mut connection = self.take_connection()?;
-            let result = self.core.maintain(&mut connection, now).await;
-            self.connection = Some(connection);
-            result?;
-        }
+        let Some(connection) = self.connection.as_mut() else {
+            return Err(Error::Disconnected);
+        };
+        self.core.maintain(connection, now).await?;
 
         if self.core.is_disconnected() {
             self.connection = None;
@@ -180,60 +171,37 @@ where
 
         if let Some(deadline) = self.core.next_deadline() {
             if deadline <= Instant::now() {
-                let mut connection = self.take_connection()?;
-                let result = self.core.maintain(&mut connection, Instant::now()).await;
-                self.connection = Some(connection);
-                result?;
+                let Some(connection) = self.connection.as_mut() else {
+                    return Err(Error::Disconnected);
+                };
+                self.core.maintain(connection, Instant::now()).await?;
                 if self.core.is_disconnected() {
                     self.connection = None;
                 }
                 return Ok(None);
             }
 
-            let mut connection = self.take_connection()?;
-            let result =
-                match select(self.core.read(&mut connection, now), Timer::at(deadline)).await {
-                    Either::First(result) => match result {
-                        Ok(result) => result,
-                        Err(Error::Transport(ErrorKind::TimedOut | ErrorKind::Interrupted)) => {
-                            self.connection = Some(connection);
-                            return Ok(None);
-                        }
-                        Err(err) => {
-                            self.connection = Some(connection);
-                            return Err(err);
-                        }
-                    },
-                    Either::Second(_) => {
-                        self.connection = Some(connection);
-                        return Ok(None);
-                    }
-                };
-            self.connection = Some(connection);
-            return Ok(result);
+            let Some(connection) = self.connection.as_mut() else {
+                return Err(Error::Disconnected);
+            };
+            return match select(self.core.read(connection, now), Timer::at(deadline)).await {
+                Either::First(result) => match result {
+                    Ok(result) => Ok(result),
+                    Err(Error::Transport(ErrorKind::TimedOut | ErrorKind::Interrupted)) => Ok(None),
+                    Err(err) => Err(err),
+                },
+                Either::Second(_) => Ok(None),
+            };
         }
 
-        let mut connection = self.take_connection()?;
-        let result = match self.core.read(&mut connection, now).await {
-            Ok(result) => result,
-            Err(Error::Transport(ErrorKind::TimedOut | ErrorKind::Interrupted)) => {
-                self.connection = Some(connection);
-                return Ok(None);
-            }
-            Err(err) => {
-                self.connection = Some(connection);
-                return Err(err);
-            }
+        let Some(connection) = self.connection.as_mut() else {
+            return Err(Error::Disconnected);
         };
-        self.connection = Some(connection);
+        let result = match self.core.read(connection, now).await {
+            Ok(result) => result,
+            Err(Error::Transport(ErrorKind::TimedOut | ErrorKind::Interrupted)) => return Ok(None),
+            Err(err) => return Err(err),
+        };
         Ok(result)
-    }
-
-    fn take_connection(&mut self) -> Result<C::Connection<'a>, Error> {
-        debug_assert!(
-            self.connection.is_some(),
-            "connection missing while session is active"
-        );
-        self.connection.take().ok_or(Error::Disconnected)
     }
 }
