@@ -1,5 +1,5 @@
 use crate::properties::Property;
-use crate::types::{BinaryData, Properties};
+use crate::types::Properties;
 use crate::{ProtocolError, QoS, Retain};
 use heapless::{String, Vec};
 
@@ -16,11 +16,11 @@ pub(crate) struct ResponseTarget<'a> {
 
 impl<'a> ResponseTarget<'a> {
     pub(crate) fn publication<P>(self, payload: P) -> Publication<'a, P> {
-        let publication = Publication::new(self.topic, payload);
-        match self.correlation_data {
-            Some(data) => publication.correlate(data),
-            None => publication,
+        let mut publication = Publication::new(self.topic, payload);
+        if let Some(data) = self.correlation_data {
+            publication = publication.correlate(data);
         }
+        publication
     }
 
     pub(crate) fn to_owned<const TOPIC: usize, const CORRELATION: usize>(
@@ -56,11 +56,11 @@ impl<const TOPIC: usize, const CORRELATION: usize> OwnedResponseTarget<TOPIC, CO
 
     /// Build a publication addressed to this response target.
     pub fn publication<'a, P>(&'a self, payload: P) -> Publication<'a, P> {
-        let publication = Publication::new(self.topic.as_str(), payload);
-        match self.correlation_data.as_deref() {
-            Some(data) => publication.correlate(data),
-            None => publication,
+        let mut publication = Publication::new(self.topic.as_str(), payload);
+        if let Some(data) = self.correlation_data.as_deref() {
+            publication = publication.correlate(data);
         }
+        publication
     }
 }
 
@@ -138,32 +138,13 @@ impl<'a, P> Publication<'a, P> {
 
     /// Attach MQTT v5 publish properties.
     pub fn properties(mut self, properties: &'a [Property<'a>]) -> Self {
-        self.properties = match self.properties {
-            Properties::Slice(_) => Properties::Slice(properties),
-            Properties::CorrelatedSlice { correlation, .. } => Properties::CorrelatedSlice {
-                correlation,
-                properties,
-            },
-            Properties::DataBlock(_) => Properties::Slice(properties),
-        };
+        self.properties = self.properties.with_properties(properties);
         self
     }
 
     /// Attach MQTT v5 correlation data.
     pub fn correlate(mut self, data: &'a [u8]) -> Self {
-        self.properties = match self.properties {
-            Properties::Slice(properties) | Properties::CorrelatedSlice { properties, .. } => {
-                Properties::CorrelatedSlice {
-                    properties,
-                    correlation: Property::CorrelationData(BinaryData(data)),
-                }
-            }
-            Properties::DataBlock(_) => Properties::CorrelatedSlice {
-                properties: &[],
-                correlation: Property::CorrelationData(BinaryData(data)),
-            },
-        };
-
+        self.properties = self.properties.with_correlation(data);
         self
     }
 }

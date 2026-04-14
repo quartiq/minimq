@@ -97,6 +97,10 @@ pub struct ConfigBuilder<'a> {
 
 impl<'a> ConfigBuilder<'a> {
     /// Construct a session configuration from explicit packet buffers.
+    ///
+    /// The default session expiry is `u32::MAX`, which requests a long-lived persistent session.
+    /// Call [`session_expiry_interval`](Self::session_expiry_interval) to choose a shorter-lived
+    /// session or `0` for a clean session that expires on disconnect.
     pub fn new(broker: Broker<'a>, buffers: Buffers<'a>) -> Self {
         Self {
             broker,
@@ -123,7 +127,7 @@ impl<'a> ConfigBuilder<'a> {
     pub fn set_auth(
         mut self,
         user_name: &'a str,
-        password: &'a str,
+        password: &'a [u8],
     ) -> Result<Self, ProtocolError> {
         if self.auth.is_some() {
             return Err(ProtocolError::AuthAlreadySpecified);

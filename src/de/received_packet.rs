@@ -72,6 +72,24 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
         let _length: Varint = seq.next_element()?.unwrap();
         let packet_type = MessageType::try_from(fixed_header.get_bits(4..=7))
             .map_err(|_| A::Error::custom("Invalid MQTT control packet type"))?;
+        let flags = fixed_header.get_bits(0..=3);
+
+        let valid_flags = match packet_type {
+            MessageType::Publish => true,
+            MessageType::PubRel => flags == 0b0010,
+            MessageType::ConnAck
+            | MessageType::PubAck
+            | MessageType::PubRec
+            | MessageType::PubComp
+            | MessageType::SubAck
+            | MessageType::UnsubAck
+            | MessageType::PingResp
+            | MessageType::Disconnect => flags == 0,
+            _ => true,
+        };
+        if !valid_flags {
+            return Err(A::Error::custom("Invalid MQTT control packet flags"));
+        }
 
         let packet = match packet_type {
             MessageType::ConnAck => ReceivedPacket::ConnAck(seq.next_element()?.unwrap()),
@@ -286,6 +304,36 @@ mod test {
             ReceivedPacket::PingResp => {}
             _ => panic!("Invalid message"),
         }
+    }
+
+    #[test]
+    fn reject_ping_resp_with_invalid_flags() {
+        let serialized_ping_resp: [u8; 2] = [
+            0xd1, // Ping resp with invalid flags
+            0x00,
+        ];
+
+        assert!(matches!(
+            ReceivedPacket::from_buffer(&serialized_ping_resp),
+            Err(crate::ProtocolError::Deserialization(
+                crate::DeError::Custom
+            ))
+        ));
+    }
+
+    #[test]
+    fn reject_pubrel_with_invalid_flags() {
+        let serialized_pubrel: [u8; 4] = [
+            0x60, // PubRel with invalid flags
+            0x02, 0x00, 0x05,
+        ];
+
+        assert!(matches!(
+            ReceivedPacket::from_buffer(&serialized_pubrel),
+            Err(crate::ProtocolError::Deserialization(
+                crate::DeError::Custom
+            ))
+        ));
     }
 
     #[test]

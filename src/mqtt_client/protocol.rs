@@ -15,13 +15,6 @@ pub(super) struct PacketContext<'a, 'buf> {
     pub(super) runtime: &'a mut RuntimeState,
 }
 
-impl PacketContext<'_, '_> {
-    pub(super) fn mark_disconnected(&mut self) {
-        self.session.outbound.arm_replay();
-        self.runtime.disconnect();
-    }
-}
-
 pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
     cx: &mut PacketContext<'_, 'state>,
     connection: &mut C,
@@ -30,7 +23,10 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
 ) -> Result<Option<InboundPublish<'pkt>>, Error> {
     match packet {
         ReceivedPacket::ConnAck(ack) => {
-            ack.reason_code.as_result()?;
+            if let Err(err) = ack.reason_code.as_result() {
+                cx.runtime.disconnect();
+                return Err(err.into());
+            }
             cx.runtime.session_resumed = ack.session_present;
             if !ack.session_present {
                 cx.session.reset();
@@ -202,7 +198,8 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
         }
         ReceivedPacket::Disconnect(_) => {
             debug!("Received broker DISCONNECT");
-            cx.mark_disconnected();
+            cx.session.outbound.arm_replay();
+            cx.runtime.disconnect();
         }
     }
 

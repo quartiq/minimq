@@ -34,12 +34,42 @@ impl Properties<'_> {
 }
 
 impl<'a> Properties<'a> {
+    pub fn iter(&'a self) -> PropertiesIter<'a> {
+        self.into_iter()
+    }
+
     pub fn response_topic(&'a self) -> Option<&'a str> {
-        self.into_iter().response_topic()
+        self.iter().response_topic()
     }
 
     pub fn correlation_data(&'a self) -> Option<&'a [u8]> {
-        self.into_iter().correlation_data()
+        self.iter().correlation_data()
+    }
+
+    pub(crate) fn with_properties(self, properties: &'a [Property<'a>]) -> Self {
+        match self {
+            Self::CorrelatedSlice { correlation, .. } => Self::CorrelatedSlice {
+                correlation,
+                properties,
+            },
+            Self::Slice(_) | Self::DataBlock(_) => Self::Slice(properties),
+        }
+    }
+
+    pub(crate) fn with_correlation(self, data: &'a [u8]) -> Self {
+        let correlation = Property::CorrelationData(BinaryData(data));
+        match self {
+            Self::Slice(properties) | Self::CorrelatedSlice { properties, .. } => {
+                Self::CorrelatedSlice {
+                    correlation,
+                    properties,
+                }
+            }
+            Self::DataBlock(_) => Self::CorrelatedSlice {
+                correlation,
+                properties: &[],
+            },
+        }
     }
 }
 
@@ -66,25 +96,20 @@ enum PropertiesIterInner<'a> {
 
 impl<'a> PropertiesIter<'a> {
     pub fn response_topic(&mut self) -> Option<&'a str> {
-        self.find_map(|prop| {
-            if let Ok(crate::Property::ResponseTopic(topic)) = prop {
-                Some(topic.0)
-            } else {
-                None
-            }
+        self.find_map(|prop| match prop {
+            Ok(crate::Property::ResponseTopic(topic)) => Some(topic.0),
+            _ => None,
         })
     }
 
     pub fn correlation_data(&mut self) -> Option<&'a [u8]> {
-        self.find_map(|prop| {
-            if let Ok(crate::Property::CorrelationData(data)) = prop {
-                Some(data.0)
-            } else {
-                None
-            }
+        self.find_map(|prop| match prop {
+            Ok(crate::Property::CorrelationData(data)) => Some(data.0),
+            _ => None,
         })
     }
 }
+
 impl<'a> core::iter::Iterator for PropertiesIter<'a> {
     type Item = Result<Property<'a>, ProtocolError>;
 
@@ -208,13 +233,9 @@ impl serde::Serialize for BinaryData<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::Error;
 
-        if self.0.len() > u16::MAX as usize {
-            return Err(S::Error::custom("Provided string is too long"));
-        }
-
-        let len = self.0.len() as u16;
+        let len = u16::try_from(self.0.len())
+            .map_err(|_| S::Error::custom("Provided binary data is too long"))?;
         let mut item = serializer.serialize_struct("_BinaryData", 0)?;
-
         item.serialize_field("_len", &len)?;
         item.serialize_field("_data", self.0)?;
         item.end()
@@ -278,7 +299,7 @@ impl<'de> serde::de::Deserialize<'de> for BinaryData<'de> {
 #[derive(Debug, Copy, Clone)]
 pub struct Auth<'a> {
     pub user_name: &'a str,
-    pub password: &'a str,
+    pub password: &'a [u8],
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -288,13 +309,9 @@ impl serde::Serialize for Utf8String<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::Error;
 
-        if self.0.len() > u16::MAX as usize {
-            return Err(S::Error::custom("Provided string is too long"));
-        }
-
-        let len = self.0.len() as u16;
+        let len = u16::try_from(self.0.len())
+            .map_err(|_| S::Error::custom("Provided string is too long"))?;
         let mut item = serializer.serialize_struct("_Utf8String", 0)?;
-
         item.serialize_field("_len", &len)?;
         item.serialize_field("_string", self.0)?;
         item.end()
