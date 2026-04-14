@@ -92,7 +92,7 @@ pub enum ProtocolError {
     #[error("broker returned failure reason {0:?}")]
     Failed(ReasonCode),
     #[error(transparent)]
-    Serialization(SerError),
+    Encode(SerError),
     #[error(transparent)]
     Deserialization(DeError),
 }
@@ -100,23 +100,23 @@ pub enum ProtocolError {
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum PubError<E> {
     #[error(transparent)]
-    Error(#[from] Error),
+    Session(#[from] Error),
     #[error("payload serialization failed")]
-    Serialization(E),
+    Payload(E),
 }
 
 impl<E> From<crate::ser::PubError<E>> for PubError<E> {
     fn from(e: crate::ser::PubError<E>) -> Self {
         match e {
-            crate::ser::PubError::Other(e) => Self::Serialization(e),
-            crate::ser::PubError::Error(e) => Self::Error(ProtocolError::from(e).into()),
+            crate::ser::PubError::Payload(e) => Self::Payload(e),
+            crate::ser::PubError::Encode(e) => Self::Session(ProtocolError::from(e).into()),
         }
     }
 }
 
 impl From<crate::ser::Error> for ProtocolError {
     fn from(err: crate::ser::Error) -> Self {
-        Self::Serialization(err)
+        Self::Encode(err)
     }
 }
 

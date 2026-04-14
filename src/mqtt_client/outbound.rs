@@ -130,10 +130,10 @@ impl<'a> Outbound<'a> {
         let (offset, packet) =
             crate::ser::MqttSerializer::pub_to_buffer_meta(&mut self.buf[start..], packet)
                 .map_err(|err| match err {
-                    crate::ser::PubError::Error(err) => {
-                        PubError::Error(Error::Protocol(err.into()))
+                    crate::ser::PubError::Encode(err) => {
+                        PubError::Session(Error::Protocol(err.into()))
                     }
-                    crate::ser::PubError::Other(err) => PubError::Serialization(err),
+                    crate::ser::PubError::Payload(err) => PubError::Payload(err),
                 })?;
         Ok((start + offset, packet.len()))
     }

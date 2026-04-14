@@ -159,7 +159,7 @@ impl<'buf> Core<'buf> {
         self.runtime.session_resumed
     }
 
-    pub(super) fn ensure_ready(&mut self, qos: QoS) -> bool {
+    pub(super) fn can_publish(&mut self, qos: QoS) -> bool {
         if self.runtime.state != ConnectionState::Active {
             return false;
         }
@@ -274,7 +274,7 @@ impl<'buf> Core<'buf> {
         P: crate::publication::ToPayload,
     {
         if self.runtime.state != ConnectionState::Active {
-            return Err(PubError::Error(Error::Disconnected));
+            return Err(PubError::Session(Error::Disconnected));
         }
 
         let mut publish: Pub<'_, P> = publish.into();
@@ -291,34 +291,34 @@ impl<'buf> Core<'buf> {
         let packet_id = publish.packet_id;
         let qos = publish.qos;
         if packet_id.is_some() {
-            self.require_retained_slot().map_err(PubError::Error)?;
+            self.require_retained_slot().map_err(PubError::Session)?;
         }
 
-        if !self.ensure_ready(qos) {
-            return Err(PubError::Error(Error::NotReady));
+        if !self.can_publish(qos) {
+            return Err(PubError::Session(Error::NotReady));
         }
 
         if let Some(packet_id) = packet_id {
             let (offset, len) = self.session.outbound.encode_publish(publish)?;
             Self::require_packet_size(self.runtime.maximum_packet_size, len)
-                .map_err(PubError::Error)?;
+                .map_err(PubError::Session)?;
             self.write_retained_packet(connection, packet_id, offset, len)
                 .await
-                .map_err(PubError::Error)?;
+                .map_err(PubError::Session)?;
             self.runtime.send_quota = self.runtime.send_quota.saturating_sub(1);
             return Ok(());
         }
 
         let maximum_packet_size = self.runtime.maximum_packet_size;
         let packet = self.serialize_publish(publish)?;
-        Self::require_packet_size(maximum_packet_size, packet.len()).map_err(PubError::Error)?;
+        Self::require_packet_size(maximum_packet_size, packet.len()).map_err(PubError::Session)?;
         if let Err(err) = connection.write_all(packet).await {
             self.handle_disconnect();
-            return Err(PubError::Error(Error::Transport(err.kind())));
+            return Err(PubError::Session(Error::Transport(err.kind())));
         }
         if let Err(err) = connection.flush().await {
             self.handle_disconnect();
-            return Err(PubError::Error(Error::Transport(err.kind())));
+            return Err(PubError::Session(Error::Transport(err.kind())));
         }
 
         Ok(())
@@ -559,8 +559,8 @@ impl<'buf> Core<'buf> {
     ) -> Result<&[u8], PubError<P::Error>> {
         crate::ser::MqttSerializer::pub_to_buffer(self.session.outbound.scratch_space(), packet)
             .map_err(|err| match err {
-                crate::ser::PubError::Error(err) => PubError::Error(Error::Protocol(err.into())),
-                crate::ser::PubError::Other(err) => PubError::Serialization(err),
+                crate::ser::PubError::Encode(err) => PubError::Session(Error::Protocol(err.into())),
+                crate::ser::PubError::Payload(err) => PubError::Payload(err),
             })
     }
 }
