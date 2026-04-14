@@ -159,7 +159,7 @@ impl<'buf> Core<'buf> {
         self.runtime.session_resumed
     }
 
-    pub(super) fn ensure_ready(&mut self, qos: QoS) -> bool {
+    pub(super) fn can_publish(&mut self, qos: QoS) -> bool {
         if self.runtime.state != ConnectionState::Active {
             return false;
         }
@@ -294,7 +294,7 @@ impl<'buf> Core<'buf> {
             self.require_retained_slot().map_err(PubError::Error)?;
         }
 
-        if !self.ensure_ready(qos) {
+        if !self.can_publish(qos) {
             return Err(PubError::Error(Error::NotReady));
         }
 

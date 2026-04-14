@@ -38,14 +38,17 @@ where
         self.core.is_connected()
     }
 
-    /// Ensure the session currently has local transport and in-flight capacity for a
+    /// Return whether the session currently has the local capacity to attempt a
     /// publish at the requested QoS.
     ///
-    /// This is intentionally a local readiness check. It does not account for payload-dependent
-    /// serialization failures or broker-advertised `MaximumPacketSize`, so `publish()` remains the
-    /// authoritative operation.
-    pub fn ensure_ready(&mut self, qos: QoS) -> bool {
-        self.core.ensure_ready(qos)
+    /// This check is pessimistic for local backpressure: if it returns `false`,
+    /// `publish()` would currently fail with local readiness/backpressure.
+    ///
+    /// It is optimistic overall: if it returns `true`, `publish()` can still
+    /// fail for payload-dependent serialization, broker-advertised
+    /// `MaximumPacketSize`, disconnects, or transport errors.
+    pub fn can_publish(&mut self, qos: QoS) -> bool {
+        self.core.can_publish(qos)
     }
 
     /// Gracefully close the current MQTT transport with `DISCONNECT`.
