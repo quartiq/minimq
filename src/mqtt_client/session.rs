@@ -105,9 +105,9 @@ where
     where
         P: crate::publication::ToPayload,
     {
-        let _ = self.ensure_connected().await.map_err(PubError::Error)?;
+        let _ = self.ensure_connected().await.map_err(PubError::Session)?;
         let Some(connection) = self.connection.as_mut() else {
-            return Err(PubError::Error(Error::Disconnected));
+            return Err(PubError::Session(Error::Disconnected));
         };
         self.core.publish(connection, publication).await
     }

@@ -250,7 +250,7 @@ fn fill_inflight_publish_slots(session: &mut Session<'_, 'static, MockConnector>
     loop {
         match block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))) {
             Ok(()) => count += 1,
-            Err(PubError::Error(Error::Protocol(ProtocolError::InflightMetadataExhausted))) => {
+            Err(PubError::Session(Error::Protocol(ProtocolError::InflightMetadataExhausted))) => {
                 return count;
             }
             other => panic!("unexpected publish result while filling inflight slots: {other:?}"),
@@ -623,7 +623,7 @@ fn connack_receive_maximum_clamps_local_quota() {
     block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
 
     let result = block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce)));
-    assert!(matches!(result, Err(PubError::Error(Error::NotReady))));
+    assert!(matches!(result, Err(PubError::Session(Error::NotReady))));
 }
 
 #[test]
@@ -662,7 +662,7 @@ fn session_reconnects_after_write_error() {
         .unwrap_err();
     assert!(matches!(
         error,
-        PubError::Error(Error::Transport(ErrorKind::ConnectionReset))
+        PubError::Session(Error::Transport(ErrorKind::ConnectionReset))
     ));
 
     block_on(session.publish(Publication::new("reply", b"ok").qos(QoS::AtLeastOnce))).unwrap();
@@ -883,7 +883,7 @@ fn publish_rejects_packets_larger_than_broker_maximum() {
     let result = block_on(session.publish(Publication::new("data", b"x")));
     assert!(matches!(
         result,
-        Err(PubError::Error(Error::Protocol(ProtocolError::Failed(
+        Err(PubError::Session(Error::Protocol(ProtocolError::Failed(
             minimq::ReasonCode::PacketTooLarge
         ))))
     ));

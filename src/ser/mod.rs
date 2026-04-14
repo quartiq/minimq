@@ -52,8 +52,8 @@ pub enum Error {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum PubError<E> {
-    Error(Error),
-    Other(E),
+    Encode(Error),
+    Payload(E),
 }
 
 impl serde::ser::StdError for Error {}
@@ -138,20 +138,20 @@ impl<'a> MqttSerializer<'a> {
         let mut serializer = crate::ser::MqttSerializer::new(buf);
         pub_packet
             .serialize(&mut serializer)
-            .map_err(PubError::Error)?;
+            .map_err(PubError::Encode)?;
 
         // Next, serialize the payload into the remaining buffer
         let flags = pub_packet.fixed_header_flags();
         let len = pub_packet
             .payload
             .serialize(serializer.remainder())
-            .map_err(PubError::Other)?;
-        serializer.commit(len).map_err(PubError::Error)?;
+            .map_err(PubError::Payload)?;
+        serializer.commit(len).map_err(PubError::Encode)?;
 
         // Finally, finish the packet and send it.
         let (offset, packet) = serializer
             .finalize(MessageType::Publish, flags)
-            .map_err(PubError::Error)?;
+            .map_err(PubError::Encode)?;
         Ok((offset, packet))
     }
 
