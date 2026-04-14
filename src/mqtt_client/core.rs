@@ -456,7 +456,15 @@ impl<'buf> Core<'buf> {
 
         let packet = {
             let packet_reader = &mut self.packet_reader;
-            packet_reader.received_packet()?
+            packet_reader.received_packet()
+        };
+        let packet = match packet {
+            Ok(packet) => packet,
+            Err(err) => {
+                self.session.outbound.arm_replay();
+                self.runtime.disconnect();
+                return Err(err.into());
+            }
         };
         info!("Received {:?}", packet);
         let (result, transport_error) = {
@@ -469,10 +477,24 @@ impl<'buf> Core<'buf> {
             let disconnect = matches!(result, Err(Error::Transport(_)))
                 || matches!(
                     result,
+                    Err(Error::Protocol(
+                        ProtocolError::MalformedPacket
+                            | ProtocolError::UnexpectedPacket
+                            | ProtocolError::InvalidProperty
+                            | ProtocolError::WrongQos
+                            | ProtocolError::UnsupportedPacket
+                            | ProtocolError::BadIdentifier
+                            | ProtocolError::Deserialization(_)
+                    ))
+                )
+                || matches!(
+                    result,
                     Err(Error::Protocol(ProtocolError::Failed(
                         crate::ReasonCode::PacketTooLarge
                     )))
-                );
+                )
+                || (ctx.runtime.state != ConnectionState::Active
+                    && matches!(result, Err(Error::Protocol(ProtocolError::Failed(_)))));
             if disconnect {
                 ctx.session.outbound.arm_replay();
                 ctx.runtime.disconnect();

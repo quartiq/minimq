@@ -23,7 +23,10 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
 ) -> Result<Option<InboundPublish<'pkt>>, Error> {
     match packet {
         ReceivedPacket::ConnAck(ack) => {
-            ack.reason_code.as_result()?;
+            if let Err(err) = ack.reason_code.as_result() {
+                cx.runtime.disconnect();
+                return Err(err.into());
+            }
             cx.runtime.session_resumed = ack.session_present;
             if !ack.session_present {
                 cx.session.reset();

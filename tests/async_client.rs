@@ -336,6 +336,55 @@ fn broker_disconnect_without_session_resume_reports_connected() {
 }
 
 #[test]
+fn failed_connack_disconnects_session_and_allows_reconnect() {
+    let mut first = MockConnection::default();
+    first.push_rx(&[0x20, 0x03, 0x00, 0x87, 0x00]);
+    let mut second = MockConnection::default();
+    second.push_rx(&connack());
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config(), &connector);
+
+    assert!(matches!(
+        block_on(session.poll()),
+        Err(Error::Protocol(ProtocolError::Failed(
+            minimq::ReasonCode::NotAuthorized
+        )))
+    ));
+    assert!(!session.is_connected());
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+}
+
+#[test]
+fn malformed_inbound_packet_disconnects_session_and_allows_reconnect() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.push_rx(&[0x20, 0xFF, 0xFF, 0xFF, 0xFF]);
+
+    let mut second = MockConnection::default();
+    second.push_rx(&connack());
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config(), &connector);
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    let result = block_on(session.poll());
+    assert!(
+        matches!(result, Err(Error::Protocol(ProtocolError::MalformedPacket))),
+        "unexpected poll result: {result:?}"
+    );
+    assert!(!session.is_connected());
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+}
+
+#[test]
 fn inflight_metadata_exhaustion_is_reported() {
     let mut connection = MockConnection::default();
     connection.push_rx(&connack());

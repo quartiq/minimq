@@ -46,7 +46,7 @@ impl<'a> Properties<'a> {
         self.iter().correlation_data()
     }
 
-    pub fn with_properties(self, properties: &'a [Property<'a>]) -> Self {
+    pub(crate) fn with_properties(self, properties: &'a [Property<'a>]) -> Self {
         match self {
             Self::CorrelatedSlice { correlation, .. } => Self::CorrelatedSlice {
                 correlation,
@@ -56,7 +56,7 @@ impl<'a> Properties<'a> {
         }
     }
 
-    pub fn with_correlation(self, data: &'a [u8]) -> Self {
+    pub(crate) fn with_correlation(self, data: &'a [u8]) -> Self {
         let correlation = Property::CorrelationData(BinaryData(data));
         match self {
             Self::Slice(properties) | Self::CorrelatedSlice { properties, .. } => {
@@ -299,7 +299,7 @@ impl<'de> serde::de::Deserialize<'de> for BinaryData<'de> {
 #[derive(Debug, Copy, Clone)]
 pub struct Auth<'a> {
     pub user_name: &'a str,
-    pub password: &'a str,
+    pub password: &'a [u8],
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]

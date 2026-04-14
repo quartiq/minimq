@@ -2,7 +2,7 @@ use crate::{
     QoS, Retain,
     publication::Publication,
     reason_codes::ReasonCode,
-    types::{Auth, Properties, TopicFilter, Utf8String},
+    types::{Auth, BinaryData, Properties, TopicFilter, Utf8String},
     will::Will,
 };
 use bit_field::BitField;
@@ -52,7 +52,7 @@ impl serde::Serialize for Connect<'_> {
 
         if let Some(auth) = &self.auth {
             item.serialize_field("user_name", &Utf8String(auth.user_name))?;
-            item.serialize_field("password", &Utf8String(auth.password))?;
+            item.serialize_field("password", &BinaryData(auth.password))?;
         }
 
         item.end()

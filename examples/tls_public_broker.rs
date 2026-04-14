@@ -99,7 +99,7 @@ async fn main() -> Result<(), ExampleError> {
         BufferLayout { rx: 1024, tx: 3072 },
     )?
     .client_id(&unique_id("sub"))?
-    .set_auth(USERNAME, PASSWORD)?
+    .set_auth(USERNAME, PASSWORD.as_bytes())?
     .build();
 
     let pub_config = ConfigBuilder::from_buffer_layout(
@@ -108,7 +108,7 @@ async fn main() -> Result<(), ExampleError> {
         BufferLayout { rx: 1024, tx: 3072 },
     )?
     .client_id(&unique_id("pub"))?
-    .set_auth(USERNAME, PASSWORD)?
+    .set_auth(USERNAME, PASSWORD.as_bytes())?
     .build();
 
     let mut subscriber = Session::new(sub_config, &connector);
