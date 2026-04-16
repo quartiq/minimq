@@ -1,5 +1,5 @@
 use crate::de::received_packet::ReceivedPacket;
-use crate::packets::{PubAck, PubComp, PubRec, PubRel};
+use crate::packets::{PubAck, PubComp, PubRec};
 use crate::{Error, Property, ProtocolError, QoS, ReasonCode, debug};
 use core::convert::TryFrom;
 use embassy_time::{Duration, Instant};
@@ -68,13 +68,25 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
             cx.runtime.ping_timeout = None;
         }
         ReceivedPacket::SubAck(ack) => {
-            cx.session.outbound.ack_packet(ack.packet_identifier)?;
+            if !cx.session.outbound.ack_packet(ack.packet_identifier) {
+                debug!(
+                    "Ignoring stale SUBACK for packet id {}",
+                    ack.packet_identifier
+                );
+                return Ok(None);
+            }
             for &code in ack.codes {
                 ReasonCode::from(code).as_result()?;
             }
         }
         ReceivedPacket::UnsubAck(ack) => {
-            cx.session.outbound.ack_packet(ack.packet_identifier)?;
+            if !cx.session.outbound.ack_packet(ack.packet_identifier) {
+                debug!(
+                    "Ignoring stale UNSUBACK for packet id {}",
+                    ack.packet_identifier
+                );
+                return Ok(None);
+            }
             for &code in ack.codes {
                 ReasonCode::from(code).as_result()?;
             }
@@ -83,37 +95,54 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
             cx.runtime.ping_timeout = None;
         }
         ReceivedPacket::PubAck(ack) => {
+            if !cx.session.outbound.ack_packet(ack.packet_identifier) {
+                debug!(
+                    "Ignoring stale PUBACK for packet id {}",
+                    ack.packet_identifier
+                );
+                return Ok(None);
+            }
             cx.runtime.send_quota = cx
                 .runtime
                 .send_quota
                 .saturating_add(1)
                 .min(cx.runtime.max_send_quota);
-            cx.session.outbound.ack_packet(ack.packet_identifier)?;
             ack.reason.code().as_result()?;
         }
         ReceivedPacket::PubRec(rec) => {
-            cx.runtime.send_quota = cx
-                .runtime
-                .send_quota
-                .saturating_add(1)
-                .min(cx.runtime.max_send_quota);
-            cx.session.outbound.ack_packet(rec.packet_id)?;
+            let queue_release = match cx.session.outbound.ack_packet(rec.packet_id) {
+                true => {
+                    cx.runtime.send_quota = cx
+                        .runtime
+                        .send_quota
+                        .saturating_add(1)
+                        .min(cx.runtime.max_send_quota);
+                    true
+                }
+                false if cx.session.outbound.has_pending_release(rec.packet_id) => {
+                    debug!(
+                        "Replaying PUBREL after stale PUBREC for packet id {}",
+                        rec.packet_id
+                    );
+                    false
+                }
+                false => {
+                    debug!("Ignoring stale PUBREC for packet id {}", rec.packet_id);
+                    return Ok(None);
+                }
+            };
             rec.reason.code().as_result()?;
-            cx.session
-                .outbound
-                .queue_release(rec.packet_id, ReasonCode::Success)?;
-            write_control_packet(
-                connection,
-                &PubRel {
-                    packet_id: rec.packet_id,
-                    reason: ReasonCode::Success.into(),
-                },
-                cx.runtime.maximum_packet_size,
-            )
-            .await?;
+            if queue_release {
+                cx.session
+                    .outbound
+                    .queue_release(rec.packet_id, ReasonCode::Success)?;
+            }
         }
         ReceivedPacket::PubComp(comp) => {
-            cx.session.outbound.ack_release(comp.packet_id)?;
+            if !cx.session.outbound.ack_release(comp.packet_id) {
+                debug!("Ignoring stale PUBCOMP for packet id {}", comp.packet_id);
+                return Ok(None);
+            }
             comp.reason.code().as_result()?;
         }
         ReceivedPacket::PubRel(rel) => {

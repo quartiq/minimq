@@ -13,12 +13,7 @@ pub(super) const MAX_PENDING_RELEASE: usize = 8;
 pub(super) struct PendingRelease {
     pub(super) packet_id: u16,
     pub(super) reason: ReasonCode,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(super) struct PendingPacket {
-    pub(super) offset: usize,
-    pub(super) len: usize,
+    state: SendState,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -26,6 +21,29 @@ struct RetainedPacket {
     packet_id: u16,
     offset: usize,
     len: usize,
+    state: SendState,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(super) enum SendState {
+    Write { written: usize },
+    Flush,
+    Sent,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(super) struct RetainedStep {
+    pub(super) packet_id: u16,
+    pub(super) offset: usize,
+    pub(super) len: usize,
+    pub(super) state: SendState,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub(super) struct ReleaseStep {
+    pub(super) packet_id: u16,
+    pub(super) reason: ReasonCode,
+    pub(super) state: SendState,
 }
 
 #[derive(Debug)]
@@ -34,7 +52,6 @@ pub(super) struct Outbound<'a> {
     used: usize,
     retained: Vec<RetainedPacket, MAX_RETAINED>,
     pending_release: Vec<PendingRelease, MAX_PENDING_RELEASE>,
-    replay_armed: bool,
 }
 
 impl<'a> Outbound<'a> {
@@ -44,7 +61,6 @@ impl<'a> Outbound<'a> {
             used: 0,
             retained: Vec::new(),
             pending_release: Vec::new(),
-            replay_armed: false,
         }
     }
 
@@ -52,7 +68,6 @@ impl<'a> Outbound<'a> {
         self.used = 0;
         self.retained.clear();
         self.pending_release.clear();
-        self.replay_armed = false;
     }
 
     fn has_pending_state(&self) -> bool {
@@ -61,13 +76,6 @@ impl<'a> Outbound<'a> {
 
     pub(super) fn retained_full(&self) -> bool {
         self.retained.is_full()
-    }
-
-    pub(super) fn retained_packet_meta(&self, index: usize) -> Option<PendingPacket> {
-        self.retained.get(index).map(|entry| PendingPacket {
-            offset: entry.offset,
-            len: entry.len,
-        })
     }
 
     pub(super) fn max_inflight(&self) -> u16 {
@@ -84,15 +92,17 @@ impl<'a> Outbound<'a> {
         &mut self.buf[self.used..]
     }
 
-    pub(super) fn ack_packet(&mut self, packet_id: u16) -> Result<(), ProtocolError> {
-        let position = self
+    pub(super) fn ack_packet(&mut self, packet_id: u16) -> bool {
+        let Some(position) = self
             .retained
             .iter()
             .position(|entry| entry.packet_id == packet_id)
-            .ok_or(ProtocolError::BadIdentifier)?;
+        else {
+            return false;
+        };
         self.retained.swap_remove(position);
         self.compact();
-        Ok(())
+        true
     }
 
     pub(super) fn queue_release(
@@ -101,18 +111,30 @@ impl<'a> Outbound<'a> {
         reason: ReasonCode,
     ) -> Result<(), ProtocolError> {
         self.pending_release
-            .push(PendingRelease { packet_id, reason })
+            .push(PendingRelease {
+                packet_id,
+                reason,
+                state: SendState::Write { written: 0 },
+            })
             .map_err(|_| ProtocolError::InflightMetadataExhausted)
     }
 
-    pub(super) fn ack_release(&mut self, packet_id: u16) -> Result<(), ProtocolError> {
-        let position = self
+    pub(super) fn ack_release(&mut self, packet_id: u16) -> bool {
+        let Some(position) = self
             .pending_release
             .iter()
             .position(|pending| pending.packet_id == packet_id)
-            .ok_or(ProtocolError::BadIdentifier)?;
+        else {
+            return false;
+        };
         self.pending_release.swap_remove(position);
-        Ok(())
+        true
+    }
+
+    pub(super) fn has_pending_release(&self, packet_id: u16) -> bool {
+        self.pending_release
+            .iter()
+            .any(|pending| pending.packet_id == packet_id)
     }
 
     pub(super) fn mark_retained_dup(&mut self) {
@@ -165,26 +187,94 @@ impl<'a> Outbound<'a> {
                 packet_id,
                 offset,
                 len,
+                state: SendState::Write { written: 0 },
             })
             .map_err(|_| ProtocolError::InflightMetadataExhausted)?;
         self.used = self.used.max(offset + len);
         Ok(())
     }
 
-    pub(super) fn pending_release(&self, index: usize) -> Option<PendingRelease> {
-        self.pending_release.get(index).copied()
+    pub(super) fn next_retained_step(&self) -> Option<RetainedStep> {
+        self.retained.iter().find_map(|entry| {
+            (entry.state != SendState::Sent).then_some(RetainedStep {
+                packet_id: entry.packet_id,
+                offset: entry.offset,
+                len: entry.len,
+                state: entry.state,
+            })
+        })
+    }
+
+    pub(super) fn next_release_step(&self) -> Option<ReleaseStep> {
+        self.pending_release.iter().find_map(|entry| {
+            (entry.state != SendState::Sent).then_some(ReleaseStep {
+                packet_id: entry.packet_id,
+                reason: entry.reason,
+                state: entry.state,
+            })
+        })
+    }
+
+    pub(super) fn set_retained_written(&mut self, packet_id: u16, written: usize, len: usize) {
+        if let Some(entry) = self
+            .retained
+            .iter_mut()
+            .find(|entry| entry.packet_id == packet_id)
+        {
+            entry.state = if written >= len {
+                SendState::Flush
+            } else {
+                SendState::Write { written }
+            };
+        }
+    }
+
+    pub(super) fn flush_retained(&mut self, packet_id: u16) {
+        if let Some(entry) = self
+            .retained
+            .iter_mut()
+            .find(|entry| entry.packet_id == packet_id)
+        {
+            entry.state = SendState::Sent;
+        }
+    }
+
+    pub(super) fn set_release_written(&mut self, packet_id: u16, written: usize, len: usize) {
+        if let Some(entry) = self
+            .pending_release
+            .iter_mut()
+            .find(|entry| entry.packet_id == packet_id)
+        {
+            entry.state = if written >= len {
+                SendState::Flush
+            } else {
+                SendState::Write { written }
+            };
+        }
+    }
+
+    pub(super) fn flush_release(&mut self, packet_id: u16) {
+        if let Some(entry) = self
+            .pending_release
+            .iter_mut()
+            .find(|entry| entry.packet_id == packet_id)
+        {
+            entry.state = SendState::Sent;
+        }
     }
 
     pub(super) fn arm_replay(&mut self) {
-        self.replay_armed = self.has_pending_state();
-    }
+        if !self.has_pending_state() {
+            return;
+        }
 
-    pub(super) fn needs_replay(&self) -> bool {
-        self.replay_armed
-    }
-
-    pub(super) fn finish_replay(&mut self) {
-        self.replay_armed = false;
+        self.mark_retained_dup();
+        for entry in &mut self.retained {
+            entry.state = SendState::Write { written: 0 };
+        }
+        for entry in &mut self.pending_release {
+            entry.state = SendState::Write { written: 0 };
+        }
     }
 
     fn compact(&mut self) {

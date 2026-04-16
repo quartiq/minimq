@@ -8,7 +8,7 @@ use embassy_time::{Duration, Instant};
 use embedded_io_async::{Error as _, ErrorKind};
 use heapless::{String, Vec};
 
-use super::outbound::{Outbound, write_control_packet, write_packet};
+use super::outbound::{Outbound, SendState, write_control_packet, write_packet};
 use super::protocol::{PacketContext, handle_packet};
 use super::{InboundPublish, Io};
 
@@ -217,6 +217,7 @@ impl<'buf> Core<'buf> {
         if topics.is_empty() {
             return Err(ProtocolError::NoTopic.into());
         }
+        self.drive_outbound(connection).await?;
 
         self.require_retained_slot()?;
         let packet_id = self.session.next_packet_id();
@@ -231,8 +232,11 @@ impl<'buf> Core<'buf> {
             })
             .map_err(Error::Protocol)?;
         Self::require_packet_size(self.runtime.maximum_packet_size, len)?;
-        self.write_retained_packet(connection, packet_id, offset, len)
-            .await
+        self.session
+            .outbound
+            .retain_packet(packet_id, offset, len)
+            .map_err(Error::Protocol)?;
+        self.drive_outbound(connection).await
     }
 
     pub(super) async fn unsubscribe<C: Io>(
@@ -247,6 +251,7 @@ impl<'buf> Core<'buf> {
         if topics.is_empty() {
             return Err(ProtocolError::NoTopic.into());
         }
+        self.drive_outbound(connection).await?;
 
         self.require_retained_slot()?;
         let packet_id = self.session.next_packet_id();
@@ -261,8 +266,11 @@ impl<'buf> Core<'buf> {
             })
             .map_err(Error::Protocol)?;
         Self::require_packet_size(self.runtime.maximum_packet_size, len)?;
-        self.write_retained_packet(connection, packet_id, offset, len)
-            .await
+        self.session
+            .outbound
+            .retain_packet(packet_id, offset, len)
+            .map_err(Error::Protocol)?;
+        self.drive_outbound(connection).await
     }
 
     pub(super) async fn publish<C: Io, P>(
@@ -276,6 +284,9 @@ impl<'buf> Core<'buf> {
         if self.runtime.state != ConnectionState::Active {
             return Err(PubError::Session(Error::Disconnected));
         }
+        self.drive_outbound(connection)
+            .await
+            .map_err(PubError::Session)?;
 
         let mut publish: Pub<'_, P> = publish.into();
         if let Some(max_qos) = self.runtime.max_qos
@@ -302,10 +313,14 @@ impl<'buf> Core<'buf> {
             let (offset, len) = self.session.outbound.encode_publish(publish)?;
             Self::require_packet_size(self.runtime.maximum_packet_size, len)
                 .map_err(PubError::Session)?;
-            self.write_retained_packet(connection, packet_id, offset, len)
+            self.session
+                .outbound
+                .retain_packet(packet_id, offset, len)
+                .map_err(|err| PubError::Session(Error::Protocol(err)))?;
+            self.runtime.send_quota = self.runtime.send_quota.saturating_sub(1);
+            self.drive_outbound(connection)
                 .await
                 .map_err(PubError::Session)?;
-            self.runtime.send_quota = self.runtime.send_quota.saturating_sub(1);
             return Ok(());
         }
 
@@ -342,51 +357,7 @@ impl<'buf> Core<'buf> {
             self.handle_disconnect();
             return Ok(());
         }
-
-        if self.session.outbound.needs_replay() {
-            self.session.outbound.mark_retained_dup();
-            let mut retained_index = 0;
-            while let Some(packet) = self.session.outbound.retained_packet_meta(retained_index) {
-                if let Err(err) =
-                    Self::require_packet_size(self.runtime.maximum_packet_size, packet.len)
-                {
-                    self.handle_disconnect();
-                    return Err(err);
-                }
-                let write = {
-                    let packet = self
-                        .session
-                        .outbound
-                        .retained_packet(packet.offset, packet.len);
-                    connection.write_all(packet).await
-                };
-                if let Err(err) = write {
-                    self.handle_disconnect();
-                    return Err(Error::Transport(err.kind()));
-                }
-                retained_index += 1;
-            }
-
-            let mut release_index = 0;
-            while let Some(release) = self.session.outbound.pending_release(release_index) {
-                if let Err(err) = write_control_packet(
-                    connection,
-                    &PubRel {
-                        packet_id: release.packet_id,
-                        reason: release.reason.into(),
-                    },
-                    self.runtime.maximum_packet_size,
-                )
-                .await
-                {
-                    self.handle_disconnect();
-                    return Err(err);
-                }
-                release_index += 1;
-            }
-
-            self.session.outbound.finish_replay();
-        }
+        self.drive_outbound(connection).await?;
 
         if self
             .runtime
@@ -530,27 +501,87 @@ impl<'buf> Core<'buf> {
         Ok(())
     }
 
-    async fn write_retained_packet<C: Io>(
-        &mut self,
-        connection: &mut C,
-        packet_id: u16,
-        offset: usize,
-        len: usize,
-    ) -> Result<(), Error> {
-        Self::require_packet_size(self.runtime.maximum_packet_size, len)?;
-        let packet = self.session.outbound.retained_packet(offset, len);
-        if let Err(err) = connection.write_all(packet).await {
-            self.handle_disconnect();
-            return Err(Error::Transport(err.kind()));
+    async fn drive_outbound<C: Io>(&mut self, connection: &mut C) -> Result<(), Error> {
+        let mut release_buf = [0u8; 9];
+
+        loop {
+            if let Some(step) = self.session.outbound.next_retained_step() {
+                match step.state {
+                    SendState::Write { written } => {
+                        Self::require_packet_size(self.runtime.maximum_packet_size, step.len)?;
+                        let packet = self.session.outbound.retained_packet(step.offset, step.len);
+                        let count = match connection.write(&packet[written..]).await {
+                            Ok(0) => {
+                                self.handle_disconnect();
+                                return Err(Error::Transport(ErrorKind::WriteZero));
+                            }
+                            Ok(count) => count,
+                            Err(err) => {
+                                self.handle_disconnect();
+                                return Err(Error::Transport(err.kind()));
+                            }
+                        };
+                        self.session.outbound.set_retained_written(
+                            step.packet_id,
+                            written + count,
+                            step.len,
+                        );
+                    }
+                    SendState::Flush => {
+                        if let Err(err) = connection.flush().await {
+                            self.handle_disconnect();
+                            return Err(Error::Transport(err.kind()));
+                        }
+                        self.session.outbound.flush_retained(step.packet_id);
+                    }
+                    SendState::Sent => {}
+                }
+                continue;
+            }
+
+            if let Some(step) = self.session.outbound.next_release_step() {
+                match step.state {
+                    SendState::Write { written } => {
+                        let packet = crate::ser::MqttSerializer::to_buffer(
+                            &mut release_buf,
+                            &PubRel {
+                                packet_id: step.packet_id,
+                                reason: step.reason.into(),
+                            },
+                        )
+                        .map_err(|err| Error::Protocol(err.into()))?;
+                        Self::require_packet_size(self.runtime.maximum_packet_size, packet.len())?;
+                        let count = match connection.write(&packet[written..]).await {
+                            Ok(0) => {
+                                self.handle_disconnect();
+                                return Err(Error::Transport(ErrorKind::WriteZero));
+                            }
+                            Ok(count) => count,
+                            Err(err) => {
+                                self.handle_disconnect();
+                                return Err(Error::Transport(err.kind()));
+                            }
+                        };
+                        self.session.outbound.set_release_written(
+                            step.packet_id,
+                            written + count,
+                            packet.len(),
+                        );
+                    }
+                    SendState::Flush => {
+                        if let Err(err) = connection.flush().await {
+                            self.handle_disconnect();
+                            return Err(Error::Transport(err.kind()));
+                        }
+                        self.session.outbound.flush_release(step.packet_id);
+                    }
+                    SendState::Sent => {}
+                }
+                continue;
+            }
+
+            return Ok(());
         }
-        if let Err(err) = connection.flush().await {
-            self.handle_disconnect();
-            return Err(Error::Transport(err.kind()));
-        }
-        self.session
-            .outbound
-            .retain_packet(packet_id, offset, len)
-            .map_err(Error::Protocol)
     }
 
     fn serialize_publish<P: crate::publication::ToPayload>(
