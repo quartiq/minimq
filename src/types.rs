@@ -25,7 +25,7 @@ impl Properties<'_> {
                 properties,
             } => properties
                 .iter()
-                .chain([*correlation].iter())
+                .chain([correlation.clone()].iter())
                 .map(|prop| prop.size())
                 .sum(),
             Properties::DataBlock(block) => block.len(),
@@ -127,7 +127,7 @@ impl<'a> core::iter::Iterator for PropertiesIter<'a> {
                 Some(property)
             }
             PropertiesIterInner::Slice { props, index } => {
-                let property = props.get(*index).copied()?;
+                let property = props.get(*index).cloned()?;
                 *index += 1;
                 Some(Ok(property))
             }
@@ -139,10 +139,10 @@ impl<'a> core::iter::Iterator for PropertiesIter<'a> {
             } => {
                 if !*yielded_correlation {
                     *yielded_correlation = true;
-                    return Some(Ok(*correlation));
+                    return Some(Ok(correlation.clone()));
                 }
 
-                let property = props.get(*index).copied()?;
+                let property = props.get(*index).cloned()?;
                 *index += 1;
                 Some(Ok(property))
             }
@@ -170,7 +170,7 @@ impl<'a> core::iter::IntoIterator for &'a Properties<'a> {
                 properties,
             } => PropertiesIter {
                 inner: PropertiesIterInner::Correlated {
-                    correlation: *correlation,
+                    correlation: correlation.clone(),
                     yielded_correlation: false,
                     props: properties,
                     index: 0,
@@ -266,7 +266,8 @@ mod tests {
         let props = [Property::ReceiveMaximum(2), Property::MaximumQoS(1)];
         let properties = Properties::Slice(&props);
         let values: HVec<_, 4> = (&properties).into_iter().collect();
-        let expected: HVec<_, 4> = HVec::from_slice(&[Ok(props[0]), Ok(props[1])]).unwrap();
+        let expected: HVec<_, 4> =
+            HVec::from_slice(&[Ok(props[0].clone()), Ok(props[1].clone())]).unwrap();
         assert_eq!(values, expected);
     }
 
@@ -275,11 +276,12 @@ mod tests {
         let props = [Property::ReceiveMaximum(2)];
         let correlation = Property::CorrelationData(BinaryData(b"abc"));
         let properties = Properties::CorrelatedSlice {
-            correlation,
+            correlation: correlation.clone(),
             properties: &props,
         };
         let values: HVec<_, 4> = (&properties).into_iter().collect();
-        let expected: HVec<_, 4> = HVec::from_slice(&[Ok(correlation), Ok(props[0])]).unwrap();
+        let expected: HVec<_, 4> =
+            HVec::from_slice(&[Ok(correlation), Ok(props[0].clone())]).unwrap();
         assert_eq!(values, expected);
     }
 

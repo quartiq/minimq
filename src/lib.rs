@@ -59,7 +59,7 @@ pub enum Retain {
 
 /// Errors that are specific to the MQTT protocol implementation.
 #[non_exhaustive]
-#[derive(Debug, Copy, Clone, PartialEq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ProtocolError {
     #[error("provided client ID is too long")]
     ProvidedClientIdTooLong,
