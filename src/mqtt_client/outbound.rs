@@ -1,5 +1,5 @@
 use crate::packets::Pub;
-use crate::{Error, ProtocolError, PubError, ReasonCode};
+use crate::{Error, ProtocolError, PubError, ReasonCode, trace};
 use embedded_io_async::Error as _;
 use heapless::Vec;
 
@@ -76,6 +76,22 @@ impl<'a> Outbound<'a> {
 
     pub(super) fn retained_full(&self) -> bool {
         self.retained.is_full()
+    }
+
+    pub(super) fn used(&self) -> usize {
+        self.used
+    }
+
+    pub(super) fn capacity(&self) -> usize {
+        self.buf.len()
+    }
+
+    pub(super) fn retained_len(&self) -> usize {
+        self.retained.len()
+    }
+
+    pub(super) fn pending_release_len(&self) -> usize {
+        self.pending_release.len()
     }
 
     pub(super) fn max_inflight(&self) -> u16 {
@@ -268,6 +284,13 @@ impl<'a> Outbound<'a> {
             return;
         }
 
+        trace!(
+            "Arming outbound replay retained={} pending_release={} tx_used={} tx_capacity={}",
+            self.retained.len(),
+            self.pending_release.len(),
+            self.used,
+            self.buf.len()
+        );
         self.mark_retained_dup();
         for entry in &mut self.retained {
             entry.state = SendState::Write { written: 0 };
@@ -278,18 +301,31 @@ impl<'a> Outbound<'a> {
     }
 
     fn compact(&mut self) {
+        let previous_used = self.used;
         self.retained.sort_unstable_by_key(|entry| entry.offset);
 
         let mut cursor = 0;
+        let mut moved = 0;
         for entry in self.retained.iter_mut() {
             if entry.offset != cursor {
                 self.buf
                     .copy_within(entry.offset..entry.offset + entry.len, cursor);
                 entry.offset = cursor;
+                moved += 1;
             }
             cursor += entry.len;
         }
         self.used = cursor;
+        if moved != 0 || previous_used != self.used {
+            trace!(
+                "Compacted outbound buffer moved={} tx_used={} -> {} retained={} pending_release={}",
+                moved,
+                previous_used,
+                self.used,
+                self.retained.len(),
+                self.pending_release.len()
+            );
+        }
     }
 }
 

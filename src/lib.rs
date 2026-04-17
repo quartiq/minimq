@@ -32,7 +32,7 @@ pub use ser::Error as SerError;
 
 use num_enum::TryFromPrimitive;
 
-pub(crate) use log::{debug, error, info, trace};
+pub(crate) use log::{debug, info, trace, warn};
 
 /// Default port number for unencrypted MQTT traffic.
 pub const MQTT_INSECURE_DEFAULT_PORT: u16 = 1883;

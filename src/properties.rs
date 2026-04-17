@@ -139,7 +139,7 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
         use serde::de::{Error, VariantAccess};
 
         let (field, variant) = data.variant::<PropertyIdentifier>()?;
-        crate::trace!("Deserializing {:?}", field);
+        crate::trace!("Deserializing property field {:?}", field);
 
         let property = match field {
             PropertyIdentifier::ResponseTopic => {
@@ -238,7 +238,7 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Property<'a> {
                 _data: core::marker::PhantomData,
             },
         )?;
-        crate::debug!("Deserialized {:?}", prop);
+        crate::trace!("Deserialized property {:?}", prop);
         Ok(prop)
     }
 }

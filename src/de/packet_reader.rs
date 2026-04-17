@@ -1,5 +1,6 @@
 use super::received_packet::ReceivedPacket;
 use crate::ProtocolError as Error;
+use crate::{trace, warn};
 
 #[derive(Debug)]
 pub(crate) struct PacketReader<'a> {
@@ -29,14 +30,27 @@ impl<'a> PacketReader<'a> {
         };
 
         if end <= self.buffer.len() {
+            trace!(
+                "PacketReader receive window: read_bytes={}, target_end={}, packet_length={:?}",
+                self.read_bytes, end, self.packet_length
+            );
             Ok(&mut self.buffer[self.read_bytes..end])
         } else {
+            warn!(
+                "PacketReader target packet length {} exceeds buffer length {}",
+                end,
+                self.buffer.len()
+            );
             Err(Error::MalformedPacket)
         }
     }
 
     pub fn commit(&mut self, count: usize) {
         self.read_bytes += count;
+        trace!(
+            "PacketReader committed {} bytes, total {}",
+            count, self.read_bytes
+        );
     }
 
     fn probe_fixed_header(&mut self) -> Result<(), Error> {
@@ -56,12 +70,22 @@ impl<'a> PacketReader<'a> {
                 // length as a varint
                 let header_size_bytes = 1 + length_size_bytes;
                 self.packet_length = Some(header_size_bytes + packet_length);
+                trace!(
+                    "PacketReader fixed header resolved packet_length={} (header={} payload={})",
+                    header_size_bytes + packet_length,
+                    header_size_bytes,
+                    packet_length
+                );
                 break;
             }
         }
 
         // We should have found the packet length by now.
         if self.read_bytes >= 5 && self.packet_length.is_none() {
+            warn!(
+                "PacketReader failed to resolve MQTT remaining length after {} bytes",
+                self.read_bytes
+            );
             return Err(Error::MalformedPacket);
         }
 
@@ -76,12 +100,20 @@ impl<'a> PacketReader<'a> {
     }
 
     pub fn reset(&mut self) {
+        trace!(
+            "PacketReader reset (read_bytes={}, packet_length={:?})",
+            self.read_bytes, self.packet_length
+        );
         self.read_bytes = 0;
         self.packet_length = None;
     }
 
     pub fn received_packet(&mut self) -> Result<ReceivedPacket<'_>, Error> {
         let packet_length = *self.packet_length.as_ref().ok_or(Error::MalformedPacket)?;
+        trace!(
+            "PacketReader handing off complete packet of {} bytes",
+            packet_length
+        );
 
         // Reset the buffer now. Once the user drops the `ReceivedPacket`, this reader will then be
         // immediately ready to begin receiving a new packet.

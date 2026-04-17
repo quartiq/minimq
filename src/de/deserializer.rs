@@ -57,7 +57,7 @@ impl serde::ser::StdError for Error {}
 
 impl serde::de::Error for Error {
     fn custom<T: core::fmt::Display>(_msg: T) -> Self {
-        crate::error!("{}", _msg);
+        crate::trace!("Deserialization error: {}", _msg);
         Error::Custom
     }
 }
@@ -442,7 +442,7 @@ impl<'de> serde::de::EnumAccess<'de> for &'_ mut MqttDeserializer<'de> {
 
     fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self), Error> {
         let varint = self.read_varint()?;
-        crate::trace!("Read Varint: 0x{:2X}", varint);
+        crate::trace!("Read Varint: {:#X}", varint);
         let v = DeserializeSeed::deserialize(seed, varint.into_deserializer())?;
         Ok((v, self))
     }
