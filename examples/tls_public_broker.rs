@@ -114,16 +114,24 @@ async fn main() -> Result<(), ExampleError> {
     let mut subscriber = Session::new(sub_config, &connector);
     let mut publisher = Session::new(pub_config, &connector);
 
-    match subscriber.poll().await? {
+    match tokio::time::timeout(Duration::from_secs(10), subscriber.poll())
+        .await
+        .map_err(|_| ExampleError::Timeout)??
+    {
         Event::Connected => {}
         _ => return Err(ExampleError::Unexpected("subscriber connect")),
     }
     subscriber
         .subscribe(&[TopicFilter::new(&topic)], &[] as &[Property<'_>])
         .await?;
-    let _ = subscriber.poll().await?;
+    let _ = tokio::time::timeout(Duration::from_secs(10), subscriber.poll())
+        .await
+        .map_err(|_| ExampleError::Timeout)??;
 
-    match publisher.poll().await? {
+    match tokio::time::timeout(Duration::from_secs(10), publisher.poll())
+        .await
+        .map_err(|_| ExampleError::Timeout)??
+    {
         Event::Connected => {}
         _ => return Err(ExampleError::Unexpected("publisher connect")),
     }
@@ -131,19 +139,19 @@ async fn main() -> Result<(), ExampleError> {
         .publish(Publication::new(&topic, payload.as_bytes()).qos(QoS::AtLeastOnce))
         .await?;
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            return Err(ExampleError::Timeout);
-        }
-        match subscriber.poll().await? {
-            Event::Inbound(message)
-                if message.topic == topic && message.payload == payload.as_bytes() =>
-            {
-                println!("received topic={} payload={}", message.topic, payload);
-                return Ok(());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match subscriber.poll().await? {
+                Event::Inbound(message)
+                    if message.topic == topic && message.payload == payload.as_bytes() =>
+                {
+                    println!("received topic={} payload={}", message.topic, payload);
+                    return Ok(());
+                }
+                Event::Inbound(_) | Event::Idle | Event::Connected | Event::Reconnected => {}
             }
-            Event::Inbound(_) | Event::Idle | Event::Connected | Event::Reconnected => {}
         }
-    }
+    })
+    .await
+    .map_err(|_| ExampleError::Timeout)?
 }
