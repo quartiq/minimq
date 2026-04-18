@@ -51,8 +51,8 @@ impl serde::Serialize for Connect<'_> {
         }
 
         if let Some(auth) = &self.auth {
-            item.serialize_field("user_name", &Utf8String(auth.user_name))?;
-            item.serialize_field("password", &BinaryData(auth.password))?;
+            item.serialize_field("user_name", &Utf8String(auth.user_name()))?;
+            item.serialize_field("password", &BinaryData(auth.password()))?;
         }
 
         item.end()
