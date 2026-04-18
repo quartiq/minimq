@@ -404,10 +404,11 @@ impl<'buf> Core<'buf> {
         }
         self.drive_outbound(connection).await?;
 
-        if self
-            .runtime
-            .next_ping
-            .is_some_and(|deadline| now >= deadline)
+        if self.runtime.ping_timeout.is_none()
+            && self
+                .runtime
+                .next_ping
+                .is_some_and(|deadline| now >= deadline)
         {
             trace!("Sending PINGREQ");
             if let Err(err) =

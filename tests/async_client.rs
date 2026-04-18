@@ -227,6 +227,10 @@ fn pingreq() -> [u8; 2] {
     [0xC0, 0x00]
 }
 
+fn pingresp() -> [u8; 2] {
+    [0xD0, 0x00]
+}
+
 fn connack_session_present() -> [u8; 5] {
     [0x20, 0x03, 0x01, 0x00, 0x00]
 }
@@ -754,6 +758,86 @@ fn full_retained_outbound_still_sends_pingreq() {
             .iter()
             .any(|frame| frame.as_slice() == pingreq())
     );
+}
+
+#[test]
+fn keepalive_does_not_send_a_second_pingreq_while_waiting_for_pingresp() {
+    let mut connection = MockConnection::default();
+    let inspect = connection.clone();
+    connection.push_rx(&connack());
+    let connector = MockConnector::new(connection);
+    let mut session = Session::new(
+        ConfigBuilder::new(
+            "127.0.0.1:1883"
+                .parse::<std::net::SocketAddr>()
+                .unwrap()
+                .into(),
+            Buffers::new(
+                Box::leak(Box::new([0; 128])),
+                Box::leak(Box::new([0; 1152])),
+            ),
+        )
+        .client_id("test")
+        .unwrap()
+        .keepalive_interval(1)
+        .build(),
+        &connector,
+    );
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+
+    let pingreqs = inspect
+        .tx()
+        .iter()
+        .filter(|frame| frame.as_slice() == pingreq())
+        .count();
+    assert_eq!(pingreqs, 1);
+}
+
+#[test]
+fn keepalive_accepts_pingresp_without_reconnecting() {
+    let mut connection = MockConnection::default();
+    connection.push_rx(&connack());
+    let mut inspect = connection.clone();
+    let connector = MockConnector::new(connection);
+    let mut session = Session::new(
+        ConfigBuilder::new(
+            "127.0.0.1:1883"
+                .parse::<std::net::SocketAddr>()
+                .unwrap()
+                .into(),
+            Buffers::new(
+                Box::leak(Box::new([0; 128])),
+                Box::leak(Box::new([0; 1152])),
+            ),
+        )
+        .client_id("test")
+        .unwrap()
+        .keepalive_interval(1)
+        .build(),
+        &connector,
+    );
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+
+    inspect.push_rx(&pingresp());
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(session.is_connected());
 }
 
 #[test]
