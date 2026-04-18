@@ -187,13 +187,14 @@ impl<'buf> Core<'buf> {
         let clean_start = !self.session.session_present;
         let auth = self.auth;
         debug!(
-            "Sending CONNECT: broker={:?} client_id={} clean_start={} keepalive_s={} session_expiry={} receive_max={}",
+            "Sending CONNECT: broker={:?} client_id={} clean_start={} keepalive_s={} session_expiry={} receive_max={} rx_max_packet_size={}",
             self.broker,
             client_id,
             clean_start,
             keepalive,
             self.session_expiry_interval,
-            self.session.pending_server_packet_ids.capacity()
+            self.session.pending_server_packet_ids.capacity(),
+            self.packet_reader.buffer.len()
         );
 
         write_packet(

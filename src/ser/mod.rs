@@ -209,7 +209,7 @@ impl<'a> MqttSerializer<'a> {
     /// # Args
     /// * `data` - The data to push to the current head of the packet.
     pub fn push_bytes(&mut self, data: &[u8]) -> Result<(), Error> {
-        crate::trace!("Pushing {:?}", data);
+        crate::trace!("Serializer pushed {} bytes", data.len());
         if self.buf.len() - self.index < data.len() {
             return Err(Error::InsufficientMemory);
         }

@@ -65,7 +65,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
             }
 
             debug!(
-                "Activated session state resumed={} send_quota={}/{} max_qos={:?} max_packet_size={:?}",
+                "Activated session state resumed={} send_quota={}/{} max_qos={:?} broker_max_packet_size={:?}",
                 ack.session_present,
                 cx.runtime.send_quota,
                 cx.runtime.max_send_quota,

@@ -13,6 +13,8 @@ const BROKER_HOST: &str = "broker.emqx.io";
 const BROKER_PORT: u16 = 8883;
 const USERNAME: &str = "emqx";
 const PASSWORD: &str = "public";
+const TLS_READ_RECORD_BUFFER_LEN: usize = 16_640;
+const TLS_WRITE_RECORD_BUFFER_LEN: usize = 4_096;
 
 fn kind_from_std(err: &std::io::Error) -> minimq::embedded_io_async::ErrorKind {
     err.kind().into()
@@ -32,6 +34,20 @@ enum ExampleError {
     Unexpected(&'static str),
     #[error("timed out waiting for subscribed publish")]
     Timeout,
+}
+
+async fn poll_until_idle<C: Connector>(
+    session: &mut Session<'_, '_, C>,
+) -> Result<(), ExampleError> {
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), session.poll())
+            .await
+            .map_err(|_| ExampleError::Timeout)??
+        {
+            Event::Idle => return Ok(()),
+            Event::Connected | Event::Reconnected | Event::Inbound(_) => {}
+        }
+    }
 }
 
 struct EmqxTlsConnector;
@@ -55,8 +71,8 @@ impl Connector for EmqxTlsConnector {
         let stream = TcpStream::connect((host, port))
             .await
             .map_err(|err| minimq::Error::Transport(kind_from_std(&err)))?;
-        let read_record_buffer = Box::leak(Box::new([0u8; 16_384]));
-        let write_record_buffer = Box::leak(Box::new([0u8; 4_096]));
+        let read_record_buffer = Box::leak(Box::new([0u8; TLS_READ_RECORD_BUFFER_LEN]));
+        let write_record_buffer = Box::leak(Box::new([0u8; TLS_WRITE_RECORD_BUFFER_LEN]));
         let config = TlsConfig::new()
             .with_server_name(host)
             .enable_rsa_signatures();
@@ -138,6 +154,7 @@ async fn main() -> Result<(), ExampleError> {
     publisher
         .publish(Publication::new(&topic, payload.as_bytes()).qos(QoS::AtLeastOnce))
         .await?;
+    poll_until_idle(&mut publisher).await?;
 
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
