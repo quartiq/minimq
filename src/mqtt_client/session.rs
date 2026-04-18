@@ -34,6 +34,10 @@ where
         }
     }
 
+    /// Return whether the MQTT session is currently established.
+    ///
+    /// This does not force a connection attempt. [`poll`](Self::poll), [`publish`](Self::publish),
+    /// and other outbound operations may connect on demand.
     pub fn is_connected(&self) -> bool {
         self.core.is_connected()
     }

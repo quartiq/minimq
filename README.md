@@ -5,28 +5,18 @@
 
 `minimq` is a small `no_std`, no-alloc, `async` MQTT v5 client for embedded systems.
 
-It is built for applications that want:
-
-- one long-lived MQTT session object with automatic reconnect
-- explicit caller-owned RX/TX packet buffers
-- async transport over [`embedded_io_async`]
-- MQTT5 request/reply support without extra glue
+Use it when your application already has async network I/O and needs one long-lived MQTT session
+with explicit buffers and reconnect handling.
 
 The main API is [`Session`].
 
-## What It Gives You
+## What You Use
 
-- MQTT v5 publish and subscribe
-- QoS 0, 1, and 2 for outgoing publishes
-- will, reconnect and session resumption
-- anonymous and plain text authentication
-- retained publishes and will messages
-- explicit connection lifecycle events
-- zero-copy inbound payload access
-- no allocator requirement
-
-`minimq` is a good fit when you already have an async TCP stack and want a focused MQTT client,
-not a whole application framework.
+- [`Broker`]: broker endpoint
+- [`Buffers`] or [`BufferLayout`]: caller-owned RX/TX memory
+- [`ConfigBuilder`]: session configuration
+- [`Session`]: the client you drive
+- [`Event`]: output of [`Session::poll()`]
 
 ## Example
 
@@ -68,70 +58,40 @@ async fn run() -> Result<(), minimq::Error> {
 }
 ```
 
-## What Using It Looks Like
+## Session Model
 
-You provide:
+You provide a broker endpoint, packet buffers, a transport connector, and a loop that keeps
+calling [`Session::poll()`].
 
-1. a broker endpoint
-2. byte buffers
-3. a transport connector
-4. a loop that keeps calling `poll()`
+`Session` owns reconnects, keepalive, retransmission, and inbound packet delivery.
 
-The session then owns reconnects, keepalive, packet flow, and inbound message delivery.
-
-Core types:
-
-- [`Broker`]: broker endpoint config
-- [`Buffers`]: caller-owned RX/TX memory
-- [`ConfigBuilder`]: session configuration
-- [`Session`]: the MQTT client you drive
-- [`Event`]: what `poll()` produced
-
-Typical flow:
-
-- build a `ConfigBuilder`
-- construct a `Session`
-- call `poll()` regularly
-- react to:
-  - `Event::Connected`
-  - `Event::Reconnected`
-  - `Event::Inbound(message)`
-  - `Event::Idle`
-- call `publish()` and `subscribe()` on the same session
-
-`Event::Connected` means you have a fresh broker session and should establish any subscriptions or
-other session state. `Event::Reconnected` means the broker resumed the existing session, so
-subscriptions and in-flight QoS state were kept.
+- [`Event::Connected`] means the broker created a fresh session. Re-establish subscriptions here.
+- [`Event::Reconnected`] means the broker resumed the existing MQTT session. Existing
+  subscriptions and in-flight QoS state were kept.
+- [`Event::Inbound`] carries one inbound publish.
+- [`Event::Idle`] means no inbound publish was produced on that poll step.
 
 ## Buffers
 
-`minimq` keeps memory explicit.
+You supply two buffers.
 
-You supply two buffers:
+- `rx` stores one inbound MQTT packet at a time. Size it for the largest inbound publish,
+  including topic, properties, and payload.
+- `tx` stores outbound encodes and retained in-flight state. Size it for the largest outbound
+  packet plus the QoS/session state you want to keep active.
 
-- `rx`: storage for one inbound MQTT packet. Size it for the largest packet you expect to receive.
-- `tx`: outbound encode and replay storage. It must cover the largest outbound packet and any
-  retained in-flight QoS/session state.
-
-If `tx` is full, `publish()` can return [`Error::NotReady`] until the broker advances the in-flight
-state.
+If `tx` is exhausted, `publish()` and other outbound operations can return [`Error::NotReady`].
 
 Use [`BufferLayout::split()`] if you prefer one contiguous slab.
 
 ## Request / Reply
 
-`minimq` understands MQTT request/reply properties directly.
+[`InboundPublish`] exposes MQTT v5 request/reply properties directly.
 
-On inbound publishes, [`InboundPublish`]
-can:
-
-- inspect `ResponseTopic`
-- inspect `CorrelationData`
-- build a direct reply with `reply(...)`
-- capture an owned reply target with `reply_owned(...)`
-
-That is useful for protocol layers such as settings, RPC, or telemetry control built on top of
-MQTT.
+- [`InboundPublish::response_topic()`]
+- [`InboundPublish::correlation_data()`]
+- [`InboundPublish::reply()`]
+- [`InboundPublish::reply_owned()`]
 
 ## Transport And Time
 
@@ -139,6 +99,6 @@ MQTT.
 
 - [`embedded_io_async`] for byte I/O
 - [`embedded_nal_async`] adapters in `transport`
-- [`embassy_time`] for timing. It does not choose a queue feature for you.
+- [`embassy_time`] for timing
 
 Secure MQTT over TLS works fine, for example with embedded-tls: `examples/tls_public_broker.rs`.

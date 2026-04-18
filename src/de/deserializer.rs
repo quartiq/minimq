@@ -37,6 +37,7 @@ use core::convert::TryInto;
 use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 use varint_rs::VarintReader;
 
+/// Errors returned while decoding MQTT packets.
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Error {

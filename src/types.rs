@@ -1,4 +1,4 @@
-//! MQTT-specific data types and serde adapters.
+//! MQTT-specific data types used by the public API.
 use crate::{
     ProtocolError, QoS, de::deserializer::MqttDeserializer, properties::Property, varint::Varint,
 };
@@ -6,17 +6,27 @@ use bit_field::BitField;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 
+/// MQTT property collection attached to a packet.
+///
+/// Application code usually receives this from inbound packets or passes a borrowed slice when
+/// publishing or subscribing.
 #[derive(Debug, PartialEq)]
 pub enum Properties<'a> {
+    /// Borrowed property slice.
     Slice(&'a [Property<'a>]),
+    /// Borrowed encoded property block received from the broker.
     DataBlock(&'a [u8]),
+    /// Borrowed property slice with synthetic correlation data prepended.
     CorrelatedSlice {
+        /// Correlation data to expose first.
         correlation: Property<'a>,
+        /// Remaining borrowed properties.
         properties: &'a [Property<'a>],
     },
 }
 
 impl Properties<'_> {
+    /// Return the encoded MQTT property block size in bytes.
     pub fn size(&self) -> usize {
         match self {
             Properties::Slice(props) => props.iter().map(|prop| prop.size()).sum(),
@@ -34,14 +44,17 @@ impl Properties<'_> {
 }
 
 impl<'a> Properties<'a> {
+    /// Iterate over properties.
     pub fn iter(&'a self) -> PropertiesIter<'a> {
         self.into_iter()
     }
 
+    /// Return the first `ResponseTopic` property, if present.
     pub fn response_topic(&'a self) -> Option<&'a str> {
         self.iter().response_topic()
     }
 
+    /// Return the first `CorrelationData` property, if present.
     pub fn correlation_data(&'a self) -> Option<&'a [u8]> {
         self.iter().correlation_data()
     }
@@ -73,6 +86,7 @@ impl<'a> Properties<'a> {
     }
 }
 
+/// Iterator over decoded MQTT properties.
 pub struct PropertiesIter<'a> {
     inner: PropertiesIterInner<'a>,
 }
@@ -95,6 +109,7 @@ enum PropertiesIterInner<'a> {
 }
 
 impl<'a> PropertiesIter<'a> {
+    /// Return the first `ResponseTopic` property in the remaining iterator.
     pub fn response_topic(&mut self) -> Option<&'a str> {
         self.find_map(|prop| match prop {
             Ok(crate::Property::ResponseTopic(topic)) => Some(topic.0),
@@ -102,6 +117,7 @@ impl<'a> PropertiesIter<'a> {
         })
     }
 
+    /// Return the first `CorrelationData` property in the remaining iterator.
     pub fn correlation_data(&mut self) -> Option<&'a [u8]> {
         self.find_map(|prop| match prop {
             Ok(crate::Property::CorrelationData(data)) => Some(data.0),
@@ -226,6 +242,7 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Properties<'a> {
     }
 }
 
+/// MQTT binary data field.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BinaryData<'a>(pub &'a [u8]);
 
@@ -298,12 +315,16 @@ impl<'de> serde::de::Deserialize<'de> for BinaryData<'de> {
     }
 }
 
+/// Username/password authentication data used in `CONNECT`.
 #[derive(Debug, Copy, Clone)]
 pub struct Auth<'a> {
+    /// MQTT username.
     pub user_name: &'a str,
+    /// MQTT password bytes.
     pub password: &'a [u8],
 }
 
+/// MQTT UTF-8 string field.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Utf8String<'a>(pub &'a str);
 
@@ -344,14 +365,19 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Utf8String<'a> {
     }
 }
 
+/// Broker retain handling policy for a subscription.
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]
 pub enum RetainHandling {
+    /// Send retained messages when the subscription is created.
     Immediately = 0b00,
+    /// Send retained messages only if the subscription did not already exist.
     IfSubscriptionDoesNotExist = 0b01,
+    /// Never send retained messages because of the subscription.
     Never = 0b10,
 }
 
+/// MQTT subscription options for one topic filter.
 #[derive(Copy, Clone, Debug)]
 pub struct SubscriptionOptions {
     maximum_qos: QoS,
@@ -372,21 +398,25 @@ impl Default for SubscriptionOptions {
 }
 
 impl SubscriptionOptions {
+    /// Cap the maximum QoS delivered for this subscription.
     pub fn maximum_qos(mut self, qos: QoS) -> Self {
         self.maximum_qos = qos;
         self
     }
 
+    /// Choose how retained messages are replayed when subscribing.
     pub fn retain_behavior(mut self, handling: RetainHandling) -> Self {
         self.retain_behavior = handling;
         self
     }
 
+    /// Suppress messages published by this same client.
     pub fn ignore_local_messages(mut self) -> Self {
         self.no_local = true;
         self
     }
 
+    /// Preserve the broker's retain flag on forwarded retained messages.
     pub fn retain_as_published(mut self) -> Self {
         self.retain_as_published = true;
         self
@@ -404,6 +434,7 @@ impl serde::Serialize for SubscriptionOptions {
     }
 }
 
+/// Topic filter and options for `SUBSCRIBE`.
 #[derive(Serialize, Copy, Clone, Debug)]
 pub struct TopicFilter<'a> {
     topic: Utf8String<'a>,
@@ -426,6 +457,7 @@ impl<'a> TopicFilter<'a> {
         }
     }
 
+    /// Override the default subscription options.
     pub fn options(mut self, options: SubscriptionOptions) -> Self {
         self.options = options;
         self

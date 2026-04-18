@@ -67,10 +67,14 @@ impl BufferLayout {
 /// Configuration errors detected before a session is built.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
+    /// The requested RX/TX split does not fit in the provided backing buffer.
     #[error("buffer layout exceeds backing storage")]
     BufferLayout,
 }
 
+/// Built session configuration.
+///
+/// Construct this through [`ConfigBuilder`].
 #[derive(Debug)]
 pub struct Config<'a> {
     pub(crate) broker: Broker<'a>,
@@ -83,6 +87,9 @@ pub struct Config<'a> {
     pub(crate) auth: Option<Auth<'a>>,
 }
 
+/// Builder for [`Config`].
+///
+/// The builder only covers application-facing settings. Runtime MQTT state lives in [`Session`](crate::Session).
 #[derive(Debug)]
 pub struct ConfigBuilder<'a> {
     broker: Broker<'a>,
@@ -124,6 +131,8 @@ impl<'a> ConfigBuilder<'a> {
     }
 
     /// Attach MQTT username/password authentication.
+    ///
+    /// Calling this more than once returns [`ProtocolError::AuthAlreadySpecified`].
     pub fn set_auth(
         mut self,
         user_name: &'a str,
@@ -141,6 +150,8 @@ impl<'a> ConfigBuilder<'a> {
     }
 
     /// Set the MQTT client identifier.
+    ///
+    /// The ID must fit in the internal fixed-capacity storage.
     pub fn client_id(mut self, id: &str) -> Result<Self, ProtocolError> {
         self.client_id =
             String::try_from(id).map_err(|_| ProtocolError::ProvidedClientIdTooLong)?;
@@ -148,6 +159,8 @@ impl<'a> ConfigBuilder<'a> {
     }
 
     /// Set the keepalive interval advertised in `CONNECT`.
+    ///
+    /// `poll()` must still be driven often enough for the session to honor it.
     pub fn keepalive_interval(mut self, seconds: u16) -> Self {
         self.keepalive_interval = Duration::from_secs(seconds as u64);
         self
@@ -162,6 +175,8 @@ impl<'a> ConfigBuilder<'a> {
     }
 
     /// Downgrade outbound publish QoS to the broker-advertised maximum QoS.
+    ///
+    /// Without this, a publish above the broker limit fails instead.
     pub fn autodowngrade_qos(mut self) -> Self {
         self.downgrade_qos = true;
         self
