@@ -457,6 +457,9 @@ impl<'buf> Core<'buf> {
                     return Err(err.into());
                 }
             };
+            if buffer.is_empty() {
+                break;
+            }
 
             let count = match connection.read(buffer).await {
                 Ok(count) => count,
@@ -686,5 +689,168 @@ impl<'buf> Core<'buf> {
                 crate::ser::PubError::Encode(err) => PubError::Session(Error::Protocol(err.into())),
                 crate::ser::PubError::Payload(err) => PubError::Payload(err),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Buffers, ConfigBuilder, tests::block_on};
+    use embedded_io_async::{ErrorType, Read, Write};
+    use std::collections::VecDeque;
+    use std::vec::Vec;
+
+    #[derive(Default)]
+    struct MockConnection {
+        rx: VecDeque<Vec<u8>>,
+        tx: Vec<Vec<u8>>,
+        write_error: Option<ErrorKind>,
+    }
+
+    impl MockConnection {
+        fn push_rx(&mut self, data: &[u8]) {
+            self.rx.push_back(data.to_vec());
+        }
+    }
+
+    impl ErrorType for MockConnection {
+        type Error = ErrorKind;
+    }
+
+    impl Read for MockConnection {
+        async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+            let Some(mut chunk) = self.rx.pop_front() else {
+                return Err(ErrorKind::TimedOut);
+            };
+            let len = buf.len().min(chunk.len());
+            buf[..len].copy_from_slice(&chunk[..len]);
+            if len < chunk.len() {
+                chunk.drain(..len);
+                self.rx.push_front(chunk);
+            }
+            Ok(len)
+        }
+    }
+
+    impl Write for MockConnection {
+        async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+            if let Some(err) = self.write_error.take() {
+                return Err(err);
+            }
+            self.tx.push(buf.to_vec());
+            Ok(buf.len())
+        }
+
+        async fn flush(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    fn core() -> Core<'static> {
+        let broker = "127.0.0.1:1883"
+            .parse::<std::net::SocketAddr>()
+            .unwrap()
+            .into();
+        let rx = Box::leak(Box::new([0; 128]));
+        let tx = Box::leak(Box::new([0; 1152]));
+        Core::new(
+            ConfigBuilder::new(broker, Buffers::new(rx, tx))
+                .client_id("test")
+                .unwrap()
+                .keepalive_interval(1)
+                .build(),
+        )
+    }
+
+    #[test]
+    fn maintain_sends_pingreq_when_due() {
+        let mut core = core();
+        let mut connection = MockConnection::default();
+        let now = Instant::now();
+        core.runtime.state = ConnectionState::Active;
+        core.runtime.next_ping = Some(now);
+
+        block_on(core.maintain(&mut connection, now)).unwrap();
+
+        assert!(
+            connection
+                .tx
+                .iter()
+                .any(|frame| frame.as_slice() == [0xC0, 0x00])
+        );
+        assert_eq!(
+            core.runtime.ping_timeout,
+            Some(now + Duration::from_millis(PING_TIMEOUT_MS))
+        );
+    }
+
+    #[test]
+    fn maintain_does_not_send_second_pingreq_while_waiting_for_pingresp() {
+        let mut core = core();
+        let mut connection = MockConnection::default();
+        let now = Instant::now();
+        core.runtime.state = ConnectionState::Active;
+        core.runtime.next_ping = Some(now);
+
+        block_on(core.maintain(&mut connection, now)).unwrap();
+        block_on(core.maintain(&mut connection, now + Duration::from_millis(600))).unwrap();
+
+        let pingreqs = connection
+            .tx
+            .iter()
+            .filter(|frame| frame.as_slice() == [0xC0, 0x00])
+            .count();
+        assert_eq!(pingreqs, 1);
+    }
+
+    #[test]
+    fn pingresp_clears_keepalive_timeout() {
+        let mut core = core();
+        let mut connection = MockConnection::default();
+        let now = Instant::now();
+        core.runtime.state = ConnectionState::Active;
+        core.runtime.next_ping = Some(now);
+
+        block_on(core.maintain(&mut connection, now)).unwrap();
+        connection.push_rx(&[0xD0, 0x00]);
+
+        let result = block_on(core.read(&mut connection, now));
+        assert!(matches!(result, Ok(None)), "{result:?}");
+        assert_eq!(core.runtime.ping_timeout, None);
+        assert_eq!(core.runtime.state, ConnectionState::Active);
+    }
+
+    #[test]
+    fn expired_ping_timeout_disconnects_session() {
+        let mut core = core();
+        let mut connection = MockConnection::default();
+        let now = Instant::now();
+        core.runtime.state = ConnectionState::Active;
+        core.runtime.ping_timeout = Some(now);
+
+        block_on(core.maintain(&mut connection, now)).unwrap();
+
+        assert_eq!(core.runtime.state, ConnectionState::Disconnected);
+        assert_eq!(core.runtime.ping_timeout, None);
+    }
+
+    #[test]
+    fn pingreq_write_error_disconnects_session() {
+        let mut core = core();
+        let mut connection = MockConnection {
+            write_error: Some(ErrorKind::ConnectionReset),
+            ..Default::default()
+        };
+        let now = Instant::now();
+        core.runtime.state = ConnectionState::Active;
+        core.runtime.next_ping = Some(now);
+
+        let result = block_on(core.maintain(&mut connection, now));
+
+        assert!(matches!(
+            result,
+            Err(Error::Transport(ErrorKind::ConnectionReset))
+        ));
+        assert_eq!(core.runtime.state, ConnectionState::Disconnected);
     }
 }
