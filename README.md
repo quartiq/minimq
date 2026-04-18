@@ -15,6 +15,7 @@ The main API is [`Session`].
 - [`Broker`]: broker endpoint
 - [`Buffers`] or [`BufferLayout`]: caller-owned RX/TX memory
 - [`ConfigBuilder`]: session configuration
+- [`transport::Connector`]: transport boundary
 - [`Session`]: the client you drive
 - [`Event`]: output of [`Session::poll()`]
 
@@ -23,22 +24,23 @@ The main API is [`Session`].
 ```ignore
 use core::net::SocketAddr;
 use minimq::{
-    Broker, BufferLayout, ConfigBuilder, Event, QoS, Session, types::TopicFilter,
+    Broker, BufferLayout, ConfigBuilder, Event, QoS, Session,
+    transport::TcpConnector, types::TopicFilter,
 };
 use std_embedded_nal_async::Stack;
 
-async fn run() -> Result<(), minimq::Error> {
+async fn run() -> Result<(), minimq::SessionError<TcpConnector<Stack>>> {
     let mut storage = [0u8; 1024];
     let broker: Broker<'_> = "127.0.0.1:1883".parse::<SocketAddr>()?.into();
     let config = ConfigBuilder::from_buffer_layout(
         broker,
         &mut storage,
-        BufferLayout { rx: 256, tx: 768 },
+        BufferLayout::new(256, 768),
     )?
     .client_id("demo")?
     .build();
 
-    let connector = Stack::default();
+    let connector = TcpConnector::new(Stack::default());
     let mut session = Session::new(config, &connector);
 
     loop {

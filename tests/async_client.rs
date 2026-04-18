@@ -123,11 +123,14 @@ impl Connector for MockConnector {
     type Error = ErrorKind;
     type Connection<'a> = MockConnection;
 
-    async fn connect<'a>(&'a self, _broker: &Broker<'_>) -> Result<Self::Connection<'a>, Error> {
+    async fn connect<'a>(
+        &'a self,
+        _broker: &Broker<'_>,
+    ) -> Result<Self::Connection<'a>, Self::Error> {
         self.connections
             .borrow_mut()
             .pop_front()
-            .ok_or(Error::Transport(ErrorKind::ConnectionReset))
+            .ok_or(ErrorKind::ConnectionReset)
     }
 }
 
@@ -138,7 +141,7 @@ fn config() -> minimq::Config<'static> {
         .parse::<std::net::SocketAddr>()
         .unwrap()
         .into();
-    ConfigBuilder::new(broker, Buffers { rx, tx })
+    ConfigBuilder::new(broker, Buffers::new(rx, tx))
         .client_id("test")
         .unwrap()
         .build()
@@ -250,6 +253,32 @@ fn inbound_publish_qos1(id: u16, topic: &str, payload: &[u8]) -> Vec<u8> {
     packet.extend_from_slice(topic.as_bytes());
     packet.extend_from_slice(&id.to_be_bytes());
     packet.push(0x00);
+    packet.extend_from_slice(payload);
+    packet
+}
+
+fn inbound_publish_with_response(
+    topic: &str,
+    payload: &[u8],
+    response_topic: &str,
+    correlation: &[u8],
+) -> Vec<u8> {
+    let response_len = 1 + 2 + response_topic.len();
+    let correlation_len = 1 + 2 + correlation.len();
+    let properties_len = response_len + correlation_len;
+    let remaining = 2 + topic.len() + 1 + properties_len + payload.len();
+    let mut packet = Vec::with_capacity(2 + remaining);
+    packet.push(0x30);
+    packet.push(remaining as u8);
+    packet.extend_from_slice(&(topic.len() as u16).to_be_bytes());
+    packet.extend_from_slice(topic.as_bytes());
+    packet.push(properties_len as u8);
+    packet.push(0x08);
+    packet.extend_from_slice(&(response_topic.len() as u16).to_be_bytes());
+    packet.extend_from_slice(response_topic.as_bytes());
+    packet.push(0x09);
+    packet.extend_from_slice(&(correlation.len() as u16).to_be_bytes());
+    packet.extend_from_slice(correlation);
     packet.extend_from_slice(payload);
     packet
 }
@@ -641,7 +670,7 @@ fn inbound_qos2_marks_pending_until_pubrel() {
         Event::Inbound(message) => message,
         other => panic!("unexpected event: {other:?}"),
     };
-    assert_eq!(message.topic, "data");
+    assert_eq!(message.topic(), "data");
 
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
 }
@@ -659,7 +688,7 @@ fn full_retained_outbound_still_sends_puback() {
     assert!(capacity > 0);
 
     match block_on(session.poll()).unwrap() {
-        Event::Inbound(message) => assert_eq!(message.topic, "data"),
+        Event::Inbound(message) => assert_eq!(message.topic(), "data"),
         other => panic!("unexpected event: {other:?}"),
     }
 
@@ -679,7 +708,7 @@ fn full_retained_outbound_still_sends_pubrec() {
     assert!(capacity > 0);
 
     match block_on(session.poll()).unwrap() {
-        Event::Inbound(message) => assert_eq!(message.topic, "data"),
+        Event::Inbound(message) => assert_eq!(message.topic(), "data"),
         other => panic!("unexpected event: {other:?}"),
     }
 
@@ -698,10 +727,10 @@ fn full_retained_outbound_still_sends_pingreq() {
                 .parse::<std::net::SocketAddr>()
                 .unwrap()
                 .into(),
-            Buffers {
-                rx: Box::leak(Box::new([0; 128])),
-                tx: Box::leak(Box::new([0; 1152])),
-            },
+            Buffers::new(
+                Box::leak(Box::new([0; 128])),
+                Box::leak(Box::new([0; 1152])),
+            ),
         )
         .client_id("test")
         .unwrap()
@@ -754,8 +783,8 @@ fn session_allows_publish_after_message_borrow_is_dropped() {
             Event::Inbound(message) => message,
             other => panic!("unexpected event: {other:?}"),
         };
-        assert_eq!(message.topic, "cmd");
-        assert_eq!(message.payload, b"payload");
+        assert_eq!(message.topic(), "cmd");
+        assert_eq!(message.payload(), b"payload");
     }
 
     block_on(session.publish(Publication::new("reply", b"ok").qos(QoS::AtLeastOnce))).unwrap();
@@ -799,10 +828,10 @@ fn session_reconnects_after_ping_write_error() {
                 .parse::<std::net::SocketAddr>()
                 .unwrap()
                 .into(),
-            Buffers {
-                rx: Box::leak(Box::new([0; 128])),
-                tx: Box::leak(Box::new([0; 1152])),
-            },
+            Buffers::new(
+                Box::leak(Box::new([0; 128])),
+                Box::leak(Box::new([0; 1152])),
+            ),
         )
         .client_id("test")
         .unwrap()
@@ -990,10 +1019,10 @@ fn connect_uses_configured_session_expiry_interval() {
     let mut session = Session::new(
         ConfigBuilder::new(
             broker,
-            Buffers {
-                rx: Box::leak(Box::new([0; 128])),
-                tx: Box::leak(Box::new([0; 1152])),
-            },
+            Buffers::new(
+                Box::leak(Box::new([0; 128])),
+                Box::leak(Box::new([0; 1152])),
+            ),
         )
         .client_id("test")
         .unwrap()
@@ -1130,16 +1159,19 @@ fn subscribe_rejects_packets_larger_than_broker_maximum() {
 
 #[test]
 fn inbound_publish_exposes_response_helpers() {
-    let props = [
-        minimq::Property::ResponseTopic(minimq::types::Utf8String("reply/topic")),
-        minimq::Property::CorrelationData(minimq::types::BinaryData(b"abc")),
-    ];
-    let message = minimq::InboundPublish {
-        topic: "cmd",
-        payload: b"payload",
-        properties: minimq::types::Properties::Slice(&props),
-        retain: minimq::Retain::NotRetained,
-        qos: QoS::AtMostOnce,
+    let mut connection = MockConnection::default();
+    connection.push_rx(&connack());
+    connection.push_rx(&inbound_publish_with_response(
+        "cmd",
+        b"payload",
+        "reply/topic",
+        b"abc",
+    ));
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+    let message = match block_on(session.poll()).unwrap() {
+        Event::Inbound(message) => message,
+        other => panic!("unexpected event: {other:?}"),
     };
 
     assert_eq!(message.response_topic(), Some("reply/topic"));

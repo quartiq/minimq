@@ -1,10 +1,10 @@
 mod support;
 
+use embedded_io_async::Error as _;
 use embedded_io_async::ErrorKind;
-use embedded_nal_async::AddrType;
 use minimq::{
     Broker, Buffers, ConfigBuilder, Error, Event, Publication, QoS, Session,
-    transport::{DnsTcpConnector, TcpConnector},
+    transport::{AddrType, DnsTcpConnector, TcpConnector},
     types::{SubscriptionOptions, TopicFilter},
 };
 use std::{
@@ -48,7 +48,7 @@ fn unique_topic() -> String {
 fn config<'a>(broker: Broker<'a>, client_id: &str) -> minimq::Config<'a> {
     let rx = Box::leak(Box::new([0; 1024]));
     let tx = Box::leak(Box::new([0; 2048]));
-    ConfigBuilder::new(broker, Buffers { rx, tx })
+    ConfigBuilder::new(broker, Buffers::new(rx, tx))
         .client_id(client_id)
         .unwrap()
         .build()
@@ -60,6 +60,7 @@ fn poll_until_ready<'a, C>(
 ) -> Option<(String, Vec<u8>, QoS)>
 where
     C: minimq::transport::Connector,
+    C::Error: embedded_io_async::Error + core::fmt::Debug,
 {
     for _ in 0..200 {
         match block_on(session.poll()) {
@@ -68,13 +69,16 @@ where
             }
             Ok(Event::Inbound(message)) if want_inbound => {
                 return Some((
-                    message.topic.to_string(),
-                    message.payload.to_vec(),
-                    message.qos,
+                    message.topic().to_string(),
+                    message.payload().to_vec(),
+                    message.qos(),
                 ));
             }
             Ok(_) => {}
-            Err(Error::Transport(ErrorKind::TimedOut | ErrorKind::Interrupted)) => {}
+            Err(Error::Transport(err)) => match err.kind() {
+                ErrorKind::TimedOut | ErrorKind::Interrupted => {}
+                _ => panic!("session poll failed: {err:?}"),
+            },
             Err(err) => panic!("session poll failed: {err:?}"),
         }
     }
@@ -88,20 +92,21 @@ fn assert_roundtrip<'a, C>(
     payload: &[u8],
 ) where
     C: minimq::transport::Connector,
+    C::Error: embedded_io_async::Error + core::fmt::Debug,
 {
-    assert!(matches!(
-        block_on(subscriber.poll()).unwrap(),
-        Event::Connected
-    ));
+    match block_on(subscriber.poll()).unwrap() {
+        Event::Connected => {}
+        other => panic!("unexpected event: {other:?}"),
+    }
     let topics = [TopicFilter::new(topic)
         .options(SubscriptionOptions::default().maximum_qos(QoS::AtLeastOnce))];
     block_on(subscriber.subscribe(&topics, &[])).unwrap();
     let _ = poll_until_ready(subscriber, false);
 
-    assert!(matches!(
-        block_on(publisher.poll()).unwrap(),
-        Event::Connected
-    ));
+    match block_on(publisher.poll()).unwrap() {
+        Event::Connected => {}
+        other => panic!("unexpected event: {other:?}"),
+    }
     block_on(publisher.publish(Publication::new(topic, payload).qos(QoS::AtLeastOnce))).unwrap();
 
     let (received_topic, received_payload, received_qos) =

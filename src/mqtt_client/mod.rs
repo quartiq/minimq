@@ -5,43 +5,69 @@ mod session;
 
 pub use session::Session;
 
-use embedded_io_async::{ErrorType, Read, Write};
-
 use crate::{
     ProtocolError, QoS, Retain,
     publication::{OwnedResponseTarget, Publication, ResponseTarget},
     types::Properties,
 };
+use embedded_io_async::{ErrorType, Read, Write};
 
-pub(super) trait Io: Read + Write + ErrorType
-where
-    Self::Error: embedded_io_async::Error,
-{
-}
+pub(super) trait Io: Read + Write + ErrorType {}
 
-impl<T> Io for T
-where
-    T: Read + Write + ErrorType,
-    T::Error: embedded_io_async::Error,
-{
-}
+impl<T> Io for T where T: Read + Write + ErrorType {}
 
 /// Inbound MQTT `PUBLISH` delivered by [`Event::Inbound`].
 #[derive(Debug)]
 pub struct InboundPublish<'a> {
-    /// Topic name from the broker.
-    pub topic: &'a str,
-    /// Borrowed payload bytes.
-    pub payload: &'a [u8],
-    /// MQTT v5 publish properties.
-    pub properties: Properties<'a>,
-    /// Retain flag from the inbound publish.
-    pub retain: Retain,
-    /// QoS level from the inbound publish.
-    pub qos: QoS,
+    topic: &'a str,
+    payload: &'a [u8],
+    properties: Properties<'a>,
+    retain: Retain,
+    qos: QoS,
 }
 
 impl<'a> InboundPublish<'a> {
+    pub(crate) fn new(
+        topic: &'a str,
+        payload: &'a [u8],
+        properties: Properties<'a>,
+        retain: Retain,
+        qos: QoS,
+    ) -> Self {
+        Self {
+            topic,
+            payload,
+            properties,
+            retain,
+            qos,
+        }
+    }
+
+    /// Return the inbound topic name.
+    pub const fn topic(&self) -> &'a str {
+        self.topic
+    }
+
+    /// Return the inbound payload bytes.
+    pub const fn payload(&self) -> &'a [u8] {
+        self.payload
+    }
+
+    /// Return the inbound MQTT v5 properties.
+    pub const fn properties(&self) -> &Properties<'a> {
+        &self.properties
+    }
+
+    /// Return the inbound retain flag.
+    pub const fn retain(&self) -> Retain {
+        self.retain
+    }
+
+    /// Return the inbound QoS level.
+    pub const fn qos(&self) -> QoS {
+        self.qos
+    }
+
     /// Return the MQTT v5 response topic, if present.
     pub fn response_topic(&'a self) -> Option<&'a str> {
         self.properties.response_topic()

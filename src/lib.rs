@@ -31,14 +31,17 @@ pub use reason_codes::ReasonCode;
 pub use will::{OwnedWill, Will};
 
 pub use de::Error as DeError;
-pub use embedded_io_async;
-pub use embedded_io_async::ErrorKind;
-pub use embedded_nal_async;
 pub use ser::Error as SerError;
 
 use num_enum::TryFromPrimitive;
 
 pub(crate) use log::{debug, info, trace, warn};
+
+/// Session error type for a specific connector.
+pub type SessionError<C> = Error<<C as crate::transport::Connector>::Error>;
+
+/// Publish error type for a specific connector and payload serializer.
+pub type PublishError<C, P> = PubError<P, <C as crate::transport::Connector>::Error>;
 
 /// Default port number for unencrypted MQTT traffic.
 pub const MQTT_INSECURE_DEFAULT_PORT: u16 = 1883;
@@ -127,17 +130,17 @@ pub enum ProtocolError {
 
 /// Error returned from [`Session::publish`](crate::Session::publish).
 #[derive(Debug, PartialEq, thiserror::Error)]
-pub enum PubError<E> {
+pub enum PubError<P, E> {
     /// Session setup, transport, or protocol failure.
     #[error(transparent)]
-    Session(#[from] Error),
+    Session(#[from] Error<E>),
     /// Payload serialization failed before the packet was sent.
     #[error("payload serialization failed")]
-    Payload(E),
+    Payload(P),
 }
 
-impl<E> From<crate::ser::PubError<E>> for PubError<E> {
-    fn from(e: crate::ser::PubError<E>) -> Self {
+impl<P, E> From<crate::ser::PubError<P>> for PubError<P, E> {
+    fn from(e: crate::ser::PubError<P>) -> Self {
         match e {
             crate::ser::PubError::Payload(e) => Self::Payload(e),
             crate::ser::PubError::Encode(e) => Self::Session(ProtocolError::from(e).into()),
@@ -166,7 +169,7 @@ impl From<ReasonCode> for ProtocolError {
 /// Possible errors encountered during MQTT operation.
 #[derive(Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
-pub enum Error {
+pub enum Error<E> {
     /// Local buffers or in-flight state are not currently ready for the requested operation.
     #[error("session is not ready")]
     NotReady,
@@ -176,12 +179,15 @@ pub enum Error {
     /// MQTT protocol-level failure.
     #[error(transparent)]
     Protocol(ProtocolError),
-    /// Transport-layer failure mapped to [`embedded_io_async::ErrorKind`].
+    /// Transport-layer failure during connect or I/O.
     #[error("transport error: {0:?}")]
-    Transport(ErrorKind),
+    Transport(E),
+    /// A write operation returned `Ok(0)` for a non-empty buffer.
+    #[error("transport write returned zero bytes")]
+    WriteZero,
 }
 
-impl From<ProtocolError> for Error {
+impl<E> From<ProtocolError> for Error<E> {
     fn from(p: ProtocolError) -> Self {
         match p {
             ProtocolError::NotConnected => Self::Disconnected,

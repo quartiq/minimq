@@ -20,7 +20,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
     connection: &mut C,
     packet: ReceivedPacket<'pkt>,
     now: Instant,
-) -> Result<Option<InboundPublish<'pkt>>, Error> {
+) -> Result<Option<InboundPublish<'pkt>>, Error<C::Error>> {
     match packet {
         ReceivedPacket::ConnAck(ack) => {
             if let Err(err) = ack.reason_code.as_result() {
@@ -272,13 +272,13 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
             }
 
             cx.runtime.next_ping = Some(now + cx.runtime.keepalive_interval / 2);
-            return Ok(Some(InboundPublish {
-                topic: info.topic.0,
-                payload: info.payload,
-                properties: info.properties,
+            return Ok(Some(InboundPublish::new(
+                info.topic.0,
+                info.payload,
+                info.properties,
                 retain,
                 qos,
-            }));
+            )));
         }
         ReceivedPacket::Disconnect(_) => {
             info!("Received broker DISCONNECT");

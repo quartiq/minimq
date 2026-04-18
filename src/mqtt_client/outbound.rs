@@ -1,6 +1,5 @@
 use crate::packets::Pub;
 use crate::{Error, ProtocolError, PubError, ReasonCode, trace};
-use embedded_io_async::Error as _;
 use heapless::Vec;
 
 use super::Io;
@@ -159,10 +158,10 @@ impl<'a> Outbound<'a> {
         }
     }
 
-    pub(super) fn encode_publish<P: crate::publication::ToPayload>(
+    pub(super) fn encode_publish<P: crate::publication::ToPayload, E>(
         &mut self,
         packet: Pub<'_, P>,
-    ) -> Result<(usize, usize), PubError<P::Error>> {
+    ) -> Result<(usize, usize), PubError<P::Error, E>> {
         self.compact();
         let start = self.used;
         let (offset, packet) =
@@ -333,20 +332,14 @@ pub(super) async fn write_packet<C: Io, T>(
     buffer: &mut [u8],
     connection: &mut C,
     packet: &T,
-) -> Result<(), Error>
+) -> Result<(), Error<C::Error>>
 where
     T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
 {
     let bytes = crate::ser::MqttSerializer::to_buffer(buffer, packet)
         .map_err(|err| Error::Protocol(err.into()))?;
-    connection
-        .write_all(bytes)
-        .await
-        .map_err(|err| Error::Transport(err.kind()))?;
-    connection
-        .flush()
-        .await
-        .map_err(|err| Error::Transport(err.kind()))?;
+    write_all(connection, bytes).await?;
+    connection.flush().await.map_err(Error::Transport)?;
     Ok(())
 }
 
@@ -354,7 +347,7 @@ pub(super) async fn write_control_packet<C: Io, T>(
     connection: &mut C,
     packet: &T,
     maximum_packet_size: Option<u32>,
-) -> Result<(), Error>
+) -> Result<(), Error<C::Error>>
 where
     T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
 {
@@ -366,14 +359,22 @@ where
             ReasonCode::PacketTooLarge,
         )));
     }
-    connection
-        .write_all(bytes)
-        .await
-        .map_err(|err| Error::Transport(err.kind()))?;
-    connection
-        .flush()
-        .await
-        .map_err(|err| Error::Transport(err.kind()))?;
+    write_all(connection, bytes).await?;
+    connection.flush().await.map_err(Error::Transport)?;
+    Ok(())
+}
+
+pub(super) async fn write_all<C: Io>(
+    connection: &mut C,
+    mut bytes: &[u8],
+) -> Result<(), Error<C::Error>> {
+    while !bytes.is_empty() {
+        let written = connection.write(bytes).await.map_err(Error::Transport)?;
+        if written == 0 {
+            return Err(Error::WriteZero);
+        }
+        bytes = &bytes[written..];
+    }
     Ok(())
 }
 

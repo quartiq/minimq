@@ -1,5 +1,6 @@
 use embassy_futures::select::{Either, select};
 use embassy_time::{Instant, Timer};
+use embedded_io_async::Error as _;
 use embedded_io_async::ErrorKind;
 
 use crate::{
@@ -59,7 +60,7 @@ where
     ///
     /// This only closes the current transport. A later [`poll`](Self::poll) will connect again.
     /// If the broker preserves the MQTT session, subscriptions and in-flight state may resume.
-    pub async fn disconnect(&mut self) -> Result<(), Error> {
+    pub async fn disconnect(&mut self) -> Result<(), Error<C::Error>> {
         self.pending_activation = None;
         let Some(connection) = self.connection.as_mut() else {
             return Ok(());
@@ -77,7 +78,7 @@ where
         &mut self,
         topics: &[TopicFilter<'_>],
         properties: &[Property<'_>],
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error<C::Error>> {
         let _ = self.ensure_connected().await?;
         let Some(connection) = self.connection.as_mut() else {
             return Err(Error::Disconnected);
@@ -90,7 +91,7 @@ where
         &mut self,
         topics: &[&str],
         properties: &[Property<'_>],
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error<C::Error>> {
         let _ = self.ensure_connected().await?;
         let Some(connection) = self.connection.as_mut() else {
             return Err(Error::Disconnected);
@@ -105,7 +106,7 @@ where
     pub async fn publish<P>(
         &mut self,
         publication: Publication<'_, P>,
-    ) -> Result<(), PubError<P::Error>>
+    ) -> Result<(), PubError<P::Error, C::Error>>
     where
         P: crate::publication::ToPayload,
     {
@@ -120,7 +121,7 @@ where
     ///
     /// `poll()` drives reconnect, keepalive, retransmission, and inbound packet handling. Call it
     /// regularly from your main loop.
-    pub async fn poll(&mut self) -> Result<Event<'_>, Error> {
+    pub async fn poll(&mut self) -> Result<Event<'_>, Error<C::Error>> {
         let _ = self.ensure_connected().await?;
         if let Some(resumed) = self.pending_activation.take() {
             return Ok(if resumed {
@@ -136,7 +137,7 @@ where
         }
     }
 
-    async fn ensure_connected(&mut self) -> Result<bool, Error> {
+    async fn ensure_connected(&mut self) -> Result<bool, Error<C::Error>> {
         let mut activated = false;
         loop {
             if self.core.is_disconnected() {
@@ -144,7 +145,11 @@ where
             }
 
             if self.connection.is_none() {
-                let connection = self.connector.connect(self.core.broker()).await?;
+                let connection = self
+                    .connector
+                    .connect(self.core.broker())
+                    .await
+                    .map_err(Error::Transport)?;
                 self.connection = Some(connection);
                 let Some(connection) = self.connection.as_mut() else {
                     return Err(Error::Disconnected);
@@ -164,7 +169,7 @@ where
         }
     }
 
-    async fn step(&mut self) -> Result<Option<InboundPublish<'_>>, Error> {
+    async fn step(&mut self) -> Result<Option<InboundPublish<'_>>, Error<C::Error>> {
         let now = Instant::now();
         let Some(connection) = self.connection.as_mut() else {
             return Err(Error::Disconnected);
@@ -194,7 +199,10 @@ where
             return match select(self.core.read(connection, now), Timer::at(deadline)).await {
                 Either::First(result) => match result {
                     Ok(result) => Ok(result),
-                    Err(Error::Transport(ErrorKind::TimedOut | ErrorKind::Interrupted)) => Ok(None),
+                    Err(Error::Transport(err)) => match err.kind() {
+                        ErrorKind::TimedOut | ErrorKind::Interrupted => Ok(None),
+                        _ => Err(Error::Transport(err)),
+                    },
                     Err(err) => Err(err),
                 },
                 Either::Second(_) => Ok(None),
@@ -206,7 +214,10 @@ where
         };
         let result = match self.core.read(connection, now).await {
             Ok(result) => result,
-            Err(Error::Transport(ErrorKind::TimedOut | ErrorKind::Interrupted)) => return Ok(None),
+            Err(Error::Transport(err)) => match err.kind() {
+                ErrorKind::TimedOut | ErrorKind::Interrupted => return Ok(None),
+                _ => return Err(Error::Transport(err)),
+            },
             Err(err) => return Err(err),
         };
         Ok(result)

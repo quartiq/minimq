@@ -1,5 +1,5 @@
 use embedded_io_adapters::tokio_1::FromTokio;
-use embedded_io_async::Error as _;
+use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 use minimq::{
     Broker, BufferLayout, ConfigBuilder, Event, Property, Publication, QoS, Session,
@@ -16,7 +16,7 @@ const PASSWORD: &str = "public";
 const TLS_READ_RECORD_BUFFER_LEN: usize = 16_640;
 const TLS_WRITE_RECORD_BUFFER_LEN: usize = 4_096;
 
-fn kind_from_std(err: &std::io::Error) -> minimq::embedded_io_async::ErrorKind {
+fn kind_from_std(err: &std::io::Error) -> ErrorKind {
     err.kind().into()
 }
 
@@ -27,17 +27,17 @@ enum ExampleError {
     #[error(transparent)]
     Protocol(#[from] minimq::ProtocolError),
     #[error(transparent)]
-    Session(#[from] minimq::Error),
+    Session(#[from] minimq::SessionError<EmqxTlsConnector>),
     #[error(transparent)]
-    Publish(#[from] minimq::PubError<()>),
+    Publish(#[from] minimq::PublishError<EmqxTlsConnector, ()>),
     #[error("unexpected event: {0}")]
     Unexpected(&'static str),
     #[error("timed out waiting for subscribed publish")]
     Timeout,
 }
 
-async fn poll_until_idle<C: Connector>(
-    session: &mut Session<'_, '_, C>,
+async fn poll_until_idle(
+    session: &mut Session<'_, '_, EmqxTlsConnector>,
 ) -> Result<(), ExampleError> {
     loop {
         match tokio::time::timeout(Duration::from_secs(10), session.poll())
@@ -52,25 +52,63 @@ async fn poll_until_idle<C: Connector>(
 
 struct EmqxTlsConnector;
 
+#[derive(Debug, Error)]
+enum EmqxTlsError {
+    #[error("hostname broker is required")]
+    UnsupportedBroker,
+    #[error("tcp connect error: {0:?}")]
+    Tcp(ErrorKind),
+    #[error("tls error: {0:?}")]
+    Tls(embedded_tls::TlsError),
+}
+
+impl embedded_io_async::Error for EmqxTlsError {
+    fn kind(&self) -> ErrorKind {
+        match self {
+            Self::UnsupportedBroker => ErrorKind::Unsupported,
+            Self::Tcp(kind) => *kind,
+            Self::Tls(err) => embedded_io_async::Error::kind(err),
+        }
+    }
+}
+
+struct EmqxTlsConnection(TlsConnection<'static, FromTokio<TcpStream>, Aes128GcmSha256>);
+
+impl ErrorType for EmqxTlsConnection {
+    type Error = EmqxTlsError;
+}
+
+impl Read for EmqxTlsConnection {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        self.0.read(buf).await.map_err(EmqxTlsError::Tls)
+    }
+}
+
+impl Write for EmqxTlsConnection {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        self.0.write(buf).await.map_err(EmqxTlsError::Tls)
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        self.0.flush().await.map_err(EmqxTlsError::Tls)
+    }
+}
+
 impl Connector for EmqxTlsConnector {
-    type Error = embedded_tls::TlsError;
-    type Connection<'a> = TlsConnection<'static, FromTokio<TcpStream>, Aes128GcmSha256>;
+    type Error = EmqxTlsError;
+    type Connection<'a> = EmqxTlsConnection;
 
     async fn connect<'a>(
         &'a self,
         broker: &Broker<'_>,
-    ) -> Result<Self::Connection<'a>, minimq::Error> {
+    ) -> Result<Self::Connection<'a>, Self::Error> {
         let (host, port) = match broker {
             Broker::Hostname { host, port } => (*host, *port),
-            Broker::SocketAddr(_) => {
-                return Err(minimq::Error::Transport(
-                    minimq::embedded_io_async::ErrorKind::Unsupported,
-                ));
-            }
+            Broker::SocketAddr(_) => return Err(EmqxTlsError::UnsupportedBroker),
         };
         let stream = TcpStream::connect((host, port))
             .await
-            .map_err(|err| minimq::Error::Transport(kind_from_std(&err)))?;
+            .map_err(|err| EmqxTlsError::Tcp(kind_from_std(&err)))?;
         let read_record_buffer = Box::leak(Box::new([0u8; TLS_READ_RECORD_BUFFER_LEN]));
         let write_record_buffer = Box::leak(Box::new([0u8; TLS_WRITE_RECORD_BUFFER_LEN]));
         let config = TlsConfig::new()
@@ -84,8 +122,8 @@ impl Connector for EmqxTlsConnector {
         let mut provider = UnsecureProvider::new::<Aes128GcmSha256>(rand::rngs::OsRng);
         tls.open(TlsContext::new(&config, &mut provider))
             .await
-            .map_err(|err| minimq::Error::Transport(err.kind()))?;
-        Ok(tls)
+            .map_err(EmqxTlsError::Tls)?;
+        Ok(EmqxTlsConnection(tls))
     }
 }
 
@@ -109,23 +147,17 @@ async fn main() -> Result<(), ExampleError> {
     let mut sub_storage = [0u8; 4096];
     let mut pub_storage = [0u8; 4096];
 
-    let sub_config = ConfigBuilder::from_buffer_layout(
-        broker,
-        &mut sub_storage,
-        BufferLayout { rx: 1024, tx: 3072 },
-    )?
-    .client_id(&unique_id("sub"))?
-    .set_auth(USERNAME, PASSWORD.as_bytes())?
-    .build();
+    let sub_config =
+        ConfigBuilder::from_buffer_layout(broker, &mut sub_storage, BufferLayout::new(1024, 3072))?
+            .client_id(&unique_id("sub"))?
+            .set_auth(USERNAME, PASSWORD.as_bytes())?
+            .build();
 
-    let pub_config = ConfigBuilder::from_buffer_layout(
-        broker,
-        &mut pub_storage,
-        BufferLayout { rx: 1024, tx: 3072 },
-    )?
-    .client_id(&unique_id("pub"))?
-    .set_auth(USERNAME, PASSWORD.as_bytes())?
-    .build();
+    let pub_config =
+        ConfigBuilder::from_buffer_layout(broker, &mut pub_storage, BufferLayout::new(1024, 3072))?
+            .client_id(&unique_id("pub"))?
+            .set_auth(USERNAME, PASSWORD.as_bytes())?
+            .build();
 
     let mut subscriber = Session::new(sub_config, &connector);
     let mut publisher = Session::new(pub_config, &connector);
@@ -160,9 +192,9 @@ async fn main() -> Result<(), ExampleError> {
         loop {
             match subscriber.poll().await? {
                 Event::Inbound(message)
-                    if message.topic == topic && message.payload == payload.as_bytes() =>
+                    if message.topic() == topic && message.payload() == payload.as_bytes() =>
                 {
-                    println!("received topic={} payload={}", message.topic, payload);
+                    println!("received topic={} payload={}", message.topic(), payload);
                     return Ok(());
                 }
                 Event::Inbound(_) | Event::Idle | Event::Connected | Event::Reconnected => {}

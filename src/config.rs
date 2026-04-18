@@ -17,19 +17,53 @@ use heapless::String;
 /// state you want to allow.
 #[derive(Debug)]
 pub struct Buffers<'a> {
-    /// Inbound packet storage.
-    pub rx: &'a mut [u8],
-    /// Outbound encode and retransmit storage.
-    pub tx: &'a mut [u8],
+    rx: &'a mut [u8],
+    tx: &'a mut [u8],
 }
 
 /// Lengths for [`Buffers`].
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct BufferLayout {
-    /// Length of [`Buffers::rx`].
-    pub rx: usize,
-    /// Length of [`Buffers::tx`].
-    pub tx: usize,
+    rx: usize,
+    tx: usize,
+}
+
+impl<'a> Buffers<'a> {
+    /// Construct caller-owned RX/TX packet buffers.
+    pub const fn new(rx: &'a mut [u8], tx: &'a mut [u8]) -> Self {
+        Self { rx, tx }
+    }
+
+    /// Borrow the inbound packet storage.
+    pub const fn rx(&self) -> &[u8] {
+        self.rx
+    }
+
+    /// Borrow the outbound packet storage.
+    pub const fn tx(&self) -> &[u8] {
+        self.tx
+    }
+
+    pub(crate) fn into_parts(self) -> (&'a mut [u8], &'a mut [u8]) {
+        (self.rx, self.tx)
+    }
+}
+
+impl BufferLayout {
+    /// Construct an explicit RX/TX buffer split.
+    pub const fn new(rx: usize, tx: usize) -> Self {
+        Self { rx, tx }
+    }
+
+    /// Length of the inbound packet buffer.
+    pub const fn rx(&self) -> usize {
+        self.rx
+    }
+
+    /// Length of the outbound packet buffer.
+    pub const fn tx(&self) -> usize {
+        self.tx
+    }
 }
 
 impl BufferLayout {
@@ -42,15 +76,10 @@ impl BufferLayout {
     /// use minimq::BufferLayout;
     ///
     /// let mut storage = [0u8; 16];
-    /// let buffers = BufferLayout {
-    ///     rx: 4,
-    ///     tx: 12,
-    /// }
-    /// .split(&mut storage)
-    /// .unwrap();
+    /// let buffers = BufferLayout::new(4, 12).split(&mut storage).unwrap();
     ///
-    /// assert_eq!(buffers.rx.len(), 4);
-    /// assert_eq!(buffers.tx.len(), 12);
+    /// assert_eq!(buffers.rx().len(), 4);
+    /// assert_eq!(buffers.tx().len(), 12);
     /// ```
     pub fn split<'a>(self, buffer: &'a mut [u8]) -> Result<Buffers<'a>, ConfigError> {
         let total = self.rx + self.tx;
@@ -60,7 +89,7 @@ impl BufferLayout {
 
         let (rx, tail) = buffer.split_at_mut(self.rx);
         let (tx, _) = tail.split_at_mut(self.tx);
-        Ok(Buffers { rx, tx })
+        Ok(Buffers::new(rx, tx))
     }
 }
 
@@ -142,10 +171,7 @@ impl<'a> ConfigBuilder<'a> {
             return Err(ProtocolError::AuthAlreadySpecified);
         }
 
-        self.auth.replace(Auth {
-            user_name,
-            password,
-        });
+        self.auth.replace(Auth::new(user_name, password));
         Ok(self)
     }
 
