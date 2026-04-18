@@ -3,8 +3,13 @@ use crate::types::Properties;
 use crate::{ProtocolError, QoS, Retain};
 use heapless::{String, Vec};
 
+/// Trait for values that can serialize themselves into a publish payload buffer.
+///
+/// The implementation writes payload bytes into the provided buffer and returns the payload length.
 pub trait ToPayload {
+    /// Payload serialization error.
     type Error;
+    /// Serialize the payload into `buffer`.
     fn serialize(self, buffer: &mut [u8]) -> Result<usize, Self::Error>;
 }
 
@@ -38,6 +43,7 @@ impl<'a> ResponseTarget<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Owned MQTT request/reply target captured from an inbound publish.
 pub struct OwnedResponseTarget<const TOPIC: usize, const CORRELATION: usize> {
     topic: String<TOPIC>,
     correlation_data: Option<Vec<u8, CORRELATION>>,
@@ -120,6 +126,7 @@ impl<'a, P> Publication<'a, P> {
         }
     }
 
+    /// Return the current MQTT v5 property set for this publish.
     pub fn properties_ref(&self) -> &Properties<'a> {
         &self.properties
     }

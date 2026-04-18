@@ -6,6 +6,7 @@ use crate::{
 };
 
 use super::deserializer::MqttDeserializer;
+use crate::{trace, warn};
 
 use bit_field::BitField;
 use core::convert::TryFrom;
@@ -27,7 +28,23 @@ pub enum ReceivedPacket<'a> {
 }
 
 impl<'a> ReceivedPacket<'a> {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ReceivedPacket::ConnAck(_) => "CONNACK",
+            ReceivedPacket::Publish(_) => "PUBLISH",
+            ReceivedPacket::PubAck(_) => "PUBACK",
+            ReceivedPacket::SubAck(_) => "SUBACK",
+            ReceivedPacket::UnsubAck(_) => "UNSUBACK",
+            ReceivedPacket::PubRel(_) => "PUBREL",
+            ReceivedPacket::PubRec(_) => "PUBREC",
+            ReceivedPacket::PubComp(_) => "PUBCOMP",
+            ReceivedPacket::Disconnect(_) => "DISCONNECT",
+            ReceivedPacket::PingResp => "PINGRESP",
+        }
+    }
+
     pub fn from_buffer(buf: &'a [u8]) -> Result<Self, ProtocolError> {
+        trace!("Parsing received packet buffer of {} bytes", buf.len());
         let mut deserializer = MqttDeserializer::new(buf);
         let mut packet = ReceivedPacket::deserialize(&mut deserializer)?;
 
@@ -45,10 +62,17 @@ impl<'a> ReceivedPacket<'a> {
                 ReceivedPacket::UnsubAck(unsuback) => {
                     unsuback.codes = remaining_payload;
                 }
-                _ => return Err(ProtocolError::MalformedPacket),
+                _ => {
+                    warn!(
+                        "Unexpected trailing payload of {} bytes for non-payload packet",
+                        remaining_payload.len()
+                    );
+                    return Err(ProtocolError::MalformedPacket);
+                }
             }
         }
 
+        trace!("Parsed inbound packet kind={}", packet.kind());
         Ok(packet)
     }
 }
@@ -73,6 +97,10 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
         let packet_type = MessageType::try_from(fixed_header.get_bits(4..=7))
             .map_err(|_| A::Error::custom("Invalid MQTT control packet type"))?;
         let flags = fixed_header.get_bits(0..=3);
+        trace!(
+            "Received fixed header: type={:?} flags={:#b} remaining_len={:?}",
+            packet_type, flags, _length
+        );
 
         let valid_flags = match packet_type {
             MessageType::Publish => true,
@@ -88,6 +116,10 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
             _ => true,
         };
         if !valid_flags {
+            warn!(
+                "Rejecting packet {:?} due to invalid flags {:#b}",
+                packet_type, flags
+            );
             return Err(A::Error::custom("Invalid MQTT control packet flags"));
         }
 

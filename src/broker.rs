@@ -3,8 +3,15 @@ use core::net::SocketAddr;
 /// MQTT broker endpoint configuration.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Broker<'a> {
+    /// Connect to a resolved socket address directly.
     SocketAddr(SocketAddr),
-    Hostname { host: &'a str, port: u16 },
+    /// Connect by hostname and port. This requires a connector that can resolve hostnames.
+    Hostname {
+        /// DNS name to resolve.
+        host: &'a str,
+        /// TCP port.
+        port: u16,
+    },
 }
 
 impl<'a> Broker<'a> {
@@ -20,6 +27,7 @@ impl<'a> Broker<'a> {
         Self::Hostname { host, port }
     }
 
+    /// Return the configured TCP port.
     pub const fn port(&self) -> u16 {
         match self {
             Self::SocketAddr(addr) => addr.port(),

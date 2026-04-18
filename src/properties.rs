@@ -70,34 +70,61 @@ impl<'de> serde::de::Deserialize<'de> for PropertyIdentifier {
 }
 
 /// All of the possible properties that MQTT version 5 supports.
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Property<'a> {
+    /// Payload format indicator.
     PayloadFormatIndicator(u8),
+    /// Message expiry interval in seconds.
     MessageExpiryInterval(u32),
+    /// Content type of the application payload.
     ContentType(Utf8String<'a>),
+    /// Response topic for request/reply patterns.
     ResponseTopic(Utf8String<'a>),
+    /// Correlation data for request/reply patterns.
     CorrelationData(BinaryData<'a>),
+    /// Subscription identifier.
     SubscriptionIdentifier(Varint),
+    /// Session expiry interval in seconds.
     SessionExpiryInterval(u32),
+    /// Client identifier assigned by the broker.
     AssignedClientIdentifier(Utf8String<'a>),
+    /// Broker-advertised keepalive.
     ServerKeepAlive(u16),
+    /// Authentication method name.
     AuthenticationMethod(Utf8String<'a>),
+    /// Authentication data bytes.
     AuthenticationData(BinaryData<'a>),
+    /// Whether problem information is requested.
     RequestProblemInformation(u8),
+    /// Delay before publishing the will, in seconds.
     WillDelayInterval(u32),
+    /// Whether response information is requested.
     RequestResponseInformation(u8),
+    /// Broker response information.
     ResponseInformation(Utf8String<'a>),
+    /// Alternate broker reference.
     ServerReference(Utf8String<'a>),
+    /// Human-readable reason string.
     ReasonString(Utf8String<'a>),
+    /// Maximum concurrent QoS 1/2 receives.
     ReceiveMaximum(u16),
+    /// Maximum supported topic alias.
     TopicAliasMaximum(u16),
+    /// Topic alias value.
     TopicAlias(u16),
+    /// Maximum supported QoS.
     MaximumQoS(u8),
+    /// Whether retained messages are supported.
     RetainAvailable(u8),
+    /// User-defined key/value property.
     UserProperty(Utf8String<'a>, Utf8String<'a>),
+    /// Maximum packet size in bytes.
     MaximumPacketSize(u32),
+    /// Whether wildcard subscriptions are supported.
     WildcardSubscriptionAvailable(u8),
+    /// Whether subscription identifiers are supported.
     SubscriptionIdentifierAvailable(u8),
+    /// Whether shared subscriptions are supported.
     SharedSubscriptionAvailable(u8),
 }
 
@@ -139,7 +166,7 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
         use serde::de::{Error, VariantAccess};
 
         let (field, variant) = data.variant::<PropertyIdentifier>()?;
-        crate::trace!("Deserializing {:?}", field);
+        crate::trace!("Deserializing property field {:?}", field);
 
         let property = match field {
             PropertyIdentifier::ResponseTopic => {
@@ -238,7 +265,7 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Property<'a> {
                 _data: core::marker::PhantomData,
             },
         )?;
-        crate::debug!("Deserialized {:?}", prop);
+        crate::trace!("Deserialized property {:?}", prop);
         Ok(prop)
     }
 }

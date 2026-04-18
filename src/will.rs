@@ -11,6 +11,7 @@ pub(crate) enum WillSpec<'a> {
     Owned(OwnedWill<'a>),
 }
 
+/// MQTT will message borrowed by the session configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Will<'a> {
     topic: &'a str,
@@ -20,6 +21,7 @@ pub struct Will<'a> {
     properties: &'a [Property<'a>],
 }
 
+/// MQTT will message with an owned fixed-capacity topic.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OwnedWill<'a> {
     topic: String<128>,
@@ -30,6 +32,9 @@ pub struct OwnedWill<'a> {
 }
 
 impl<'a> Will<'a> {
+    /// Construct a borrowed will.
+    ///
+    /// Only MQTT v5 properties valid on will messages are accepted.
     pub fn new(
         topic: &'a str,
         data: &'a [u8],
@@ -57,11 +62,13 @@ impl<'a> Will<'a> {
         })
     }
 
+    /// Mark the will as retained.
     pub fn retained(mut self) -> Self {
         self.retained = Retain::Retained;
         self
     }
 
+    /// Set the will QoS.
     pub fn qos(mut self, qos: QoS) -> Self {
         self.qos = qos;
         self
@@ -77,6 +84,10 @@ impl<'a> Will<'a> {
 }
 
 impl<'a> OwnedWill<'a> {
+    /// Construct an owned will.
+    ///
+    /// The topic is copied into fixed-capacity storage. Only MQTT v5 properties valid on will
+    /// messages are accepted.
     pub fn new(
         topic: &str,
         data: &'a [u8],
@@ -103,11 +114,13 @@ impl<'a> OwnedWill<'a> {
         })
     }
 
+    /// Mark the will as retained.
     pub fn retained(mut self) -> Self {
         self.retained = Retain::Retained;
         self
     }
 
+    /// Set the will QoS.
     pub fn qos(mut self, qos: QoS) -> Self {
         self.qos = qos;
         self

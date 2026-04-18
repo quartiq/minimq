@@ -13,6 +13,8 @@ const BROKER_HOST: &str = "broker.emqx.io";
 const BROKER_PORT: u16 = 8883;
 const USERNAME: &str = "emqx";
 const PASSWORD: &str = "public";
+const TLS_READ_RECORD_BUFFER_LEN: usize = 16_640;
+const TLS_WRITE_RECORD_BUFFER_LEN: usize = 4_096;
 
 fn kind_from_std(err: &std::io::Error) -> minimq::embedded_io_async::ErrorKind {
     err.kind().into()
@@ -32,6 +34,20 @@ enum ExampleError {
     Unexpected(&'static str),
     #[error("timed out waiting for subscribed publish")]
     Timeout,
+}
+
+async fn poll_until_idle<C: Connector>(
+    session: &mut Session<'_, '_, C>,
+) -> Result<(), ExampleError> {
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), session.poll())
+            .await
+            .map_err(|_| ExampleError::Timeout)??
+        {
+            Event::Idle => return Ok(()),
+            Event::Connected | Event::Reconnected | Event::Inbound(_) => {}
+        }
+    }
 }
 
 struct EmqxTlsConnector;
@@ -55,8 +71,8 @@ impl Connector for EmqxTlsConnector {
         let stream = TcpStream::connect((host, port))
             .await
             .map_err(|err| minimq::Error::Transport(kind_from_std(&err)))?;
-        let read_record_buffer = Box::leak(Box::new([0u8; 16_384]));
-        let write_record_buffer = Box::leak(Box::new([0u8; 4_096]));
+        let read_record_buffer = Box::leak(Box::new([0u8; TLS_READ_RECORD_BUFFER_LEN]));
+        let write_record_buffer = Box::leak(Box::new([0u8; TLS_WRITE_RECORD_BUFFER_LEN]));
         let config = TlsConfig::new()
             .with_server_name(host)
             .enable_rsa_signatures();
@@ -114,36 +130,45 @@ async fn main() -> Result<(), ExampleError> {
     let mut subscriber = Session::new(sub_config, &connector);
     let mut publisher = Session::new(pub_config, &connector);
 
-    match subscriber.poll().await? {
+    match tokio::time::timeout(Duration::from_secs(10), subscriber.poll())
+        .await
+        .map_err(|_| ExampleError::Timeout)??
+    {
         Event::Connected => {}
         _ => return Err(ExampleError::Unexpected("subscriber connect")),
     }
     subscriber
         .subscribe(&[TopicFilter::new(&topic)], &[] as &[Property<'_>])
         .await?;
-    let _ = subscriber.poll().await?;
+    let _ = tokio::time::timeout(Duration::from_secs(10), subscriber.poll())
+        .await
+        .map_err(|_| ExampleError::Timeout)??;
 
-    match publisher.poll().await? {
+    match tokio::time::timeout(Duration::from_secs(10), publisher.poll())
+        .await
+        .map_err(|_| ExampleError::Timeout)??
+    {
         Event::Connected => {}
         _ => return Err(ExampleError::Unexpected("publisher connect")),
     }
     publisher
         .publish(Publication::new(&topic, payload.as_bytes()).qos(QoS::AtLeastOnce))
         .await?;
+    poll_until_idle(&mut publisher).await?;
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            return Err(ExampleError::Timeout);
-        }
-        match subscriber.poll().await? {
-            Event::Inbound(message)
-                if message.topic == topic && message.payload == payload.as_bytes() =>
-            {
-                println!("received topic={} payload={}", message.topic, payload);
-                return Ok(());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match subscriber.poll().await? {
+                Event::Inbound(message)
+                    if message.topic == topic && message.payload == payload.as_bytes() =>
+                {
+                    println!("received topic={} payload={}", message.topic, payload);
+                    return Ok(());
+                }
+                Event::Inbound(_) | Event::Idle | Event::Connected | Event::Reconnected => {}
             }
-            Event::Inbound(_) | Event::Idle | Event::Connected | Event::Reconnected => {}
         }
-    }
+    })
+    .await
+    .map_err(|_| ExampleError::Timeout)?
 }

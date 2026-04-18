@@ -5,12 +5,18 @@ use embedded_nal_async::AddrType;
 use embedded_nal_async::{Dns, TcpConnect};
 
 #[allow(async_fn_in_trait)]
+/// Factory for broker connections used by [`Session`](crate::Session).
+///
+/// Implement this for your transport stack or use [`TcpConnector`] / [`DnsTcpConnector`].
 pub trait Connector {
+    /// Underlying transport error type.
     type Error: embedded_io_async::Error;
+    /// Connected byte stream used by the session.
     type Connection<'a>: Read<Error = Self::Error> + Write<Error = Self::Error> + 'a
     where
         Self: 'a;
 
+    /// Connect to `broker`.
     async fn connect<'a>(&'a self, broker: &Broker<'_>) -> Result<Self::Connection<'a>, Error>;
 }
 
@@ -29,12 +35,15 @@ where
     }
 }
 
+/// Connector for stacks that can open TCP connections to concrete socket addresses.
 #[derive(Debug, Copy, Clone)]
 pub struct TcpConnector<T> {
+    /// Underlying TCP stack.
     pub stack: T,
 }
 
 impl<T> TcpConnector<T> {
+    /// Wrap a TCP stack as a [`Connector`].
     pub const fn new(stack: T) -> Self {
         Self { stack }
     }
@@ -61,14 +70,19 @@ where
     }
 }
 
+/// Connector for stacks that need separate DNS resolution before opening TCP.
 #[derive(Debug, Clone)]
 pub struct DnsTcpConnector<T, D> {
+    /// Underlying TCP stack.
     pub stack: T,
+    /// DNS resolver.
     pub dns: D,
+    /// Requested address family for hostname lookups.
     pub addr_type: AddrType,
 }
 
 impl<T, D> DnsTcpConnector<T, D> {
+    /// Wrap a TCP stack and DNS resolver as a [`Connector`].
     pub const fn new(stack: T, dns: D, addr_type: AddrType) -> Self {
         Self {
             stack,

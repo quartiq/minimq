@@ -5,14 +5,16 @@ use minimq::{
     Broker, Buffers, ConfigBuilder, Error, Event, ProtocolError, PubError, Publication, QoS,
     Session, transport::Connector,
 };
-use std::{cell::RefCell, collections::VecDeque, rc::Rc};
-use support::block_on;
+use std::{cell::RefCell, collections::VecDeque, future::poll_fn, rc::Rc, task::Poll};
+use support::{block_on, poll_once};
 
 #[derive(Default)]
 struct MockIo {
     rx: VecDeque<Vec<u8>>,
     tx: Vec<Vec<u8>>,
     write_error: Option<(usize, ErrorKind)>,
+    pending_writes: usize,
+    pending_flushes: usize,
 }
 
 #[derive(Clone, Default)]
@@ -27,6 +29,14 @@ impl MockConnection {
 
     fn fail_write_after(&mut self, successful_writes: usize, err: ErrorKind) {
         self.inner.borrow_mut().write_error = Some((successful_writes, err));
+    }
+
+    fn pend_writes(&mut self, count: usize) {
+        self.inner.borrow_mut().pending_writes = count;
+    }
+
+    fn pend_flushes(&mut self, count: usize) {
+        self.inner.borrow_mut().pending_flushes = count;
     }
 
     fn tx(&self) -> Vec<Vec<u8>> {
@@ -56,21 +66,38 @@ impl Read for MockConnection {
 
 impl Write for MockConnection {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        let mut inner = self.inner.borrow_mut();
-        if let Some((remaining, err)) = &mut inner.write_error {
-            if *remaining == 0 {
-                let err = *err;
-                inner.write_error = None;
-                return Err(err);
+        poll_fn(|cx| {
+            let mut inner = self.inner.borrow_mut();
+            if inner.pending_writes != 0 {
+                inner.pending_writes -= 1;
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
             }
-            *remaining -= 1;
-        }
-        inner.tx.push(buf.to_vec());
-        Ok(buf.len())
+            if let Some((remaining, err)) = &mut inner.write_error {
+                if *remaining == 0 {
+                    let err = *err;
+                    inner.write_error = None;
+                    return Poll::Ready(Err(err));
+                }
+                *remaining -= 1;
+            }
+            inner.tx.push(buf.to_vec());
+            Poll::Ready(Ok(buf.len()))
+        })
+        .await
     }
 
     async fn flush(&mut self) -> Result<(), Self::Error> {
-        Ok(())
+        poll_fn(|cx| {
+            let mut inner = self.inner.borrow_mut();
+            if inner.pending_flushes != 0 {
+                inner.pending_flushes -= 1;
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            Poll::Ready(Ok(()))
+        })
+        .await
     }
 }
 
@@ -235,6 +262,10 @@ fn outbound_pubrec(id: u16) -> [u8; 6] {
     [0x50, 0x04, (id >> 8) as u8, id as u8, 0x00, 0x00]
 }
 
+fn outbound_pubrel(id: u16) -> [u8; 6] {
+    [0x62, 0x04, (id >> 8) as u8, id as u8, 0x00, 0x00]
+}
+
 fn connected_session<'a>(connector: &'a MockConnector) -> Session<'a, 'static, MockConnector> {
     let mut session = Session::new(config(), connector);
     assert!(matches!(
@@ -270,6 +301,90 @@ fn publish_connects_session_on_demand() {
         block_on(session.poll()).unwrap(),
         Event::Connected
     ));
+}
+
+#[test]
+fn publish_survives_cancellation_during_pending_write() {
+    let mut connection = MockConnection::default();
+    let mut inspect = connection.clone();
+    connection.push_rx(&connack());
+    connection.push_rx(&puback(1));
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    inspect.pend_writes(1);
+    let mut future =
+        Box::pin(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce)));
+    assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
+    drop(future);
+
+    assert_eq!(inspect.tx().len(), 1);
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    block_on(session.publish(Publication::new("data", b"y").qos(QoS::AtLeastOnce))).unwrap();
+}
+
+#[test]
+fn cancelled_publish_still_holds_receive_max_quota() {
+    let mut connection = MockConnection::default();
+    let mut inspect = connection.clone();
+    connection.push_rx(&connack_receive_max(1));
+    connection.push_rx(&puback(1));
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    inspect.pend_writes(1);
+    let mut future =
+        Box::pin(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce)));
+    assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
+    drop(future);
+
+    let result = block_on(session.publish(Publication::new("data", b"y").qos(QoS::AtLeastOnce)));
+    assert!(matches!(result, Err(PubError::Session(Error::NotReady))));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    block_on(session.publish(Publication::new("data", b"z").qos(QoS::AtLeastOnce))).unwrap();
+}
+
+#[test]
+fn subscribe_survives_cancellation_during_pending_flush() {
+    let mut connection = MockConnection::default();
+    let mut inspect = connection.clone();
+    connection.push_rx(&connack());
+    connection.push_rx(&suback(1, 0x01));
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    inspect.pend_flushes(1);
+    let topics = [minimq::types::TopicFilter::new("data")];
+    let mut future = Box::pin(session.subscribe(&topics, &[]));
+    assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
+    drop(future);
+
+    assert_eq!(inspect.tx().len(), 2);
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert_eq!(inspect.tx().len(), 2);
+}
+
+#[test]
+fn qos2_pubrel_survives_cancellation_during_pending_write() {
+    let mut connection = MockConnection::default();
+    let mut inspect = connection.clone();
+    connection.push_rx(&connack());
+    connection.push_rx(&pubrec(1));
+    connection.push_rx(&pubcomp(1));
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    block_on(session.publish(Publication::new("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+
+    inspect.pend_writes(1);
+    let mut future = Box::pin(session.poll());
+    assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
+    drop(future);
+
+    assert_eq!(inspect.tx().len(), 2);
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert_eq!(inspect.tx().last().unwrap(), &outbound_pubrel(1));
 }
 
 #[test]
@@ -831,6 +946,35 @@ fn session_reconnects_after_replay_write_error() {
         block_on(session.poll()).unwrap(),
         Event::Reconnected
     ));
+}
+
+#[test]
+fn stale_puback_after_resumed_replay_is_ignored() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.push_rx(&disconnect());
+
+    let mut second = MockConnection::default();
+    second.push_rx(&connack_session_present());
+    second.push_rx(&puback(1));
+    second.push_rx(&puback(1));
+
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config(), &connector);
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Reconnected
+    ));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
 }
 
 #[test]

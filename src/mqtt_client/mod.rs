@@ -61,6 +61,9 @@ impl<'a> InboundPublish<'a> {
         .map(|target| target.publication(payload))
     }
 
+    /// Copy the response target into fixed-capacity owned storage.
+    ///
+    /// Use this when the reply has to outlive the borrowed inbound packet.
     pub fn reply_owned<const TOPIC: usize, const CORRELATION: usize>(
         &'a self,
     ) -> Result<Option<OwnedResponseTarget<TOPIC, CORRELATION>>, ProtocolError> {
