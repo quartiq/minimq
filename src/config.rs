@@ -1,4 +1,4 @@
-use crate::{Broker, OwnedWill, ProtocolError, Will, types::Auth, will::WillSpec};
+use crate::{Broker, ProtocolError, Will, types::Auth};
 use embassy_time::Duration;
 use heapless::String;
 
@@ -21,13 +21,6 @@ pub struct Buffers<'a> {
     tx: &'a mut [u8],
 }
 
-/// Lengths for [`Buffers`].
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct BufferLayout {
-    rx: usize,
-    tx: usize,
-}
-
 impl<'a> Buffers<'a> {
     /// Construct caller-owned RX/TX packet buffers.
     pub const fn new(rx: &'a mut [u8], tx: &'a mut [u8]) -> Self {
@@ -47,83 +40,47 @@ impl<'a> Buffers<'a> {
     pub(crate) fn into_parts(self) -> (&'a mut [u8], &'a mut [u8]) {
         (self.rx, self.tx)
     }
-}
 
-impl BufferLayout {
-    /// Construct an explicit RX/TX buffer split.
-    pub const fn new(rx: usize, tx: usize) -> Self {
-        Self { rx, tx }
-    }
-
-    /// Length of the inbound packet buffer.
-    pub const fn rx(&self) -> usize {
-        self.rx
-    }
-
-    /// Length of the outbound packet buffer.
-    pub const fn tx(&self) -> usize {
-        self.tx
-    }
-}
-
-impl BufferLayout {
     /// Split one backing buffer into explicit RX and TX regions.
     ///
-    /// `rx` is the maximum inbound packet size. `tx` is the shared outbound arena for encoding,
-    /// retained QoS packets, and replay state.
+    /// `rx_size` is the maximum inbound packet size. The remainder becomes the shared outbound
+    /// arena for encoding, retained QoS packets, and replay state.
     ///
     /// ```rust
-    /// use minimq::BufferLayout;
+    /// use minimq::Buffers;
     ///
     /// let mut storage = [0u8; 16];
-    /// let buffers = BufferLayout::new(4, 12).split(&mut storage).unwrap();
+    /// let buffers = Buffers::split(&mut storage, 4).unwrap();
     ///
     /// assert_eq!(buffers.rx().len(), 4);
     /// assert_eq!(buffers.tx().len(), 12);
     /// ```
-    pub fn split<'a>(self, buffer: &'a mut [u8]) -> Result<Buffers<'a>, ConfigError> {
-        let total = self.rx + self.tx;
-        if total > buffer.len() {
-            return Err(ConfigError::BufferLayout);
+    pub fn split(buffer: &'a mut [u8], rx_size: usize) -> Result<Self, SetupError> {
+        if rx_size > buffer.len() {
+            return Err(SetupError::BufferSplit);
         }
 
-        let (rx, tail) = buffer.split_at_mut(self.rx);
-        let (tx, _) = tail.split_at_mut(self.tx);
-        Ok(Buffers::new(rx, tx))
+        let (rx, tx) = buffer.split_at_mut(rx_size);
+        Ok(Self::new(rx, tx))
     }
 }
 
-/// Configuration errors detected before a session is built.
+/// Setup errors detected before a session is created.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ConfigError {
-    /// The requested RX/TX split does not fit in the provided backing buffer.
-    #[error("buffer layout exceeds backing storage")]
-    BufferLayout,
+pub enum SetupError {
+    /// The requested RX split does not fit in the provided backing buffer.
+    #[error("buffer split exceeds backing storage")]
+    BufferSplit,
 }
 
-/// Built session configuration.
-///
-/// Construct this through [`ConfigBuilder`].
-#[derive(Debug)]
-pub struct Config<'a> {
-    pub(crate) broker: Broker<'a>,
-    pub(crate) buffers: Buffers<'a>,
-    pub(crate) will: Option<WillSpec<'a>>,
-    pub(crate) client_id: String<64>,
-    pub(crate) keepalive_interval: Duration,
-    pub(crate) session_expiry_interval: u32,
-    pub(crate) downgrade_qos: bool,
-    pub(crate) auth: Option<Auth<'a>>,
-}
-
-/// Builder for [`Config`].
+/// Builder for session setup.
 ///
 /// The builder only covers application-facing settings. Runtime MQTT state lives in [`Session`](crate::Session).
 #[derive(Debug)]
 pub struct ConfigBuilder<'a> {
     broker: Broker<'a>,
     buffers: Buffers<'a>,
-    will: Option<WillSpec<'a>>,
+    will: Option<Will<'a>>,
     client_id: String<64>,
     keepalive_interval: Duration,
     session_expiry_interval: u32,
@@ -151,22 +108,18 @@ impl<'a> ConfigBuilder<'a> {
     }
 
     /// Construct a session configuration by splitting one backing buffer into RX and TX regions.
-    pub fn from_buffer_layout(
+    pub fn from_buffer(
         broker: Broker<'a>,
         buffer: &'a mut [u8],
-        layout: BufferLayout,
-    ) -> Result<Self, ConfigError> {
-        Ok(Self::new(broker, layout.split(buffer)?))
+        rx_size: usize,
+    ) -> Result<Self, SetupError> {
+        Ok(Self::new(broker, Buffers::split(buffer, rx_size)?))
     }
 
     /// Attach MQTT username/password authentication.
     ///
     /// Calling this more than once returns [`ProtocolError::AuthAlreadySpecified`].
-    pub fn set_auth(
-        mut self,
-        user_name: &'a str,
-        password: &'a [u8],
-    ) -> Result<Self, ProtocolError> {
+    pub fn auth(mut self, user_name: &'a str, password: &'a [u8]) -> Result<Self, ProtocolError> {
         if self.auth.is_some() {
             return Err(ProtocolError::AuthAlreadySpecified);
         }
@@ -208,36 +161,37 @@ impl<'a> ConfigBuilder<'a> {
         self
     }
 
-    /// Attach a borrowed MQTT will message.
+    /// Attach an MQTT will message.
     pub fn will(mut self, will: Will<'a>) -> Result<Self, ProtocolError> {
         if self.will.is_some() {
             return Err(ProtocolError::WillAlreadySpecified);
         }
-        self.will = Some(WillSpec::Borrowed(will));
+        self.will = Some(will);
         Ok(self)
     }
 
-    /// Attach an owned MQTT will message.
-    pub fn owned_will(mut self, will: OwnedWill<'a>) -> Result<Self, ProtocolError> {
-        if self.will.is_some() {
-            return Err(ProtocolError::WillAlreadySpecified);
-        }
-        self.will = Some(WillSpec::Owned(will));
-        Ok(self)
-    }
-
-    /// Finalize the session configuration.
-    pub fn build(self) -> Config<'a> {
-        Config {
-            broker: self.broker,
-            buffers: self.buffers,
-            will: self.will,
-            client_id: self.client_id,
-            keepalive_interval: self.keepalive_interval,
-            session_expiry_interval: self.session_expiry_interval,
-            downgrade_qos: self.downgrade_qos,
-            auth: self.auth,
-        }
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Broker<'a>,
+        Buffers<'a>,
+        Option<Will<'a>>,
+        String<64>,
+        Duration,
+        u32,
+        bool,
+        Option<Auth<'a>>,
+    ) {
+        (
+            self.broker,
+            self.buffers,
+            self.will,
+            self.client_id,
+            self.keepalive_interval,
+            self.session_expiry_interval,
+            self.downgrade_qos,
+            self.auth,
+        )
     }
 }
 
@@ -247,21 +201,19 @@ mod tests {
     use core::net::SocketAddr;
 
     #[test]
-    fn split_layout() {
+    fn split_buffer() {
         let mut buffer = [0; 30];
-        let layout = BufferLayout { rx: 10, tx: 20 };
-        let buffers = layout.split(&mut buffer).unwrap();
+        let buffers = Buffers::split(&mut buffer, 10).unwrap();
         assert_eq!(buffers.rx.len(), 10);
         assert_eq!(buffers.tx.len(), 20);
     }
 
     #[test]
-    fn layout_too_large() {
+    fn split_too_large() {
         let mut buffer = [0; 30];
-        let layout = BufferLayout { rx: 10, tx: 21 };
         assert!(matches!(
-            layout.split(&mut buffer),
-            Err(ConfigError::BufferLayout)
+            Buffers::split(&mut buffer, 31),
+            Err(SetupError::BufferSplit)
         ));
     }
 
@@ -270,16 +222,20 @@ mod tests {
         let mut rx = [0; 10];
         let mut tx = [0; 20];
         let broker: Broker<'_> = "127.0.0.1:1883".parse::<SocketAddr>().unwrap().into();
-        let config = ConfigBuilder::new(
+        let (broker2, buffers, will, client_id, _, _, _, auth) = ConfigBuilder::new(
             broker,
             Buffers {
                 rx: &mut rx,
                 tx: &mut tx,
             },
         )
-        .build();
-        assert_eq!(config.buffers.rx.len(), 10);
-        assert_eq!(config.buffers.tx.len(), 20);
+        .into_parts();
+        assert_eq!(broker2, broker);
+        assert_eq!(buffers.rx.len(), 10);
+        assert_eq!(buffers.tx.len(), 20);
+        assert!(will.is_none());
+        assert!(client_id.is_empty());
+        assert!(auth.is_none());
     }
 
     #[test]
@@ -288,7 +244,7 @@ mod tests {
         let mut tx = [0; 20];
         let broker: Broker<'_> = "127.0.0.1:1883".parse::<SocketAddr>().unwrap().into();
         let will = Will::new("topic", b"x", &[]).unwrap();
-        let config = ConfigBuilder::new(
+        let (_, buffers, _, _, _, _, _, _) = ConfigBuilder::new(
             broker,
             Buffers {
                 rx: &mut rx,
@@ -297,7 +253,7 @@ mod tests {
         )
         .will(will)
         .unwrap()
-        .build();
-        assert_eq!(config.buffers.tx.len(), 20);
+        .into_parts();
+        assert_eq!(buffers.tx.len(), 20);
     }
 }

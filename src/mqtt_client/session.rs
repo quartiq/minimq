@@ -4,7 +4,7 @@ use embedded_io_async::Error as _;
 use embedded_io_async::ErrorKind;
 
 use crate::{
-    Config, Error, Property, PubError, QoS, publication::Publication, transport::Connector,
+    ConfigBuilder, Error, Property, PubError, QoS, publication::Publication, transport::Connector,
     types::TopicFilter,
 };
 
@@ -25,8 +25,8 @@ impl<'a, 'buf, C> Session<'a, 'buf, C>
 where
     C: Connector,
 {
-    /// Construct a session from a built [`Config`](crate::Config) and transport connector.
-    pub fn new(config: Config<'buf>, connector: &'a C) -> Self {
+    /// Construct a session from a setup builder and transport connector.
+    pub fn new(config: ConfigBuilder<'buf>, connector: &'a C) -> Self {
         Self {
             core: Core::new(config),
             connector,

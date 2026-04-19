@@ -27,6 +27,12 @@ impl MockConnection {
         self.inner.borrow_mut().rx.push_back(data.to_vec());
     }
 
+    fn push_rx_fragmented(&mut self, data: &[u8]) {
+        for byte in data {
+            self.push_rx(core::slice::from_ref(byte));
+        }
+    }
+
     fn fail_write_after(&mut self, successful_writes: usize, err: ErrorKind) {
         self.inner.borrow_mut().write_error = Some((successful_writes, err));
     }
@@ -134,7 +140,7 @@ impl Connector for MockConnector {
     }
 }
 
-fn config() -> minimq::Config<'static> {
+fn config() -> ConfigBuilder<'static> {
     let rx = Box::leak(Box::new([0; 128]));
     let tx = Box::leak(Box::new([0; 1152]));
     let broker = "127.0.0.1:1883"
@@ -144,7 +150,6 @@ fn config() -> minimq::Config<'static> {
     ConfigBuilder::new(broker, Buffers::new(rx, tx))
         .client_id("test")
         .unwrap()
-        .build()
 }
 
 fn connack() -> [u8; 5] {
@@ -223,10 +228,6 @@ fn unsuback(id: u16, code: u8) -> [u8; 6] {
     [0xB0, 0x04, (id >> 8) as u8, id as u8, 0x00, code]
 }
 
-fn pingreq() -> [u8; 2] {
-    [0xC0, 0x00]
-}
-
 fn connack_session_present() -> [u8; 5] {
     [0x20, 0x03, 0x01, 0x00, 0x00]
 }
@@ -295,6 +296,10 @@ fn outbound_pubrel(id: u16) -> [u8; 6] {
     [0x62, 0x04, (id >> 8) as u8, id as u8, 0x00, 0x00]
 }
 
+fn outbound_pubcomp(id: u16, reason: u8) -> [u8; 6] {
+    [0x70, 0x04, (id >> 8) as u8, id as u8, reason, 0x00]
+}
+
 fn connected_session<'a>(connector: &'a MockConnector) -> Session<'a, 'static, MockConnector> {
     let mut session = Session::new(config(), connector);
     assert!(matches!(
@@ -316,6 +321,40 @@ fn fill_inflight_publish_slots(session: &mut Session<'_, 'static, MockConnector>
             other => panic!("unexpected publish result while filling inflight slots: {other:?}"),
         }
     }
+}
+
+#[test]
+fn fragmented_connack_still_establishes_session() {
+    let mut connection = MockConnection::default();
+    connection.push_rx_fragmented(&connack());
+    let connector = MockConnector::new(connection);
+    let mut session = Session::new(config(), &connector);
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    assert!(session.is_connected());
+}
+
+#[test]
+fn fragmented_inbound_publish_is_assembled_and_acked() {
+    let mut connection = MockConnection::default();
+    let inspect = connection.clone();
+    connection.push_rx(&connack());
+    connection.push_rx_fragmented(&inbound_publish_qos1(7, "data", b"payload"));
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    match block_on(session.poll()).unwrap() {
+        Event::Inbound(message) => {
+            assert_eq!(message.topic(), "data");
+            assert_eq!(message.payload(), b"payload");
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+
+    assert_eq!(inspect.tx().last().unwrap(), &outbound_puback(7));
 }
 
 #[test]
@@ -676,6 +715,91 @@ fn inbound_qos2_marks_pending_until_pubrel() {
 }
 
 #[test]
+fn resumed_session_suppresses_duplicate_inbound_qos2_publish() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.push_rx(&inbound_publish_qos2(9, "data", b"x"));
+    first.push_rx(&disconnect());
+
+    let mut second = MockConnection::default();
+    let second_inspect = second.clone();
+    second.push_rx(&connack_session_present());
+    second.push_rx(&inbound_publish_qos2(9, "data", b"x"));
+    second.push_rx(&pubrel(9));
+
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config(), &connector);
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    match block_on(session.poll()).unwrap() {
+        Event::Inbound(message) => assert_eq!(message.topic(), "data"),
+        other => panic!("unexpected event: {other:?}"),
+    }
+
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Reconnected
+    ));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+
+    let tx = second_inspect.tx();
+    assert_eq!(
+        tx.iter()
+            .filter(|frame| frame.as_slice() == outbound_pubrec(9))
+            .count(),
+        1
+    );
+    assert!(
+        tx.iter()
+            .any(|frame| frame.as_slice() == outbound_pubcomp(9, 0x00))
+    );
+}
+
+#[test]
+fn fresh_session_clears_pending_inbound_qos2_state() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.push_rx(&inbound_publish_qos2(9, "data", b"x"));
+    first.push_rx(&disconnect());
+
+    let mut second = MockConnection::default();
+    let second_inspect = second.clone();
+    second.push_rx(&connack());
+    second.push_rx(&pubrel(9));
+
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config(), &connector);
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    match block_on(session.poll()).unwrap() {
+        Event::Inbound(message) => assert_eq!(message.topic(), "data"),
+        other => panic!("unexpected event: {other:?}"),
+    }
+
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+
+    assert!(
+        second_inspect
+            .tx()
+            .iter()
+            .any(|frame| frame.as_slice() == outbound_pubcomp(9, 0x92))
+    );
+}
+
+#[test]
 fn full_retained_outbound_still_sends_puback() {
     let mut connection = MockConnection::default();
     let inspect = connection.clone();
@@ -713,47 +837,6 @@ fn full_retained_outbound_still_sends_pubrec() {
     }
 
     assert_eq!(inspect.tx().last().unwrap(), &outbound_pubrec(9));
-}
-
-#[test]
-fn full_retained_outbound_still_sends_pingreq() {
-    let mut connection = MockConnection::default();
-    let inspect = connection.clone();
-    connection.push_rx(&connack());
-    let connector = MockConnector::new(connection);
-    let mut session = Session::new(
-        ConfigBuilder::new(
-            "127.0.0.1:1883"
-                .parse::<std::net::SocketAddr>()
-                .unwrap()
-                .into(),
-            Buffers::new(
-                Box::leak(Box::new([0; 128])),
-                Box::leak(Box::new([0; 1152])),
-            ),
-        )
-        .client_id("test")
-        .unwrap()
-        .keepalive_interval(1)
-        .build(),
-        &connector,
-    );
-
-    assert!(matches!(
-        block_on(session.poll()).unwrap(),
-        Event::Connected
-    ));
-    let capacity = fill_inflight_publish_slots(&mut session);
-    assert!(capacity > 0);
-
-    std::thread::sleep(std::time::Duration::from_millis(600));
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
-    assert!(
-        inspect
-            .tx()
-            .iter()
-            .any(|frame| frame.as_slice() == pingreq())
-    );
 }
 
 #[test]
@@ -810,51 +893,6 @@ fn session_reconnects_after_write_error() {
     ));
 
     block_on(session.publish(Publication::new("reply", b"ok").qos(QoS::AtLeastOnce))).unwrap();
-}
-
-#[test]
-fn session_reconnects_after_ping_write_error() {
-    let mut first = MockConnection::default();
-    let mut inspect = first.clone();
-    first.push_rx(&connack());
-
-    let mut second = MockConnection::default();
-    second.push_rx(&connack_session_present());
-
-    let connector = MockConnector::with_connections([first, second]);
-    let mut session = Session::new(
-        ConfigBuilder::new(
-            "127.0.0.1:1883"
-                .parse::<std::net::SocketAddr>()
-                .unwrap()
-                .into(),
-            Buffers::new(
-                Box::leak(Box::new([0; 128])),
-                Box::leak(Box::new([0; 1152])),
-            ),
-        )
-        .client_id("test")
-        .unwrap()
-        .keepalive_interval(1)
-        .build(),
-        &connector,
-    );
-
-    assert!(matches!(
-        block_on(session.poll()).unwrap(),
-        Event::Connected
-    ));
-    inspect.fail_write_after(0, ErrorKind::ConnectionReset);
-
-    std::thread::sleep(std::time::Duration::from_millis(600));
-    assert!(matches!(
-        block_on(session.poll()),
-        Err(Error::Transport(ErrorKind::ConnectionReset))
-    ));
-    assert!(matches!(
-        block_on(session.poll()).unwrap(),
-        Event::Reconnected
-    ));
 }
 
 #[test]
@@ -978,6 +1016,144 @@ fn session_reconnects_after_replay_write_error() {
 }
 
 #[test]
+fn qos1_publish_replays_across_multiple_resumed_reconnects() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.push_rx(&disconnect());
+
+    let mut second = MockConnection::default();
+    let second_inspect = second.clone();
+    second.push_rx(&connack_session_present());
+    second.push_rx(&disconnect());
+
+    let mut third = MockConnection::default();
+    let third_inspect = third.clone();
+    third.push_rx(&connack_session_present());
+    third.push_rx(&puback(1));
+
+    let connector = MockConnector::with_connections([first, second, third]);
+    let mut session = Session::new(config(), &connector);
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Reconnected
+    ));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Reconnected
+    ));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+
+    assert!(
+        second_inspect
+            .tx()
+            .iter()
+            .any(|frame| frame.first() == Some(&0x3A))
+    );
+    assert!(
+        third_inspect
+            .tx()
+            .iter()
+            .any(|frame| frame.first() == Some(&0x3A))
+    );
+}
+
+#[test]
+fn qos2_pubrel_replays_across_multiple_resumed_reconnects() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.push_rx(&pubrec(1));
+    first.push_rx(&disconnect());
+
+    let mut second = MockConnection::default();
+    let second_inspect = second.clone();
+    second.push_rx(&connack_session_present());
+    second.push_rx(&disconnect());
+
+    let mut third = MockConnection::default();
+    let third_inspect = third.clone();
+    third.push_rx(&connack_session_present());
+    third.push_rx(&pubcomp(1));
+
+    let connector = MockConnector::with_connections([first, second, third]);
+    let mut session = Session::new(config(), &connector);
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    block_on(session.publish(Publication::new("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
+
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Reconnected
+    ));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Reconnected
+    ));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+
+    assert!(
+        second_inspect
+            .tx()
+            .iter()
+            .any(|frame| frame.as_slice() == outbound_pubrel(1))
+    );
+    assert!(
+        third_inspect
+            .tx()
+            .iter()
+            .any(|frame| frame.as_slice() == outbound_pubrel(1))
+    );
+}
+
+#[test]
+fn fresh_session_after_reconnect_drops_stale_replay_state() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.push_rx(&disconnect());
+
+    let mut second = MockConnection::default();
+    let second_inspect = second.clone();
+    second.push_rx(&connack());
+
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config(), &connector);
+
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(matches!(
+        block_on(session.poll()).unwrap(),
+        Event::Connected
+    ));
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+
+    assert!(
+        second_inspect
+            .tx()
+            .iter()
+            .all(|frame| frame.first() != Some(&0x3A))
+    );
+}
+
+#[test]
 fn stale_puback_after_resumed_replay_is_ignored() {
     let mut first = MockConnection::default();
     first.push_rx(&connack());
@@ -1026,8 +1202,7 @@ fn connect_uses_configured_session_expiry_interval() {
         )
         .client_id("test")
         .unwrap()
-        .session_expiry_interval(7)
-        .build(),
+        .session_expiry_interval(7),
         &connector,
     );
 

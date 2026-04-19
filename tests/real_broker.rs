@@ -45,13 +45,12 @@ fn unique_topic() -> String {
     format!("minimq/test/{nanos}")
 }
 
-fn config<'a>(broker: Broker<'a>, client_id: &str) -> minimq::Config<'a> {
+fn config<'a>(broker: Broker<'a>, client_id: &str) -> ConfigBuilder<'a> {
     let rx = Box::leak(Box::new([0; 1024]));
     let tx = Box::leak(Box::new([0; 2048]));
     ConfigBuilder::new(broker, Buffers::new(rx, tx))
         .client_id(client_id)
         .unwrap()
-        .build()
 }
 
 fn poll_until_ready<'a, C>(
