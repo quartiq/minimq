@@ -23,12 +23,12 @@ mod varint;
 mod will;
 
 pub use broker::Broker;
-pub use config::{BufferLayout, Buffers, Config, ConfigBuilder, ConfigError};
+pub use config::{Buffers, ConfigBuilder, SetupError};
 pub use mqtt_client::{Event, InboundPublish, Session};
 pub use properties::Property;
 pub use publication::{OwnedResponseTarget, Publication};
 pub use reason_codes::ReasonCode;
-pub use will::{OwnedWill, Will};
+pub use will::Will;
 
 pub use de::Error as DeError;
 pub use ser::Error as SerError;
@@ -91,8 +91,8 @@ pub enum ProtocolError {
     #[error("buffer is too small")]
     BufferSize,
     /// The requested RX/TX split exceeds the provided backing buffer.
-    #[error("invalid buffer layout")]
-    BufferLayout,
+    #[error("invalid buffer split")]
+    BufferSplit,
     /// The broker referred to an unknown packet identifier.
     #[error("unknown packet identifier")]
     BadIdentifier,

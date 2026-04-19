@@ -1,9 +1,9 @@
 use crate::de::PacketReader;
 use crate::packets::{Connect, DisconnectReq, PingReq, Pub, PubRel, Subscribe, Unsubscribe};
 use crate::types::{Auth, Properties, TopicFilter, Utf8String};
-use crate::will::WillSpec;
 use crate::{
-    Broker, Config, Error, Property, ProtocolError, PubError, QoS, debug, info, trace, warn,
+    Broker, ConfigBuilder, Error, Property, ProtocolError, PubError, QoS, Will, debug, info, trace,
+    warn,
 };
 use core::num::NonZeroU16;
 use embassy_time::{Duration, Instant};
@@ -114,15 +114,15 @@ pub(super) struct Core<'buf> {
     packet_reader: PacketReader<'buf>,
     session: SessionData<'buf>,
     runtime: RuntimeState,
-    will: Option<WillSpec<'buf>>,
+    will: Option<Will<'buf>>,
     auth: Option<Auth<'buf>>,
     session_expiry_interval: u32,
     downgrade_qos: bool,
 }
 
 impl<'buf> Core<'buf> {
-    pub(super) fn new(config: Config<'buf>) -> Self {
-        let Config {
+    pub(super) fn new(config: ConfigBuilder<'buf>) -> Self {
+        let (
             broker,
             buffers,
             will,
@@ -131,7 +131,7 @@ impl<'buf> Core<'buf> {
             session_expiry_interval,
             downgrade_qos,
             auth,
-        } = config;
+        ) = config.into_parts();
         let (rx, tx) = buffers.into_parts();
 
         Self {
@@ -210,7 +210,7 @@ impl<'buf> Core<'buf> {
                 properties: Properties::Slice(&properties),
                 client_id: Utf8String(client_id.as_str()),
                 auth,
-                will: will.as_ref().map(WillSpec::as_will),
+                will,
                 clean_start,
             },
         )
@@ -757,8 +757,7 @@ mod tests {
             ConfigBuilder::new(broker, Buffers::new(rx, tx))
                 .client_id("test")
                 .unwrap()
-                .keepalive_interval(1)
-                .build(),
+                .keepalive_interval(1),
         )
     }
 

@@ -13,7 +13,7 @@ The main API is [`Session`].
 ## What You Use
 
 - [`Broker`]: broker endpoint
-- [`Buffers`] or [`BufferLayout`]: caller-owned RX/TX memory
+- [`Buffers`]: caller-owned RX/TX memory
 - [`ConfigBuilder`]: session configuration
 - [`transport::Connector`]: transport boundary
 - [`Session`]: the client you drive
@@ -24,7 +24,7 @@ The main API is [`Session`].
 ```ignore
 use core::net::SocketAddr;
 use minimq::{
-    Broker, BufferLayout, ConfigBuilder, Event, QoS, Session,
+    Broker, ConfigBuilder, Event, QoS, Session,
     transport::TcpConnector, types::TopicFilter,
 };
 use std_embedded_nal_async::Stack;
@@ -32,16 +32,11 @@ use std_embedded_nal_async::Stack;
 async fn run() -> Result<(), minimq::SessionError<TcpConnector<Stack>>> {
     let mut storage = [0u8; 1024];
     let broker: Broker<'_> = "127.0.0.1:1883".parse::<SocketAddr>()?.into();
-    let config = ConfigBuilder::from_buffer_layout(
-        broker,
-        &mut storage,
-        BufferLayout::new(256, 768),
-    )?
-    .client_id("demo")?
-    .build();
-
     let connector = TcpConnector::new(Stack::default());
-    let mut session = Session::new(config, &connector);
+    let mut session = Session::new(
+        ConfigBuilder::from_buffer(broker, &mut storage, 256)?.client_id("demo")?,
+        &connector,
+    );
 
     loop {
         match session.poll().await? {
@@ -84,7 +79,7 @@ You supply two buffers.
 
 If `tx` is exhausted, `publish()` and other outbound operations can return [`Error::NotReady`].
 
-Use [`BufferLayout::split()`] if you prefer one contiguous slab.
+Use [`Buffers::split()`] if you prefer one contiguous slab.
 
 ## Request / Reply
 

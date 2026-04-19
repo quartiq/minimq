@@ -140,7 +140,7 @@ impl Connector for MockConnector {
     }
 }
 
-fn config() -> minimq::Config<'static> {
+fn config() -> ConfigBuilder<'static> {
     let rx = Box::leak(Box::new([0; 128]));
     let tx = Box::leak(Box::new([0; 1152]));
     let broker = "127.0.0.1:1883"
@@ -150,7 +150,6 @@ fn config() -> minimq::Config<'static> {
     ConfigBuilder::new(broker, Buffers::new(rx, tx))
         .client_id("test")
         .unwrap()
-        .build()
 }
 
 fn connack() -> [u8; 5] {
@@ -1203,8 +1202,7 @@ fn connect_uses_configured_session_expiry_interval() {
         )
         .client_id("test")
         .unwrap()
-        .session_expiry_interval(7)
-        .build(),
+        .session_expiry_interval(7),
         &connector,
     );
 
