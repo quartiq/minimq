@@ -2,8 +2,8 @@ use embedded_io_adapters::tokio_1::FromTokio;
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 use minimq::{
-    Broker, BufferLayout, ConfigBuilder, Event, Property, Publication, QoS, Session,
-    transport::Connector, types::TopicFilter,
+    Broker, ConfigBuilder, Event, Property, Publication, QoS, Session, transport::Connector,
+    types::TopicFilter,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -23,7 +23,7 @@ fn kind_from_std(err: &std::io::Error) -> ErrorKind {
 #[derive(Debug, Error)]
 enum ExampleError {
     #[error(transparent)]
-    Config(#[from] minimq::ConfigError),
+    Setup(#[from] minimq::SetupError),
     #[error(transparent)]
     Protocol(#[from] minimq::ProtocolError),
     #[error(transparent)]
@@ -147,20 +147,18 @@ async fn main() -> Result<(), ExampleError> {
     let mut sub_storage = [0u8; 4096];
     let mut pub_storage = [0u8; 4096];
 
-    let sub_config =
-        ConfigBuilder::from_buffer_layout(broker, &mut sub_storage, BufferLayout::new(1024, 3072))?
+    let mut subscriber = Session::new(
+        ConfigBuilder::from_buffer(broker, &mut sub_storage, 1024)?
             .client_id(&unique_id("sub"))?
-            .set_auth(USERNAME, PASSWORD.as_bytes())?
-            .build();
-
-    let pub_config =
-        ConfigBuilder::from_buffer_layout(broker, &mut pub_storage, BufferLayout::new(1024, 3072))?
+            .auth(USERNAME, PASSWORD.as_bytes())?,
+        &connector,
+    );
+    let mut publisher = Session::new(
+        ConfigBuilder::from_buffer(broker, &mut pub_storage, 1024)?
             .client_id(&unique_id("pub"))?
-            .set_auth(USERNAME, PASSWORD.as_bytes())?
-            .build();
-
-    let mut subscriber = Session::new(sub_config, &connector);
-    let mut publisher = Session::new(pub_config, &connector);
+            .auth(USERNAME, PASSWORD.as_bytes())?,
+        &connector,
+    );
 
     match tokio::time::timeout(Duration::from_secs(10), subscriber.poll())
         .await
