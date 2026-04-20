@@ -161,6 +161,16 @@ impl<'a> ConfigBuilder<'a> {
         self
     }
 
+    /// Return the configured inbound packet buffer length.
+    pub const fn rx_len(&self) -> usize {
+        self.buffers.rx().len()
+    }
+
+    /// Return the configured outbound packet arena length.
+    pub const fn tx_len(&self) -> usize {
+        self.buffers.tx().len()
+    }
+
     /// Attach an MQTT will message.
     pub fn will(mut self, will: Will<'a>) -> Result<Self, ProtocolError> {
         if self.will.is_some() {
