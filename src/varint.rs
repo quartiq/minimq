@@ -6,7 +6,9 @@ pub(crate) const MQTT_VARINT_MAX: u32 = 0x0FFF_FFFF;
 pub struct Varint(pub u32);
 
 impl Varint {
+    /// Return the encoded length for a valid MQTT variable byte integer.
     pub fn len(&self) -> usize {
+        debug_assert!(self.0 <= MQTT_VARINT_MAX);
         match self.0 {
             0..=0x7F => 1,
             0x80..=0x3FFF => 2,
@@ -53,6 +55,7 @@ impl VarintBuffer {
 
 struct VarintVisitor;
 
+/// Encode one MQTT variable byte integer into a fixed four-byte scratch buffer.
 #[inline]
 pub(crate) fn write_mqtt_u32_varint(mut value: u32, out: &mut VarintBuffer) -> Result<(), ()> {
     if value > MQTT_VARINT_MAX {
@@ -72,6 +75,10 @@ pub(crate) fn write_mqtt_u32_varint(mut value: u32, out: &mut VarintBuffer) -> R
     }
 }
 
+/// Decode one canonical MQTT variable byte integer.
+///
+/// Rejects overlong encodings, values above the MQTT 28-bit maximum, and
+/// sequences that do not terminate within four bytes.
 #[inline]
 pub(crate) fn read_mqtt_u32_varint<E>(
     mut read: impl FnMut() -> Result<u8, E>,
@@ -88,6 +95,9 @@ pub(crate) fn read_mqtt_u32_varint<E>(
 
         value |= part << shift;
         if (byte & 0x80) == 0 {
+            if shift != 0 && part == 0 {
+                return Err(invalid());
+            }
             return Ok(value);
         }
     }
@@ -156,6 +166,13 @@ mod tests {
         let mut buffer = VarintBuffer::new();
         write_mqtt_u32_varint(MQTT_VARINT_MAX, &mut buffer).unwrap();
         assert_eq!(buffer.as_slice(), &[0xFF, 0xFF, 0xFF, 0x7F]);
+    }
+
+    #[test]
+    fn mqtt_varint_rejects_overlong_zero() {
+        let mut bytes = [0x80, 0x00].into_iter();
+        let result = read_mqtt_u32_varint(|| bytes.next().ok_or("missing"), || "invalid");
+        assert_eq!(result, Err("invalid"));
     }
 
     #[test]

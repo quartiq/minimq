@@ -78,6 +78,8 @@ You supply two buffers.
   packet plus the QoS/session state you want to keep active.
 
 If `tx` is exhausted, `publish()` and other outbound operations can return [`Error::NotReady`].
+Malformed broker varints and undersized local encode buffers are rejected with errors rather than
+causing panics.
 
 Use [`Buffers::split()`] if you prefer one contiguous slab.
 

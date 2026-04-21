@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Configurable MQTT v5 session expiry via `ConfigBuilder::session_expiry_interval()`.
 * `UNSUBSCRIBE` / `UNSUBACK` support.
 * A std-side TLS example using `embedded-tls` against a public broker.
+* Focused `cargo-fuzz` targets and CI smoke fuzzing for packet parsing, framing, and serialization.
 
 ## Fixed
 
@@ -35,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Broker `MaximumPacketSize` is now enforced for outbound packets and required MQTT responses.
 * Empty `SUBSCRIBE` and `UNSUBSCRIBE` requests are rejected locally instead of serializing invalid
   packets.
+* MQTT varint parsing and encoding are now handled by a crate-local checked implementation. Invalid,
+  overlong, and overflowing varints are rejected without panicking.
+* Tiny outbound buffers now fail with `InsufficientMemory` during serialization instead of
+  panicking.
 
 ## [0.10.0](https://github.com/quartiq/minimq/compare/v0.9.0...v0.10.0) - 2025-01-27
 
