@@ -762,6 +762,20 @@ mod tests {
         )
     }
 
+    fn core_with_tx<const TX: usize>(tx: &'static mut [u8; TX]) -> Core<'static> {
+        let broker = "127.0.0.1:1883"
+            .parse::<std::net::SocketAddr>()
+            .unwrap()
+            .into();
+        let rx = Box::leak(Box::new([0; 128]));
+        Core::new(
+            ConfigBuilder::new(broker, Buffers::new(rx, tx))
+                .client_id("test")
+                .unwrap()
+                .keepalive_interval(1),
+        )
+    }
+
     #[test]
     fn maintain_sends_pingreq_when_due() {
         let mut core = core();
@@ -852,5 +866,21 @@ mod tests {
             Err(Error::Transport(ErrorKind::ConnectionReset))
         ));
         assert_eq!(core.runtime.state, ConnectionState::Disconnected);
+    }
+
+    #[test]
+    fn connect_returns_insufficient_memory_when_tx_is_smaller_than_fixed_header() {
+        let tx = Box::leak(Box::new([0; MAX_FIXED_HEADER_SIZE - 1]));
+        let mut core = core_with_tx(tx);
+        let mut connection = MockConnection::default();
+
+        let result = block_on(core.connect(&mut connection));
+
+        assert!(matches!(
+            result,
+            Err(Error::Protocol(ProtocolError::Encode(
+                crate::SerError::InsufficientMemory
+            )))
+        ));
     }
 }

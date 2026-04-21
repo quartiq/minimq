@@ -1,4 +1,5 @@
 use crate::packets::Pub;
+use crate::ser::MAX_FIXED_HEADER_SIZE;
 use crate::{Error, ProtocolError, PubError, ReasonCode, trace};
 use heapless::Vec;
 
@@ -99,7 +100,8 @@ impl<'a> Outbound<'a> {
 
     pub(super) fn can_retain(&mut self) -> bool {
         self.compact();
-        self.retained.len() < self.retained.capacity() && self.used < self.buf.len()
+        self.retained.len() < self.retained.capacity()
+            && self.buf.len().saturating_sub(self.used) >= MAX_FIXED_HEADER_SIZE
     }
 
     pub(super) fn scratch_space(&mut self) -> &mut [u8] {
@@ -383,6 +385,7 @@ mod tests {
     use super::Outbound;
     use crate::{
         packets::Subscribe,
+        publication::Publication,
         types::{Properties, TopicFilter},
     };
 
@@ -403,5 +406,33 @@ mod tests {
             .unwrap();
 
         assert_eq!(&outbound.retained_packet(offset, len)[..2], &[0x82, 0x09]);
+    }
+
+    #[test]
+    fn can_retain_requires_fixed_header_scratch() {
+        let mut storage = [0u8; super::MAX_FIXED_HEADER_SIZE + 4];
+        let mut outbound = Outbound::new(&mut storage);
+
+        outbound.retain_packet(7, 0, 5).unwrap();
+
+        assert!(!outbound.can_retain());
+    }
+
+    #[test]
+    fn encode_publish_returns_insufficient_memory_when_only_header_gap_remains() {
+        let mut storage = [0u8; super::MAX_FIXED_HEADER_SIZE + 4];
+        let mut outbound = Outbound::new(&mut storage);
+
+        outbound.retain_packet(7, 0, 5).unwrap();
+
+        let result = outbound
+            .encode_publish::<_, ()>(crate::packets::Pub::from(Publication::new("a", b"x")));
+
+        assert!(matches!(
+            result,
+            Err(crate::PubError::Session(crate::Error::Protocol(
+                crate::ProtocolError::Encode(crate::SerError::InsufficientMemory)
+            )))
+        ));
     }
 }
