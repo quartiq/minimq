@@ -223,6 +223,17 @@ mod test {
     }
 
     #[test]
+    fn deserialize_rejects_overflowing_property_varint() {
+        let serialized_disconnect: [u8; 9] = [0xE0, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xA3, 0xA3];
+        assert!(matches!(
+            ReceivedPacket::from_buffer(&serialized_disconnect),
+            Err(crate::ProtocolError::Deserialization(
+                crate::DeError::BadVarint
+            ))
+        ));
+    }
+
+    #[test]
     fn deserialize_good_puback() {
         let serialized_puback: [u8; 6] = [
             0x40, // PubAck

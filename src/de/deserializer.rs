@@ -35,7 +35,8 @@
 //! Other types are explicitly not implemented and there is no plan to implement them.
 use core::convert::TryInto;
 use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
-use varint_rs::VarintReader;
+
+use crate::varint::read_mqtt_u32_varint;
 
 /// Errors returned while decoding MQTT packets.
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -49,6 +50,9 @@ pub enum Error {
 
     /// An invalid boolean was encountered, which did not use "0" or "1" to encode its value.
     BadBool,
+
+    /// An invalid MQTT variable integer was encountered.
+    BadVarint,
 
     /// There was not sufficient data to deserialize the required datatype.
     InsufficientData,
@@ -72,6 +76,7 @@ impl core::fmt::Display for Error {
                 Error::Custom => "Custom deserialization error",
                 Error::BadString => "Improper UTF-8 string encountered",
                 Error::BadBool => "Bad boolean encountered",
+                Error::BadVarint => "Bad MQTT variable integer encountered",
                 Error::InsufficientData => "Not enough data in the packet",
             }
         )
@@ -137,7 +142,7 @@ impl<'a> MqttDeserializer<'a> {
 
     /// Read a variable-length integer from the data buffer.
     pub fn read_varint(&mut self) -> Result<u32, Error> {
-        self.read_u32_varint()
+        read_mqtt_u32_varint(|| self.pop(), || Error::BadVarint)
     }
 
     /// Determine the number of bytes that were deserialized.
@@ -151,14 +156,6 @@ impl<'a> MqttDeserializer<'a> {
     /// This is intended to be used after deserialization has completed.
     pub fn remainder(&self) -> &'a [u8] {
         &self.buf[self.index..]
-    }
-}
-
-impl varint_rs::VarintReader for MqttDeserializer<'_> {
-    type Error = Error;
-
-    fn read(&mut self) -> Result<u8, Error> {
-        self.pop()
     }
 }
 

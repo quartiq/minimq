@@ -33,7 +33,6 @@ use crate::{
 };
 use bit_field::BitField;
 use serde::Serialize;
-use varint_rs::VarintWriter;
 
 /// The maximum size of the MQTT fixed header in bytes. This accounts for the header byte and the
 /// maximum variable integer length.
@@ -191,22 +190,22 @@ impl<'a> MqttSerializer<'a> {
             .ok_or(Error::InsufficientMemory)?;
 
         let mut buffer = VarintBuffer::new();
-        buffer
-            .write_u32_varint(len as u32)
+        crate::varint::write_mqtt_u32_varint(len as u32, &mut buffer)
             .map_err(|_| Error::InsufficientMemory)?;
+        let remaining_len = buffer.as_slice();
         if self.buf.len() < MAX_FIXED_HEADER_SIZE {
             return Err(Error::InsufficientMemory);
         }
 
         // Write the remaining packet length.
-        self.buf[MAX_FIXED_HEADER_SIZE - buffer.data.len()..MAX_FIXED_HEADER_SIZE]
-            .copy_from_slice(&buffer.data);
+        self.buf[MAX_FIXED_HEADER_SIZE - remaining_len.len()..MAX_FIXED_HEADER_SIZE]
+            .copy_from_slice(remaining_len);
 
         // Write the header
         let header: u8 = *0u8.set_bits(4..8, typ as u8).set_bits(0..4, flags);
-        self.buf[MAX_FIXED_HEADER_SIZE - buffer.data.len() - 1] = header;
+        self.buf[MAX_FIXED_HEADER_SIZE - remaining_len.len() - 1] = header;
 
-        let offset = MAX_FIXED_HEADER_SIZE - buffer.data.len() - 1;
+        let offset = MAX_FIXED_HEADER_SIZE - remaining_len.len() - 1;
         Ok((offset, &self.buf[offset..self.index]))
     }
 

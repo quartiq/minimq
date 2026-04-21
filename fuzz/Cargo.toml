@@ -1,0 +1,39 @@
+[package]
+name = "minimq-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.minimq]
+path = ".."
+features = ["fuzzing"]
+
+[[bin]]
+name = "fuzz_received_packet"
+path = "fuzz_targets/fuzz_received_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_packet_reader"
+path = "fuzz_targets/fuzz_packet_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_serializer"
+path = "fuzz_targets/fuzz_serializer.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

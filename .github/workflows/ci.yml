@@ -78,3 +78,22 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
 
       - run: cargo test
+
+  fuzz:
+    runs-on: ubuntu-latest
+    env:
+      ASAN_OPTIONS: detect_odr_violation=0:detect_leaks=0
+    steps:
+      - uses: actions/checkout@v6
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - run: cargo +nightly fuzz run fuzz_received_packet --target host-tuple -- -dict=dictionary.txt -max_total_time=3
+        working-directory: fuzz
+      - run: cargo +nightly fuzz run fuzz_packet_reader --target host-tuple -- -dict=dictionary.txt -max_total_time=3
+        working-directory: fuzz
+      - run: cargo +nightly fuzz run fuzz_serializer --target host-tuple -- -dict=dictionary.txt -max_total_time=3
+        working-directory: fuzz
