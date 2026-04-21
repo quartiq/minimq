@@ -37,7 +37,7 @@ use varint_rs::VarintWriter;
 
 /// The maximum size of the MQTT fixed header in bytes. This accounts for the header byte and the
 /// maximum variable integer length.
-const MAX_FIXED_HEADER_SIZE: usize = 5;
+pub(crate) const MAX_FIXED_HEADER_SIZE: usize = 5;
 
 /// Errors that result from the serialization process
 #[derive(Debug, Copy, Clone, PartialEq)]

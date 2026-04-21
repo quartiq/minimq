@@ -1,5 +1,6 @@
 use crate::de::PacketReader;
 use crate::packets::{Connect, DisconnectReq, PingReq, Pub, PubRel, Subscribe, Unsubscribe};
+use crate::ser::MAX_FIXED_HEADER_SIZE;
 use crate::types::{Auth, Properties, TopicFilter, Utf8String};
 use crate::{
     Broker, ConfigBuilder, Error, Property, ProtocolError, PubError, QoS, Will, debug, info, trace,
@@ -168,7 +169,7 @@ impl<'buf> Core<'buf> {
             return false;
         }
         if qos == QoS::AtMostOnce {
-            return !self.session.outbound.scratch_space().is_empty();
+            return self.session.outbound.scratch_space().len() >= MAX_FIXED_HEADER_SIZE;
         }
         self.runtime.send_quota != 0 && self.session.outbound.can_retain()
     }
