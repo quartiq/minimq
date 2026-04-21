@@ -30,6 +30,10 @@ pub use publication::{OwnedResponseTarget, Publication};
 pub use reason_codes::ReasonCode;
 pub use will::Will;
 
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing;
+
 pub use de::Error as DeError;
 pub use ser::Error as SerError;
 

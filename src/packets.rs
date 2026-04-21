@@ -251,7 +251,20 @@ impl From<ReasonCode> for Reason<'_> {
     }
 }
 
-impl Reason<'_> {
+impl<'a> Reason<'a> {
+    #[cfg_attr(not(feature = "fuzzing"), allow(dead_code))]
+    pub(crate) fn with_properties(
+        code: ReasonCode,
+        properties: &'a [crate::properties::Property<'a>],
+    ) -> Self {
+        Self {
+            reason: Some(ReasonData {
+                code,
+                _properties: Some(Properties::Slice(properties)),
+            }),
+        }
+    }
+
     pub fn code(&self) -> ReasonCode {
         self.reason
             .as_ref()
