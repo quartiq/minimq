@@ -5,6 +5,7 @@ use minimq::{
     Broker, ConfigBuilder, Event, Property, Publication, QoS, Session, transport::Connector,
     types::TopicFilter,
 };
+use std::error::Error;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::net::TcpStream;
@@ -18,36 +19,6 @@ const TLS_WRITE_RECORD_BUFFER_LEN: usize = 4_096;
 
 fn kind_from_std(err: &std::io::Error) -> ErrorKind {
     err.kind().into()
-}
-
-#[derive(Debug, Error)]
-enum ExampleError {
-    #[error(transparent)]
-    Setup(#[from] minimq::SetupError),
-    #[error(transparent)]
-    Protocol(#[from] minimq::ProtocolError),
-    #[error(transparent)]
-    Session(#[from] minimq::SessionError<EmqxTlsConnector>),
-    #[error(transparent)]
-    Publish(#[from] minimq::PublishError<EmqxTlsConnector, ()>),
-    #[error("unexpected event: {0}")]
-    Unexpected(&'static str),
-    #[error("timed out waiting for subscribed publish")]
-    Timeout,
-}
-
-async fn poll_until_idle(
-    session: &mut Session<'_, '_, EmqxTlsConnector>,
-) -> Result<(), ExampleError> {
-    loop {
-        match tokio::time::timeout(Duration::from_secs(10), session.poll())
-            .await
-            .map_err(|_| ExampleError::Timeout)??
-        {
-            Event::Idle => return Ok(()),
-            Event::Connected | Event::Reconnected | Event::Inbound(_) => {}
-        }
-    }
 }
 
 struct EmqxTlsConnector;
@@ -135,10 +106,53 @@ fn unique_id(label: &str) -> String {
     format!("minimq-{label}-{nanos}")
 }
 
-#[tokio::main]
-async fn main() -> Result<(), ExampleError> {
-    env_logger::init();
+async fn connect(session: &mut Session<'_, '_, EmqxTlsConnector>) {
+    match tokio::time::timeout(Duration::from_secs(10), session.poll())
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        Event::Connected => {}
+        _ => panic!(),
+    }
+}
 
+async fn flush(
+    session: &mut Session<'_, '_, EmqxTlsConnector>,
+) -> Result<(), minimq::SessionError<EmqxTlsConnector>> {
+    while !matches!(
+        tokio::time::timeout(Duration::from_secs(10), session.poll())
+            .await
+            .unwrap()?,
+        Event::Idle
+    ) {}
+    Ok(())
+}
+
+async fn recv(
+    session: &mut Session<'_, '_, EmqxTlsConnector>,
+    topic: &str,
+    payload: &[u8],
+) -> Result<(), minimq::SessionError<EmqxTlsConnector>> {
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), session.poll())
+            .await
+            .unwrap()?
+        {
+            Event::Inbound(message) if message.topic() == topic && message.payload() == payload => {
+                println!(
+                    "received topic={} payload={}",
+                    message.topic(),
+                    payload.escape_ascii()
+                );
+                return Ok(());
+            }
+            Event::Connected | Event::Reconnected | Event::Inbound(_) | Event::Idle => {}
+        }
+    }
+}
+
+async fn run() -> Result<(), Box<dyn Error>> {
     let broker = Broker::hostname(BROKER_HOST, BROKER_PORT);
     let connector = EmqxTlsConnector;
     let topic = format!("minimq/examples/tls/{}", unique_id("topic"));
@@ -160,45 +174,24 @@ async fn main() -> Result<(), ExampleError> {
         &connector,
     );
 
-    match tokio::time::timeout(Duration::from_secs(10), subscriber.poll())
-        .await
-        .map_err(|_| ExampleError::Timeout)??
-    {
-        Event::Connected => {}
-        _ => return Err(ExampleError::Unexpected("subscriber connect")),
-    }
+    connect(&mut subscriber).await;
     subscriber
         .subscribe(&[TopicFilter::new(&topic)], &[] as &[Property<'_>])
         .await?;
-    let _ = tokio::time::timeout(Duration::from_secs(10), subscriber.poll())
-        .await
-        .map_err(|_| ExampleError::Timeout)??;
+    flush(&mut subscriber).await?;
 
-    match tokio::time::timeout(Duration::from_secs(10), publisher.poll())
-        .await
-        .map_err(|_| ExampleError::Timeout)??
-    {
-        Event::Connected => {}
-        _ => return Err(ExampleError::Unexpected("publisher connect")),
-    }
+    connect(&mut publisher).await;
     publisher
         .publish(Publication::new(&topic, payload.as_bytes()).qos(QoS::AtLeastOnce))
         .await?;
-    poll_until_idle(&mut publisher).await?;
+    flush(&mut publisher).await?;
 
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            match subscriber.poll().await? {
-                Event::Inbound(message)
-                    if message.topic() == topic && message.payload() == payload.as_bytes() =>
-                {
-                    println!("received topic={} payload={}", message.topic(), payload);
-                    return Ok(());
-                }
-                Event::Inbound(_) | Event::Idle | Event::Connected | Event::Reconnected => {}
-            }
-        }
-    })
-    .await
-    .map_err(|_| ExampleError::Timeout)?
+    recv(&mut subscriber, &topic, payload.as_bytes()).await?;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() {
+    env_logger::init();
+    run().await.unwrap();
 }
