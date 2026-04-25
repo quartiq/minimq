@@ -1,13 +1,12 @@
 use crate::de::received_packet::ReceivedPacket;
-use crate::packets::{PubAck, PubComp, PubRec};
 use crate::{Error, Property, ProtocolError, QoS, ReasonCode, debug, info, trace, warn};
 use core::convert::TryFrom;
 use embassy_time::{Duration, Instant};
 use heapless::String;
 
+use super::InboundPublish;
 use super::core::{ConnectionState, RuntimeState, SessionData};
-use super::outbound::write_control_packet;
-use super::{InboundPublish, Io};
+use super::outbound::{ControlAction, check_control_packet_size, check_pubrel_size};
 
 pub(super) struct PacketContext<'a, 'buf> {
     pub(super) client_id: &'a mut String<64>,
@@ -15,12 +14,29 @@ pub(super) struct PacketContext<'a, 'buf> {
     pub(super) runtime: &'a mut RuntimeState,
 }
 
-pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
+pub(super) enum PacketOutcome<'pkt> {
+    None,
+    Connected(bool),
+    Inbound(InboundPublish<'pkt>),
+}
+
+pub(super) fn handle_packet<'pkt, 'state>(
     cx: &mut PacketContext<'_, 'state>,
-    connection: &mut C,
     packet: ReceivedPacket<'pkt>,
     now: Instant,
-) -> Result<Option<InboundPublish<'pkt>>, Error<C::Error>> {
+) -> Result<PacketOutcome<'pkt>, Error<core::convert::Infallible>> {
+    if cx.runtime.state == ConnectionState::Establishing
+        && !matches!(
+            packet,
+            ReceivedPacket::ConnAck(_) | ReceivedPacket::Disconnect(_)
+        )
+    {
+        return Err(ProtocolError::UnexpectedPacket.into());
+    }
+    if cx.runtime.state == ConnectionState::Active && matches!(packet, ReceivedPacket::ConnAck(_)) {
+        return Err(ProtocolError::UnexpectedPacket.into());
+    }
+
     match packet {
         ReceivedPacket::ConnAck(ack) => {
             if let Err(err) = ack.reason_code.as_result() {
@@ -82,6 +98,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
             } else {
                 info!("Connected with a fresh broker session");
             }
+            return Ok(PacketOutcome::Connected(ack.session_present));
         }
         ReceivedPacket::SubAck(ack) => {
             if !cx.session.outbound.ack_packet(ack.packet_identifier) {
@@ -89,7 +106,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                     "Ignoring stale SUBACK for packet id {}",
                     ack.packet_identifier
                 );
-                return Ok(None);
+                return Ok(PacketOutcome::None);
             }
             debug!("Processed SUBACK packet_id={}", ack.packet_identifier);
             for &code in ack.codes {
@@ -102,7 +119,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                     "Ignoring stale UNSUBACK for packet id {}",
                     ack.packet_identifier
                 );
-                return Ok(None);
+                return Ok(PacketOutcome::None);
             }
             debug!("Processed UNSUBACK packet_id={}", ack.packet_identifier);
             for &code in ack.codes {
@@ -119,7 +136,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                     "Ignoring stale PUBACK for packet id {}",
                     ack.packet_identifier
                 );
-                return Ok(None);
+                return Ok(PacketOutcome::None);
             }
             cx.runtime.send_quota = cx
                 .runtime
@@ -155,11 +172,16 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                 }
                 false => {
                     debug!("Ignoring stale PUBREC for packet id {}", rec.packet_id);
-                    return Ok(None);
+                    return Ok(PacketOutcome::None);
                 }
             };
             rec.reason.code().as_result()?;
             if queue_release {
+                check_pubrel_size(
+                    cx.runtime.maximum_packet_size,
+                    rec.packet_id,
+                    ReasonCode::Success,
+                )?;
                 cx.session
                     .outbound
                     .queue_release(rec.packet_id, ReasonCode::Success)?;
@@ -169,7 +191,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
         ReceivedPacket::PubComp(comp) => {
             if !cx.session.outbound.ack_release(comp.packet_id) {
                 debug!("Ignoring stale PUBCOMP for packet id {}", comp.packet_id);
-                return Ok(None);
+                return Ok(PacketOutcome::None);
             }
             debug!("Processed PUBCOMP packet_id={}", comp.packet_id);
             comp.reason.code().as_result()?;
@@ -187,20 +209,17 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                 ReasonCode::PacketIdNotFound
             };
             debug!(
-                "Replying to inbound PUBREL packet_id={} reason={:?} pending_inbound_qos2={}",
+                "Queueing PUBCOMP for inbound PUBREL packet_id={} reason={:?} pending_inbound_qos2={}",
                 rel.packet_id,
                 reason,
                 cx.session.pending_server_packet_ids.len()
             );
-            write_control_packet(
-                connection,
-                &PubComp {
-                    packet_id: rel.packet_id,
-                    reason: reason.into(),
-                },
-                cx.runtime.maximum_packet_size,
-            )
-            .await?;
+            let action = ControlAction::PubComp {
+                packet_id: rel.packet_id,
+                reason,
+            };
+            check_control_packet_size(cx.runtime.maximum_packet_size, action)?;
+            cx.session.outbound.queue_control(action)?;
         }
         ReceivedPacket::Publish(info) => {
             let retain = info.retain;
@@ -223,18 +242,12 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                         ReasonCode::Success
                     };
                     trace!(
-                        "Replying to inbound QoS1 PUBLISH packet_id={} with PUBACK {:?}",
+                        "Queueing PUBACK for inbound QoS1 PUBLISH packet_id={} {:?}",
                         packet_id, reason
                     );
-                    write_control_packet(
-                        connection,
-                        &PubAck {
-                            packet_identifier: packet_id,
-                            reason: reason.into(),
-                        },
-                        cx.runtime.maximum_packet_size,
-                    )
-                    .await?;
+                    let action = ControlAction::PubAck { packet_id, reason };
+                    check_control_packet_size(cx.runtime.maximum_packet_size, action)?;
+                    cx.session.outbound.queue_control(action)?;
                 }
                 QoS::ExactlyOnce => {
                     let packet_id = info.packet_id.ok_or(ProtocolError::MalformedPacket)?;
@@ -249,30 +262,24 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                         ReasonCode::Success
                     };
                     trace!(
-                        "Replying to inbound QoS2 PUBLISH packet_id={} duplicate={} with PUBREC {:?}",
+                        "Queueing PUBREC for inbound QoS2 PUBLISH packet_id={} duplicate={} {:?}",
                         packet_id, duplicate, reason
                     );
-                    write_control_packet(
-                        connection,
-                        &PubRec {
-                            packet_id,
-                            reason: reason.into(),
-                        },
-                        cx.runtime.maximum_packet_size,
-                    )
-                    .await?;
+                    let action = ControlAction::PubRec { packet_id, reason };
+                    check_control_packet_size(cx.runtime.maximum_packet_size, action)?;
+                    cx.session.outbound.queue_control(action)?;
                     if duplicate || !reason.success() {
                         debug!(
                             "Ignoring inbound QoS2 PUBLISH after PUBREC packet_id={} duplicate={} reason={:?}",
                             packet_id, duplicate, reason
                         );
-                        return Ok(None);
+                        return Ok(PacketOutcome::None);
                     }
                 }
             }
 
             cx.runtime.next_ping = Some(now + cx.runtime.keepalive_interval / 2);
-            return Ok(Some(InboundPublish::new(
+            return Ok(PacketOutcome::Inbound(InboundPublish::new(
                 info.topic.0,
                 info.payload,
                 info.properties,
@@ -287,5 +294,5 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
         }
     }
 
-    Ok(None)
+    Ok(PacketOutcome::None)
 }

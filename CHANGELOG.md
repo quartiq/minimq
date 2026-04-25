@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Edition 2024, MSRV 1.85
 * Redesign and rebase onto async (`embedded-io-async`). This breaks most of the API surface.
   There is no sync compat layer.
-* Broker session handling is now explicit: `Event::Connected` means a fresh broker session,
-  `Event::Reconnected` means the broker resumed the existing session.
+* Broker session handling is now explicit: `ConnectEvent::Connected` means a fresh broker session,
+  `ConnectEvent::Reconnected` means the broker resumed the existing session.
 * Caller-owned packet buffers are now documented as `rx` and `tx`. `rx` holds one inbound packet;
   `tx` is the shared outbound encode/replay arena.
 * Plain MQTT username/password auth is always available. The crate-local `unsecure` feature was
@@ -25,7 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Configurable MQTT v5 session expiry via `ConfigBuilder::session_expiry_interval()`.
 * `UNSUBSCRIBE` / `UNSUBACK` support.
-* A std-side TLS example using `embedded-tls` against a public broker.
 * Focused `cargo-fuzz` targets and CI smoke fuzzing for packet parsing, framing, and serialization.
 
 ## Fixed

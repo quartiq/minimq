@@ -245,7 +245,7 @@ impl From<ReasonCode> for Reason<'_> {
         Self {
             reason: Some(ReasonData {
                 code,
-                _properties: Some(Properties::Slice(&[])),
+                _properties: None,
             }),
         }
     }
@@ -535,13 +535,12 @@ mod tests {
 
     #[test]
     fn serialize_pubrel() {
-        let good_pubrel: [u8; 6] = [
+        let good_pubrel: [u8; 5] = [
             6 << 4 | 0b10, // PubRel
-            0x04,          // Remaining length
+            0x03,          // Remaining length
             0x00,
             0x05, // Identifier
             0x10, // Response Code
-            0x00, // Properties length
         ];
 
         let pubrel = crate::packets::PubRel {

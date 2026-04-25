@@ -24,7 +24,7 @@ mod will;
 
 pub use broker::Broker;
 pub use config::{Buffers, ConfigBuilder, SetupError};
-pub use mqtt_client::{Event, InboundPublish, Session};
+pub use mqtt_client::{ConnectEvent, Event, InboundPublish, Session};
 pub use properties::Property;
 pub use publication::{OwnedResponseTarget, Publication};
 pub use reason_codes::ReasonCode;

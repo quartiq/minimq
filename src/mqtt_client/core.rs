@@ -1,5 +1,5 @@
 use crate::de::PacketReader;
-use crate::packets::{Connect, DisconnectReq, PingReq, Pub, PubRel, Subscribe, Unsubscribe};
+use crate::packets::{Connect, DisconnectReq, Pub, Subscribe, Unsubscribe};
 use crate::ser::MAX_FIXED_HEADER_SIZE;
 use crate::types::{Auth, Properties, TopicFilter, Utf8String};
 use crate::{
@@ -12,12 +12,21 @@ use embedded_io_async::Error as _;
 use embedded_io_async::ErrorKind;
 use heapless::{String, Vec};
 
-use super::outbound::{Outbound, SendState, write_control_packet, write_packet};
-use super::protocol::{PacketContext, handle_packet};
-use super::{InboundPublish, Io};
+use super::Io;
+use super::outbound::{
+    ControlAction, Outbound, OutboundStep, SendState, check_control_packet_size,
+    serialize_control_packet, serialize_pubrel, write_packet,
+};
+use super::protocol::{PacketContext, PacketOutcome, handle_packet};
 
 const PING_TIMEOUT_MS: u64 = 5_000;
 const MAX_INBOUND_QOS2: usize = 8;
+
+#[derive(Copy, Clone)]
+enum ReadMode {
+    Bounded,
+    Blocking,
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(super) enum ConnectionState {
@@ -51,15 +60,6 @@ impl RuntimeState {
             max_qos: None,
             next_ping: None,
             ping_timeout: None,
-        }
-    }
-
-    fn next_deadline(&self) -> Option<Instant> {
-        match (self.next_ping, self.ping_timeout) {
-            (Some(ping), Some(timeout)) => Some(ping.min(timeout)),
-            (Some(ping), None) => Some(ping),
-            (None, Some(timeout)) => Some(timeout),
-            (None, None) => None,
         }
     }
 
@@ -160,10 +160,6 @@ impl<'buf> Core<'buf> {
         self.runtime.state == ConnectionState::Disconnected
     }
 
-    pub(super) fn session_resumed(&self) -> bool {
-        self.runtime.session_resumed
-    }
-
     pub(super) fn can_publish(&mut self, qos: QoS) -> bool {
         if self.runtime.state != ConnectionState::Active {
             return false;
@@ -178,14 +174,22 @@ impl<'buf> Core<'buf> {
         self.runtime.state == ConnectionState::Active && self.session.outbound.is_quiescent()
     }
 
-    pub(super) fn next_deadline(&self) -> Option<Instant> {
-        self.runtime.next_deadline()
+    pub(super) fn connect_event(&self) -> super::ConnectEvent {
+        if self.runtime.session_resumed {
+            super::ConnectEvent::Reconnected
+        } else {
+            super::ConnectEvent::Connected
+        }
     }
 
     pub(super) async fn connect<C: Io>(
         &mut self,
         connection: &mut C,
-    ) -> Result<(), Error<C::Error>> {
+    ) -> Result<super::ConnectEvent, Error<C::Error>> {
+        if self.runtime.state == ConnectionState::Active {
+            return Ok(self.connect_event());
+        }
+
         let client_id = self.client_id.clone();
         let properties = [
             Property::MaximumPacketSize(self.packet_reader.buffer.len() as u32),
@@ -208,7 +212,7 @@ impl<'buf> Core<'buf> {
         );
 
         write_packet(
-            self.session.outbound.scratch_space(),
+            self.packet_reader.buffer,
             connection,
             &Connect {
                 keepalive,
@@ -224,7 +228,20 @@ impl<'buf> Core<'buf> {
         self.runtime.state = ConnectionState::Establishing;
         self.runtime.next_ping = None;
         self.runtime.ping_timeout = None;
-        Ok(())
+
+        match self
+            .read_packet_blocking(connection, Instant::now())
+            .await?
+        {
+            PacketOutcome::Connected(resumed) => Ok(if resumed {
+                super::ConnectEvent::Reconnected
+            } else {
+                super::ConnectEvent::Connected
+            }),
+            PacketOutcome::None | PacketOutcome::Inbound(_) => {
+                Err(Error::Protocol(ProtocolError::UnexpectedPacket))
+            }
+        }
     }
 
     pub(super) async fn subscribe<C: Io>(
@@ -385,15 +402,11 @@ impl<'buf> Core<'buf> {
         Ok(())
     }
 
-    pub(super) async fn maintain<C: Io>(
+    pub(super) async fn maintain_step<C: Io>(
         &mut self,
         connection: &mut C,
         now: Instant,
-    ) -> Result<(), Error<C::Error>> {
-        if self.runtime.state != ConnectionState::Active {
-            return Ok(());
-        }
-
+    ) -> Result<bool, Error<C::Error>> {
         if self
             .runtime
             .ping_timeout
@@ -405,30 +418,9 @@ impl<'buf> Core<'buf> {
                 self.runtime.next_ping, self.runtime.ping_timeout
             );
             self.handle_disconnect();
-            return Ok(());
+            return Err(Error::Disconnected);
         }
-        self.drive_outbound(connection).await?;
-
-        if self.runtime.ping_timeout.is_none()
-            && self
-                .runtime
-                .next_ping
-                .is_some_and(|deadline| now >= deadline)
-        {
-            trace!("Sending PINGREQ");
-            if let Err(err) =
-                write_control_packet(connection, &PingReq {}, self.runtime.maximum_packet_size)
-                    .await
-            {
-                warn!("PINGREQ send failed");
-                self.handle_disconnect();
-                return Err(err);
-            }
-            self.runtime.ping_timeout = Some(now + Duration::from_millis(PING_TIMEOUT_MS));
-            self.runtime.next_ping = Some(now + self.runtime.keepalive_interval / 2);
-        }
-
-        Ok(())
+        self.drive_outbound_step(connection, now).await
     }
 
     pub(super) async fn disconnect<C: Io>(
@@ -437,7 +429,8 @@ impl<'buf> Core<'buf> {
     ) -> Result<(), Error<C::Error>> {
         info!("Graceful disconnect requested");
         let result = if self.runtime.state == ConnectionState::Active {
-            write_control_packet(connection, &DisconnectReq, self.runtime.maximum_packet_size).await
+            let mut buffer = [0u8; 9];
+            write_packet(&mut buffer, connection, &DisconnectReq).await
         } else {
             Ok(())
         };
@@ -445,11 +438,79 @@ impl<'buf> Core<'buf> {
         result
     }
 
-    pub(super) async fn read<C: Io>(
+    pub(super) async fn step_event<C: Io>(
         &mut self,
         connection: &mut C,
         now: Instant,
-    ) -> Result<Option<InboundPublish<'_>>, Error<C::Error>> {
+    ) -> Result<super::Event<'_>, Error<C::Error>> {
+        if self.runtime.state != ConnectionState::Active {
+            return Err(Error::Disconnected);
+        }
+
+        let _ = self.maintain_step(connection, now).await?;
+        if self.is_disconnected() {
+            return Err(Error::Disconnected);
+        }
+
+        self.read_step_event(connection, now).await
+    }
+
+    async fn read_step_event<C: Io>(
+        &mut self,
+        connection: &mut C,
+        now: Instant,
+    ) -> Result<super::Event<'_>, Error<C::Error>> {
+        match self
+            .read_packet_mode(connection, now, ReadMode::Bounded)
+            .await?
+        {
+            None => Ok(super::Event::Idle),
+            Some(PacketOutcome::None) => Ok(super::Event::Idle),
+            Some(PacketOutcome::Connected(_)) => {
+                Err(Error::Protocol(ProtocolError::UnexpectedPacket))
+            }
+            Some(PacketOutcome::Inbound(inbound)) => Ok(super::Event::Inbound(inbound)),
+        }
+    }
+
+    fn should_queue_pingreq(&self, now: Instant) -> bool {
+        self.runtime.state == ConnectionState::Active
+            && self.runtime.ping_timeout.is_none()
+            && self
+                .runtime
+                .next_ping
+                .is_some_and(|deadline| now >= deadline)
+            && !self.session.outbound.has_pending_pingreq()
+    }
+
+    fn maybe_queue_pingreq<E>(&mut self, now: Instant) -> Result<(), Error<E>> {
+        if self.should_queue_pingreq(now) {
+            check_control_packet_size(self.runtime.maximum_packet_size, ControlAction::PingReq)
+                .map_err(Error::Protocol)?;
+            self.session
+                .outbound
+                .queue_control(ControlAction::PingReq)
+                .map_err(Error::Protocol)?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn read_packet_blocking<C: Io>(
+        &mut self,
+        connection: &mut C,
+        now: Instant,
+    ) -> Result<PacketOutcome<'_>, Error<C::Error>> {
+        self.read_packet_mode(connection, now, ReadMode::Blocking)
+            .await?
+            .ok_or(Error::Protocol(ProtocolError::UnexpectedPacket))
+    }
+
+    async fn read_packet_mode<C: Io>(
+        &mut self,
+        connection: &mut C,
+        now: Instant,
+        mode: ReadMode,
+    ) -> Result<Option<PacketOutcome<'_>>, Error<C::Error>> {
         if self.runtime.state == ConnectionState::Disconnected {
             self.packet_reader.reset();
         }
@@ -465,6 +526,11 @@ impl<'buf> Core<'buf> {
             if buffer.is_empty() {
                 break;
             }
+            if matches!(mode, ReadMode::Bounded)
+                && !connection.read_ready().map_err(Error::Transport)?
+            {
+                return Ok(None);
+            }
 
             let count = match connection.read(buffer).await {
                 Ok(count) => count,
@@ -472,7 +538,13 @@ impl<'buf> Core<'buf> {
                     let kind = err.kind();
                     if matches!(kind, ErrorKind::TimedOut | ErrorKind::Interrupted) {
                         trace!("Read interrupted/timed out while waiting for packet");
-                        return Err(Error::Transport(err));
+                        return match mode {
+                            ReadMode::Bounded => Ok(None),
+                            ReadMode::Blocking => {
+                                self.handle_disconnect();
+                                Err(Error::Transport(err))
+                            }
+                        };
                     }
                     warn!("Transport read failed: {:?}", kind);
                     self.handle_disconnect();
@@ -482,10 +554,30 @@ impl<'buf> Core<'buf> {
             if count == 0 {
                 warn!("Transport returned EOF; disconnecting session");
                 self.handle_disconnect();
-                return Ok(None);
+                return Err(Error::Disconnected);
             }
             self.packet_reader.commit(count);
             trace!("Read {} transport bytes", count);
+            if matches!(mode, ReadMode::Bounded) {
+                let packet_ready = match self.packet_reader.receive_buffer() {
+                    Ok(buffer) => buffer.is_empty(),
+                    Err(err) => {
+                        self.handle_disconnect();
+                        return Err(err.into());
+                    }
+                };
+                if !packet_ready {
+                    return Ok(None);
+                }
+            }
+        }
+
+        self.dispatch_received_packet(now).map(Some)
+    }
+
+    fn dispatch_received_packet<E>(&mut self, now: Instant) -> Result<PacketOutcome<'_>, Error<E>> {
+        if !self.packet_reader.packet_available() {
+            return Ok(PacketOutcome::None);
         }
 
         let packet = {
@@ -501,49 +593,272 @@ impl<'buf> Core<'buf> {
                 return Err(err.into());
             }
         };
-        let (result, transport_error) = {
+        let result = {
             let mut ctx = PacketContext {
                 client_id: &mut self.client_id,
                 session: &mut self.session,
                 runtime: &mut self.runtime,
             };
-            let result = handle_packet(&mut ctx, connection, packet, now).await;
-            let disconnect = matches!(result, Err(Error::Transport(_)))
-                || matches!(
-                    result,
-                    Err(Error::Protocol(
-                        ProtocolError::MalformedPacket
-                            | ProtocolError::UnexpectedPacket
-                            | ProtocolError::InvalidProperty
-                            | ProtocolError::WrongQos
-                            | ProtocolError::UnsupportedPacket
-                            | ProtocolError::BadIdentifier
-                            | ProtocolError::Deserialization(_)
-                    ))
-                )
-                || matches!(
-                    result,
-                    Err(Error::Protocol(ProtocolError::Failed(
-                        crate::ReasonCode::PacketTooLarge
-                    )))
-                )
-                || (ctx.runtime.state != ConnectionState::Active
-                    && matches!(result, Err(Error::Protocol(ProtocolError::Failed(_)))));
+            let result = handle_packet(&mut ctx, packet, now);
+            let disconnect = Self::should_disconnect_after_packet(ctx.runtime.state, &result);
             if disconnect {
                 warn!("Disconnecting session after packet handling error");
                 ctx.session.outbound.arm_replay();
                 ctx.runtime.disconnect();
             }
-            let transport_error = matches!(result, Err(Error::Transport(_)));
-            (result, transport_error)
+            result
         };
-        debug_assert!(!transport_error || self.runtime.state == ConnectionState::Disconnected);
-        result
+        match result {
+            Ok(outcome) => {
+                if self.runtime.state == ConnectionState::Disconnected {
+                    Err(Error::Disconnected)
+                } else {
+                    Ok(outcome)
+                }
+            }
+            Err(err) => Err(Self::map_packet_error(err)),
+        }
+    }
+
+    fn should_disconnect_after_packet(
+        state: ConnectionState,
+        result: &Result<PacketOutcome<'_>, Error<core::convert::Infallible>>,
+    ) -> bool {
+        matches!(
+            result,
+            Err(Error::Protocol(
+                ProtocolError::MalformedPacket
+                    | ProtocolError::UnexpectedPacket
+                    | ProtocolError::InvalidProperty
+                    | ProtocolError::WrongQos
+                    | ProtocolError::UnsupportedPacket
+                    | ProtocolError::BadIdentifier
+                    | ProtocolError::Deserialization(_)
+            ))
+        ) || matches!(
+            result,
+            Err(Error::Protocol(ProtocolError::Failed(
+                crate::ReasonCode::PacketTooLarge
+            )))
+        ) || (state != ConnectionState::Active
+            && matches!(result, Err(Error::Protocol(ProtocolError::Failed(_)))))
+    }
+
+    fn map_packet_error<E>(err: Error<core::convert::Infallible>) -> Error<E> {
+        match err {
+            Error::Disconnected => Error::Disconnected,
+            Error::Protocol(err) => Error::Protocol(err),
+            Error::NotReady | Error::WriteZero => {
+                unreachable!("packet handler returned local I/O state")
+            }
+            Error::Transport(never) => match never {},
+        }
+    }
+
+    async fn drive_outbound_step<C: Io>(
+        &mut self,
+        connection: &mut C,
+        now: Instant,
+    ) -> Result<bool, Error<C::Error>> {
+        let Some(step) = self.next_outbound_step(now)? else {
+            return Ok(false);
+        };
+
+        if !connection.write_ready().map_err(Error::Transport)? {
+            return Ok(false);
+        }
+
+        self.perform_outbound_step(connection, step, now).await?;
+        Ok(true)
+    }
+
+    fn next_outbound_step<E>(&mut self, now: Instant) -> Result<Option<OutboundStep>, Error<E>> {
+        self.maybe_queue_pingreq(now)?;
+        Ok(self.session.outbound.next_step())
+    }
+
+    async fn write_step_bytes<C: Io>(
+        connection: &mut C,
+        context: &'static str,
+        bytes: &[u8],
+    ) -> Result<usize, Error<C::Error>> {
+        match connection.write(bytes).await {
+            Ok(0) => {
+                warn!("{context} write returned WriteZero");
+                Err(Error::WriteZero)
+            }
+            Ok(count) => Ok(count),
+            Err(err) => {
+                warn!("{context} write failed: {:?}", err.kind());
+                Err(Error::Transport(err))
+            }
+        }
+    }
+
+    async fn flush_step<C: Io>(
+        connection: &mut C,
+        context: &'static str,
+    ) -> Result<(), Error<C::Error>> {
+        if let Err(err) = connection.flush().await {
+            warn!("{context} flush failed: {:?}", err.kind());
+            return Err(Error::Transport(err));
+        }
+        Ok(())
+    }
+
+    async fn perform_outbound_step<C: Io>(
+        &mut self,
+        connection: &mut C,
+        step: OutboundStep,
+        now: Instant,
+    ) -> Result<(), Error<C::Error>> {
+        let mut small_buf = [0u8; 9];
+        match step {
+            OutboundStep::Control(step) => match step.state {
+                SendState::Write { written } => {
+                    trace!(
+                        "Driving control packet {:?} progress_from={} control={} retained={} pending_release={}",
+                        step.action,
+                        written,
+                        self.session.outbound.pending_control_len(),
+                        self.session.outbound.retained_len(),
+                        self.session.outbound.pending_release_len()
+                    );
+                    let packet = serialize_control_packet(
+                        &mut small_buf,
+                        step.action,
+                        self.runtime.maximum_packet_size,
+                    )?;
+                    let count = match Self::write_step_bytes(
+                        connection,
+                        "Control packet",
+                        &packet[written..],
+                    )
+                    .await
+                    {
+                        Ok(count) => count,
+                        Err(err) => {
+                            self.handle_disconnect();
+                            return Err(err);
+                        }
+                    };
+                    self.session.outbound.set_control_written(
+                        step.action,
+                        written + count,
+                        packet.len(),
+                    );
+                }
+                SendState::Flush => {
+                    trace!("Flushing control packet {:?}", step.action);
+                    if let Err(err) = Self::flush_step(connection, "Control packet").await {
+                        self.handle_disconnect();
+                        return Err(err);
+                    }
+                    if matches!(step.action, ControlAction::PingReq) {
+                        self.runtime.ping_timeout =
+                            Some(now + Duration::from_millis(PING_TIMEOUT_MS));
+                        self.runtime.next_ping = Some(now + self.runtime.keepalive_interval / 2);
+                    }
+                    self.session.outbound.flush_control(step.action);
+                }
+                SendState::Sent => {}
+            },
+            OutboundStep::Release(step) => {
+                match step.state {
+                    SendState::Write { written } => {
+                        trace!(
+                            "Driving PUBREL write packet_id={} progress_from={} control={} retained={} pending_release={}",
+                            step.packet_id,
+                            written,
+                            self.session.outbound.pending_control_len(),
+                            self.session.outbound.retained_len(),
+                            self.session.outbound.pending_release_len()
+                        );
+                        let packet = serialize_pubrel(
+                            &mut small_buf,
+                            step.packet_id,
+                            step.reason,
+                            self.runtime.maximum_packet_size,
+                        )?;
+                        let count =
+                            match Self::write_step_bytes(connection, "PUBREL", &packet[written..])
+                                .await
+                            {
+                                Ok(count) => count,
+                                Err(err) => {
+                                    self.handle_disconnect();
+                                    return Err(err);
+                                }
+                            };
+                        self.session.outbound.set_release_written(
+                            step.packet_id,
+                            written + count,
+                            packet.len(),
+                        );
+                    }
+                    SendState::Flush => {
+                        trace!("Flushing PUBREL packet packet_id={}", step.packet_id);
+                        if let Err(err) = Self::flush_step(connection, "PUBREL").await {
+                            self.handle_disconnect();
+                            return Err(err);
+                        }
+                        self.session.outbound.flush_release(step.packet_id);
+                    }
+                    SendState::Sent => {}
+                }
+            }
+            OutboundStep::Retained(step) => match step.state {
+                SendState::Write { written } => {
+                    trace!(
+                        "Driving retained packet write packet_id={} progress {}/{} control={} tx_used={} tx_capacity={} retained={} pending_release={}",
+                        step.packet_id,
+                        written,
+                        step.len,
+                        self.session.outbound.pending_control_len(),
+                        self.session.outbound.used(),
+                        self.session.outbound.capacity(),
+                        self.session.outbound.retained_len(),
+                        self.session.outbound.pending_release_len()
+                    );
+                    Self::require_packet_size(self.runtime.maximum_packet_size, step.len)?;
+                    let packet = self.session.outbound.retained_packet(step.offset, step.len);
+                    let count = match Self::write_step_bytes(
+                        connection,
+                        "Retained packet",
+                        &packet[written..],
+                    )
+                    .await
+                    {
+                        Ok(count) => count,
+                        Err(err) => {
+                            self.handle_disconnect();
+                            return Err(err);
+                        }
+                    };
+                    self.session.outbound.set_retained_written(
+                        step.packet_id,
+                        written + count,
+                        step.len,
+                    );
+                }
+                SendState::Flush => {
+                    trace!("Flushing retained packet packet_id={}", step.packet_id);
+                    if let Err(err) = Self::flush_step(connection, "Retained packet").await {
+                        self.handle_disconnect();
+                        return Err(err);
+                    }
+                    self.session.outbound.flush_retained(step.packet_id);
+                }
+                SendState::Sent => {}
+            },
+        }
+        Ok(())
     }
 
     fn handle_disconnect(&mut self) {
         debug!(
-            "Resetting local session transport state and arming replay if needed tx_used={} tx_capacity={} retained={} pending_release={}",
+            "Resetting local session transport state and arming replay if needed control={} tx_used={} tx_capacity={} retained={} pending_release={}",
+            self.session.outbound.pending_control_len(),
             self.session.outbound.used(),
             self.session.outbound.capacity(),
             self.session.outbound.retained_len(),
@@ -576,112 +891,12 @@ impl<'buf> Core<'buf> {
     }
 
     async fn drive_outbound<C: Io>(&mut self, connection: &mut C) -> Result<(), Error<C::Error>> {
-        let mut release_buf = [0u8; 9];
-
         loop {
-            if let Some(step) = self.session.outbound.next_retained_step() {
-                match step.state {
-                    SendState::Write { written } => {
-                        trace!(
-                            "Driving retained packet write packet_id={} progress {}/{} tx_used={} tx_capacity={} retained={} pending_release={}",
-                            step.packet_id,
-                            written,
-                            step.len,
-                            self.session.outbound.used(),
-                            self.session.outbound.capacity(),
-                            self.session.outbound.retained_len(),
-                            self.session.outbound.pending_release_len()
-                        );
-                        Self::require_packet_size(self.runtime.maximum_packet_size, step.len)?;
-                        let packet = self.session.outbound.retained_packet(step.offset, step.len);
-                        let count = match connection.write(&packet[written..]).await {
-                            Ok(0) => {
-                                warn!("Retained packet write returned WriteZero");
-                                self.handle_disconnect();
-                                return Err(Error::WriteZero);
-                            }
-                            Ok(count) => count,
-                            Err(err) => {
-                                warn!("Retained packet write failed: {:?}", err.kind());
-                                self.handle_disconnect();
-                                return Err(Error::Transport(err));
-                            }
-                        };
-                        self.session.outbound.set_retained_written(
-                            step.packet_id,
-                            written + count,
-                            step.len,
-                        );
-                    }
-                    SendState::Flush => {
-                        trace!("Flushing retained packet packet_id={}", step.packet_id);
-                        if let Err(err) = connection.flush().await {
-                            warn!("Retained packet flush failed: {:?}", err.kind());
-                            self.handle_disconnect();
-                            return Err(Error::Transport(err));
-                        }
-                        self.session.outbound.flush_retained(step.packet_id);
-                    }
-                    SendState::Sent => {}
-                }
-                continue;
-            }
-
-            if let Some(step) = self.session.outbound.next_release_step() {
-                match step.state {
-                    SendState::Write { written } => {
-                        trace!(
-                            "Driving PUBREL write packet_id={} progress_from={} tx_used={} tx_capacity={} retained={} pending_release={}",
-                            step.packet_id,
-                            written,
-                            self.session.outbound.used(),
-                            self.session.outbound.capacity(),
-                            self.session.outbound.retained_len(),
-                            self.session.outbound.pending_release_len()
-                        );
-                        let packet = crate::ser::MqttSerializer::to_buffer(
-                            &mut release_buf,
-                            &PubRel {
-                                packet_id: step.packet_id,
-                                reason: step.reason.into(),
-                            },
-                        )
-                        .map_err(|err| Error::Protocol(err.into()))?;
-                        Self::require_packet_size(self.runtime.maximum_packet_size, packet.len())?;
-                        let count = match connection.write(&packet[written..]).await {
-                            Ok(0) => {
-                                warn!("PUBREL write returned WriteZero");
-                                self.handle_disconnect();
-                                return Err(Error::WriteZero);
-                            }
-                            Ok(count) => count,
-                            Err(err) => {
-                                warn!("PUBREL write failed: {:?}", err.kind());
-                                self.handle_disconnect();
-                                return Err(Error::Transport(err));
-                            }
-                        };
-                        self.session.outbound.set_release_written(
-                            step.packet_id,
-                            written + count,
-                            packet.len(),
-                        );
-                    }
-                    SendState::Flush => {
-                        trace!("Flushing PUBREL packet packet_id={}", step.packet_id);
-                        if let Err(err) = connection.flush().await {
-                            warn!("PUBREL flush failed: {:?}", err.kind());
-                            self.handle_disconnect();
-                            return Err(Error::Transport(err));
-                        }
-                        self.session.outbound.flush_release(step.packet_id);
-                    }
-                    SendState::Sent => {}
-                }
-                continue;
-            }
-
-            return Ok(());
+            let Some(step) = self.next_outbound_step(Instant::now())? else {
+                return Ok(());
+            };
+            self.perform_outbound_step(connection, step, Instant::now())
+                .await?;
         }
     }
 
@@ -701,7 +916,7 @@ impl<'buf> Core<'buf> {
 mod tests {
     use super::*;
     use crate::{Buffers, ConfigBuilder, tests::block_on};
-    use embedded_io_async::{ErrorType, Read, Write};
+    use embedded_io_async::{ErrorType, Read, ReadReady, Write, WriteReady};
     use std::collections::VecDeque;
     use std::vec::Vec;
 
@@ -737,6 +952,12 @@ mod tests {
         }
     }
 
+    impl ReadReady for MockConnection {
+        fn read_ready(&mut self) -> Result<bool, Self::Error> {
+            Ok(!self.rx.is_empty())
+        }
+    }
+
     impl Write for MockConnection {
         async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
             if let Some(err) = self.write_error.take() {
@@ -748,6 +969,12 @@ mod tests {
 
         async fn flush(&mut self) -> Result<(), Self::Error> {
             Ok(())
+        }
+    }
+
+    impl WriteReady for MockConnection {
+        fn write_ready(&mut self) -> Result<bool, Self::Error> {
+            Ok(true)
         }
     }
 
@@ -766,12 +993,12 @@ mod tests {
         )
     }
 
-    fn core_with_tx<const TX: usize>(tx: &'static mut [u8; TX]) -> Core<'static> {
+    fn core_with_rx<const RX: usize>(rx: &'static mut [u8; RX]) -> Core<'static> {
         let broker = "127.0.0.1:1883"
             .parse::<std::net::SocketAddr>()
             .unwrap()
             .into();
-        let rx = Box::leak(Box::new([0; 128]));
+        let tx = Box::leak(Box::new([0; 1152]));
         Core::new(
             ConfigBuilder::new(broker, Buffers::new(rx, tx))
                 .client_id("test")
@@ -788,7 +1015,8 @@ mod tests {
         core.runtime.state = ConnectionState::Active;
         core.runtime.next_ping = Some(now);
 
-        block_on(core.maintain(&mut connection, now)).unwrap();
+        assert!(block_on(core.maintain_step(&mut connection, now)).unwrap());
+        assert!(block_on(core.maintain_step(&mut connection, now)).unwrap());
 
         assert!(
             connection
@@ -810,8 +1038,12 @@ mod tests {
         core.runtime.state = ConnectionState::Active;
         core.runtime.next_ping = Some(now);
 
-        block_on(core.maintain(&mut connection, now)).unwrap();
-        block_on(core.maintain(&mut connection, now + Duration::from_millis(600))).unwrap();
+        assert!(block_on(core.maintain_step(&mut connection, now)).unwrap());
+        assert!(block_on(core.maintain_step(&mut connection, now)).unwrap());
+        assert!(
+            !block_on(core.maintain_step(&mut connection, now + Duration::from_millis(600)))
+                .unwrap()
+        );
 
         let pingreqs = connection
             .tx
@@ -829,11 +1061,19 @@ mod tests {
         core.runtime.state = ConnectionState::Active;
         core.runtime.next_ping = Some(now);
 
-        block_on(core.maintain(&mut connection, now)).unwrap();
+        assert!(block_on(core.maintain_step(&mut connection, now)).unwrap());
         connection.push_rx(&[0xD0, 0x00]);
 
-        let result = block_on(core.read(&mut connection, now));
-        assert!(matches!(result, Ok(None)), "{result:?}");
+        for _ in 0..3 {
+            let result = block_on(core.step_event(&mut connection, now));
+            assert!(
+                matches!(result, Ok(super::super::Event::Idle)),
+                "{result:?}"
+            );
+            if core.runtime.ping_timeout.is_none() {
+                break;
+            }
+        }
         assert_eq!(core.runtime.ping_timeout, None);
         assert_eq!(core.runtime.state, ConnectionState::Active);
     }
@@ -846,8 +1086,9 @@ mod tests {
         core.runtime.state = ConnectionState::Active;
         core.runtime.ping_timeout = Some(now);
 
-        block_on(core.maintain(&mut connection, now)).unwrap();
+        let result = block_on(core.maintain_step(&mut connection, now));
 
+        assert!(matches!(result, Err(Error::Disconnected)));
         assert_eq!(core.runtime.state, ConnectionState::Disconnected);
         assert_eq!(core.runtime.ping_timeout, None);
     }
@@ -863,7 +1104,7 @@ mod tests {
         core.runtime.state = ConnectionState::Active;
         core.runtime.next_ping = Some(now);
 
-        let result = block_on(core.maintain(&mut connection, now));
+        let result = block_on(core.maintain_step(&mut connection, now));
 
         assert!(matches!(
             result,
@@ -873,9 +1114,9 @@ mod tests {
     }
 
     #[test]
-    fn connect_returns_insufficient_memory_when_tx_is_smaller_than_fixed_header() {
-        let tx = Box::leak(Box::new([0; MAX_FIXED_HEADER_SIZE - 1]));
-        let mut core = core_with_tx(tx);
+    fn connect_returns_insufficient_memory_when_rx_is_smaller_than_fixed_header() {
+        let rx = Box::leak(Box::new([0; MAX_FIXED_HEADER_SIZE - 1]));
+        let mut core = core_with_rx(rx);
         let mut connection = MockConnection::default();
 
         let result = block_on(core.connect(&mut connection));

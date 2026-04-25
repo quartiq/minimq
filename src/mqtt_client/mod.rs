@@ -10,11 +10,11 @@ use crate::{
     publication::{OwnedResponseTarget, Publication, ResponseTarget},
     types::Properties,
 };
-use embedded_io_async::{ErrorType, Read, Write};
+use embedded_io_async::{ErrorType, Read, ReadReady, Write, WriteReady};
 
-pub(super) trait Io: Read + Write + ErrorType {}
+pub(super) trait Io: Read + Write + ReadReady + WriteReady + ErrorType {}
 
-impl<T> Io for T where T: Read + Write + ErrorType {}
+impl<T> Io for T where T: Read + Write + ReadReady + WriteReady + ErrorType {}
 
 /// Inbound MQTT `PUBLISH` delivered by [`Event::Inbound`].
 #[derive(Debug)]
@@ -110,10 +110,15 @@ impl<'a> InboundPublish<'a> {
 pub enum Event<'a> {
     /// No inbound message was produced.
     Idle,
-    /// The transport connected and the broker created a fresh session.
-    Connected,
-    /// The transport reconnected and the broker resumed the existing session.
-    Reconnected,
     /// An inbound publish was received.
     Inbound(InboundPublish<'a>),
+}
+
+/// Output of [`Session::connect`](crate::Session::connect).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ConnectEvent {
+    /// The broker created a fresh session.
+    Connected,
+    /// The broker resumed the existing session.
+    Reconnected,
 }

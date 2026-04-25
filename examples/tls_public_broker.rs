@@ -1,11 +1,17 @@
+//! TLS connectivity example for `embedded-tls`.
+//!
+//! `embedded-tls` does not expose `ReadReady` / `WriteReady`, so this adapter reports
+//! unconditional readiness and the resulting `Session::poll()` loop is not bounded.
+//! Use this as a TLS transport example, not as a model for a readiness-aware connector.
+
 use embedded_io_adapters::tokio_1::FromTokio;
-use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
+use embedded_io_async::{ErrorKind, ErrorType, Read, ReadReady, Write, WriteReady};
 use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 use minimq::{
-    Broker, ConfigBuilder, Event, Property, Publication, QoS, Session, transport::Connector,
-    types::TopicFilter,
+    Broker, ConfigBuilder, ConnectEvent, Event, Property, Publication, QoS, Session,
+    transport::Connector, types::TopicFilter,
 };
-use std::error::Error;
+use std::error::Error as StdError;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::net::TcpStream;
@@ -21,6 +27,7 @@ fn kind_from_std(err: &std::io::Error) -> ErrorKind {
     err.kind().into()
 }
 
+#[derive(Debug)]
 struct EmqxTlsConnector;
 
 #[derive(Debug, Error)]
@@ -65,6 +72,18 @@ impl Write for EmqxTlsConnection {
     }
 }
 
+impl ReadReady for EmqxTlsConnection {
+    fn read_ready(&mut self) -> Result<bool, Self::Error> {
+        Ok(true)
+    }
+}
+
+impl WriteReady for EmqxTlsConnection {
+    fn write_ready(&mut self) -> Result<bool, Self::Error> {
+        Ok(true)
+    }
+}
+
 impl Connector for EmqxTlsConnector {
     type Error = EmqxTlsError;
     type Connection<'a> = EmqxTlsConnection;
@@ -106,14 +125,14 @@ fn unique_id(label: &str) -> String {
     format!("minimq-{label}-{nanos}")
 }
 
-async fn connect(session: &mut Session<'_, '_, EmqxTlsConnector>) {
-    match tokio::time::timeout(Duration::from_secs(10), session.poll())
+async fn connect(
+    session: &mut Session<'_, '_, EmqxTlsConnector>,
+) -> Result<(), minimq::SessionError<EmqxTlsConnector>> {
+    match tokio::time::timeout(Duration::from_secs(10), session.connect())
         .await
-        .unwrap()
-        .unwrap()
+        .unwrap()?
     {
-        Event::Connected => {}
-        _ => panic!(),
+        ConnectEvent::Connected | ConnectEvent::Reconnected => Ok(()),
     }
 }
 
@@ -147,12 +166,12 @@ async fn recv(
                 );
                 return Ok(());
             }
-            Event::Connected | Event::Reconnected | Event::Inbound(_) | Event::Idle => {}
+            Event::Inbound(_) | Event::Idle => {}
         }
     }
 }
 
-async fn run() -> Result<(), Box<dyn Error>> {
+async fn run() -> Result<(), Box<dyn StdError>> {
     let broker = Broker::hostname(BROKER_HOST, BROKER_PORT);
     let connector = EmqxTlsConnector;
     let topic = format!("minimq/examples/tls/{}", unique_id("topic"));
@@ -174,13 +193,13 @@ async fn run() -> Result<(), Box<dyn Error>> {
         &connector,
     );
 
-    connect(&mut subscriber).await;
+    connect(&mut subscriber).await?;
     subscriber
         .subscribe(&[TopicFilter::new(&topic)], &[] as &[Property<'_>])
         .await?;
     flush(&mut subscriber).await?;
 
-    connect(&mut publisher).await;
+    connect(&mut publisher).await?;
     publisher
         .publish(Publication::new(&topic, payload.as_bytes()).qos(QoS::AtLeastOnce))
         .await?;

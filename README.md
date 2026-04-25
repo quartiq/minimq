@@ -24,49 +24,71 @@ The main API is [`Session`].
 ```ignore
 use core::net::SocketAddr;
 use minimq::{
-    Broker, ConfigBuilder, Event, QoS, Session,
-    transport::TcpConnector, types::TopicFilter,
+    Broker, Buffers, ConfigBuilder, ConnectEvent, Error, Event, QoS, Session,
+    transport::Connector, types::TopicFilter,
 };
-use std_embedded_nal_async::Stack;
 
-async fn run() -> Result<(), minimq::SessionError<TcpConnector<Stack>>> {
-    let mut storage = [0u8; 1024];
+struct MyConnector;
+
+async fn run() -> Result<(), minimq::SessionError<MyConnector>> {
+    let rx = &mut [0u8; 256];
+    let tx = &mut [0u8; 768];
     let broker: Broker<'_> = "127.0.0.1:1883".parse::<SocketAddr>()?.into();
-    let connector = TcpConnector::new(Stack::default());
+    let connector = MyConnector;
     let mut session = Session::new(
-        ConfigBuilder::from_buffer(broker, &mut storage, 256)?.client_id("demo")?,
+        ConfigBuilder::new(broker, Buffers::new(rx, tx))
+            .client_id("demo")?,
         &connector,
     );
 
     loop {
-        match session.poll().await? {
-            Event::Connected => {
+        match session.connect().await? {
+            ConnectEvent::Connected => {
                 session.subscribe(&[TopicFilter::new("demo/in")], &[]).await?;
             }
-            Event::Reconnected => {}
-            Event::Inbound(message) => {
-                if let Some(reply) = message.reply("ack") {
-                    session.publish(reply.qos(QoS::AtLeastOnce)).await?;
+            ConnectEvent::Reconnected => {}
+        }
+
+        loop {
+            match session.poll().await {
+                Ok(Event::Inbound(message)) => {
+                    if let Some(reply) = message.reply("ack") {
+                        session.publish(reply.qos(QoS::AtLeastOnce)).await?;
+                    }
                 }
+                Ok(Event::Idle) => {}
+                Err(Error::Disconnected) => break,
+                Err(err) => return Err(err),
             }
-            Event::Idle => {}
         }
     }
 }
 ```
 
+`MyConnector` must implement [`transport::Connector`] with a connection type that also provides
+[`embedded_io_async::ReadReady`] and [`embedded_io_async::WriteReady`].
+
+For a TLS connectivity example that uses `embedded-tls` without those readiness traits, see
+`examples/tls_public_broker.rs`. That example is useful for transport integration, but its
+`poll()` loop is not bounded because `embedded-tls` does not expose read/write readiness.
+
 ## Session Model
 
-You provide a broker endpoint, packet buffers, a transport connector, and a loop that keeps
-calling [`Session::poll()`].
+You provide a broker endpoint, packet buffers, a transport connector, and a loop that explicitly
+calls [`Session::connect()`] when it wants to establish or resume the broker session.
 
-`Session` owns reconnects, keepalive, retransmission, and inbound packet delivery.
+`Session::connect()` performs the unbounded broker handshake. Once connected, [`Session::poll()`]
+does bounded keepalive, retransmission, and inbound packet delivery on the established session.
 
-- [`Event::Connected`] means the broker created a fresh session. Re-establish subscriptions here.
-- [`Event::Reconnected`] means the broker resumed the existing MQTT session. Existing
+- [`ConnectEvent::Connected`] means the broker created a fresh session. Re-establish subscriptions
+  here.
+- [`ConnectEvent::Reconnected`] means the broker resumed the existing MQTT session. Existing
   subscriptions and in-flight QoS state were kept.
 - [`Event::Inbound`] carries one inbound publish.
-- [`Event::Idle`] means no inbound publish was produced on that poll step.
+- [`Event::Idle`] means no inbound publish was produced on that bounded poll step.
+
+If [`Session::poll()`] returns [`Error::Disconnected`], the caller decides when to call
+[`Session::connect()`] again.
 
 ## Buffers
 
@@ -99,5 +121,3 @@ Use [`Buffers::split()`] if you prefer one contiguous slab.
 - [`embedded_io_async`] for byte I/O
 - [`embedded_nal_async`] adapters in `transport`
 - [`embassy_time`] for timing
-
-Secure MQTT over TLS works fine, for example with embedded-tls: `examples/tls_public_broker.rs`.

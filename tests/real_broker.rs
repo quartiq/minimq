@@ -1,18 +1,20 @@
-mod support;
-
-use embedded_io_async::Error as _;
-use embedded_io_async::ErrorKind;
+use core::future::poll_fn;
+use core::pin::Pin;
+use core::task::Poll;
+use embedded_io_async::{Error as _, ErrorKind, ErrorType, Read, ReadReady, Write, WriteReady};
 use minimq::{
-    Broker, Buffers, ConfigBuilder, Error, Event, Publication, QoS, Session,
-    transport::{AddrType, DnsTcpConnector, TcpConnector},
+    Broker, Buffers, ConfigBuilder, ConnectEvent, Error, Event, Publication, QoS, Session,
+    transport::Connector,
     types::{SubscriptionOptions, TopicFilter},
 };
 use std::{
     net::SocketAddr,
     time::{SystemTime, UNIX_EPOCH},
 };
-use std_embedded_nal_async::Stack as StdStack;
-use support::block_on;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::{TcpStream, lookup_host},
+};
 
 const BROKER_ADDR_ENV: &str = "MINIMQ_REAL_BROKER_ADDR";
 const BROKER_HOST_ENV: &str = "MINIMQ_REAL_BROKER_HOST";
@@ -53,17 +55,99 @@ fn config<'a>(broker: Broker<'a>, client_id: &str) -> ConfigBuilder<'a> {
         .unwrap()
 }
 
-fn poll_until_ready<'a, C>(
+struct TokioConnection(TcpStream);
+
+impl ErrorType for TokioConnection {
+    type Error = std::io::Error;
+}
+
+impl Read for TokioConnection {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        poll_fn(|cx| {
+            let mut read_buf = tokio::io::ReadBuf::new(buf);
+            match Pin::new(&mut self.0).poll_read(cx, &mut read_buf) {
+                Poll::Ready(Ok(())) => Poll::Ready(Ok(read_buf.filled().len())),
+                Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+                Poll::Pending => Poll::Pending,
+            }
+        })
+        .await
+    }
+}
+
+impl Write for TokioConnection {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        poll_fn(|cx| match Pin::new(&mut self.0).poll_write(cx, buf) {
+            Poll::Ready(Ok(0)) if !buf.is_empty() => {
+                Poll::Ready(Err(std::io::ErrorKind::WriteZero.into()))
+            }
+            Poll::Ready(result) => Poll::Ready(result),
+            Poll::Pending => Poll::Pending,
+        })
+        .await
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        poll_fn(|cx| Pin::new(&mut self.0).poll_flush(cx)).await
+    }
+}
+
+impl ReadReady for TokioConnection {
+    fn read_ready(&mut self) -> Result<bool, Self::Error> {
+        match self.0.try_io(tokio::io::Interest::READABLE, || Ok(())) {
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+}
+
+impl WriteReady for TokioConnection {
+    fn write_ready(&mut self) -> Result<bool, Self::Error> {
+        match self.0.try_io(tokio::io::Interest::WRITABLE, || Ok(())) {
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+struct TokioConnector;
+
+impl Connector for TokioConnector {
+    type Error = std::io::Error;
+    type Connection<'a> = TokioConnection;
+
+    async fn connect<'a>(
+        &'a self,
+        broker: &Broker<'_>,
+    ) -> Result<Self::Connection<'a>, Self::Error> {
+        let addr = match broker {
+            Broker::SocketAddr(addr) => *addr,
+            Broker::Hostname { host, port } => lookup_host((*host, *port))
+                .await?
+                .next()
+                .ok_or(std::io::ErrorKind::NotFound)?,
+        };
+        TcpStream::connect(addr).await.map(TokioConnection)
+    }
+}
+
+async fn poll_until_ready<'a, C>(
     session: &mut Session<'_, 'a, C>,
     want_inbound: bool,
 ) -> Option<(String, Vec<u8>, QoS)>
 where
-    C: minimq::transport::Connector,
+    C: Connector,
     C::Error: embedded_io_async::Error + core::fmt::Debug,
 {
     for _ in 0..200 {
-        match block_on(session.poll()) {
-            Ok(Event::Idle | Event::Connected | Event::Reconnected) if !want_inbound => {
+        match session.poll().await {
+            Ok(Event::Idle) if !want_inbound => {
                 return None;
             }
             Ok(Event::Inbound(message)) if want_inbound => {
@@ -84,45 +168,48 @@ where
     panic!("timed out waiting for broker activity");
 }
 
-fn assert_roundtrip<'a, C>(
+async fn assert_roundtrip<'a, C>(
     subscriber: &mut Session<'_, 'a, C>,
     publisher: &mut Session<'_, 'a, C>,
     topic: &str,
     payload: &[u8],
 ) where
-    C: minimq::transport::Connector,
+    C: Connector,
     C::Error: embedded_io_async::Error + core::fmt::Debug,
 {
-    match block_on(subscriber.poll()).unwrap() {
-        Event::Connected => {}
-        other => panic!("unexpected event: {other:?}"),
-    }
+    assert!(matches!(
+        subscriber.connect().await.unwrap(),
+        ConnectEvent::Connected | ConnectEvent::Reconnected
+    ));
     let topics = [TopicFilter::new(topic)
         .options(SubscriptionOptions::default().maximum_qos(QoS::AtLeastOnce))];
-    block_on(subscriber.subscribe(&topics, &[])).unwrap();
-    let _ = poll_until_ready(subscriber, false);
+    subscriber.subscribe(&topics, &[]).await.unwrap();
+    let _ = poll_until_ready(subscriber, false).await;
 
-    match block_on(publisher.poll()).unwrap() {
-        Event::Connected => {}
-        other => panic!("unexpected event: {other:?}"),
-    }
-    block_on(publisher.publish(Publication::new(topic, payload).qos(QoS::AtLeastOnce))).unwrap();
+    assert!(matches!(
+        publisher.connect().await.unwrap(),
+        ConnectEvent::Connected | ConnectEvent::Reconnected
+    ));
+    publisher
+        .publish(Publication::bytes(topic, payload).qos(QoS::AtLeastOnce))
+        .await
+        .unwrap();
 
     let (received_topic, received_payload, received_qos) =
-        poll_until_ready(subscriber, true).expect("publish");
+        poll_until_ready(subscriber, true).await.expect("publish");
     assert_eq!(received_topic, topic);
     assert_eq!(received_payload, payload);
     assert_eq!(received_qos, QoS::AtLeastOnce);
 }
 
-#[test]
-fn real_broker_qos1_roundtrip_over_tcp_connector() {
+#[tokio::test]
+async fn real_broker_qos1_roundtrip_over_tcp_connector() {
     let Some(addr) = socket_broker() else {
         eprintln!("skipping real broker test; set {BROKER_ADDR_ENV}=host:port");
         return;
     };
 
-    let connector = TcpConnector::new(StdStack::default());
+    let connector = TokioConnector;
     let mut subscriber = Session::new(config(addr.into(), &unique_client_id("sub")), &connector);
     let mut publisher = Session::new(config(addr.into(), &unique_client_id("pub")), &connector);
     let topic = unique_topic();
@@ -132,11 +219,12 @@ fn real_broker_qos1_roundtrip_over_tcp_connector() {
         &mut publisher,
         &topic,
         b"hello from minimq",
-    );
+    )
+    .await;
 }
 
-#[test]
-fn real_broker_qos1_roundtrip_over_dns_connector() {
+#[tokio::test]
+async fn real_broker_qos1_roundtrip_over_dns_connector() {
     let Some(host) = hostname_broker() else {
         eprintln!("skipping hostname broker test; set {BROKER_HOST_ENV}=hostname");
         return;
@@ -146,11 +234,10 @@ fn real_broker_qos1_roundtrip_over_dns_connector() {
         &host,
         socket_broker().map(|addr| addr.port()).unwrap_or(1883),
     );
-    let stack = StdStack::default();
-    let connector = DnsTcpConnector::new(stack.clone(), stack, AddrType::IPv4);
+    let connector = TokioConnector;
     let mut subscriber = Session::new(config(broker, &unique_client_id("dns-sub")), &connector);
     let mut publisher = Session::new(config(broker, &unique_client_id("dns-pub")), &connector);
     let topic = unique_topic();
 
-    assert_roundtrip(&mut subscriber, &mut publisher, &topic, b"hello over dns");
+    assert_roundtrip(&mut subscriber, &mut publisher, &topic, b"hello over dns").await;
 }
