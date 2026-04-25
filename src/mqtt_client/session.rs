@@ -56,6 +56,15 @@ where
         self.core.can_publish(qos)
     }
 
+    /// Return whether the session has no in-flight retained MQTT packets or
+    /// pending release state.
+    ///
+    /// Use this when a caller needs strict one-at-a-time QoS progress, for
+    /// example to serialize retained background publication.
+    pub fn is_publish_quiescent(&self) -> bool {
+        self.core.is_publish_quiescent()
+    }
+
     /// Gracefully close the current MQTT transport with `DISCONNECT`.
     ///
     /// This only closes the current transport. A later [`poll`](Self::poll) will connect again.

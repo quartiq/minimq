@@ -303,7 +303,7 @@ mod tests {
             properties: crate::types::Properties::Slice(&[]),
             retain: crate::Retain::NotRetained,
             topic: crate::types::Utf8String("ABC"),
-            payload: &[0xAB, 0xCD],
+            payload: &[0xAB, 0xCD][..],
         };
 
         let mut buffer: [u8; 900] = [0; 900];
@@ -330,7 +330,7 @@ mod tests {
             dup: false,
             properties: crate::types::Properties::Slice(&[]),
             retain: crate::Retain::NotRetained,
-            payload: &[0xAB, 0xCD],
+            payload: &[0xAB, 0xCD][..],
         };
 
         let mut buffer: [u8; 900] = [0; 900];
@@ -406,7 +406,7 @@ mod tests {
                 crate::properties::Property::ResponseTopic(crate::types::Utf8String("A")),
             ]),
             retain: crate::Retain::NotRetained,
-            payload: &[0xAB, 0xCD],
+            payload: &[0xAB, 0xCD][..],
         };
 
         let mut buffer: [u8; 900] = [0; 900];
@@ -438,7 +438,7 @@ mod tests {
                 ),
             ]),
             retain: crate::Retain::NotRetained,
-            payload: &[0xAB, 0xCD],
+            payload: &[0xAB, 0xCD][..],
         };
 
         let mut buffer: [u8; 900] = [0; 900];

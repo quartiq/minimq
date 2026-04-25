@@ -174,6 +174,10 @@ impl<'buf> Core<'buf> {
         self.runtime.send_quota != 0 && self.session.outbound.can_retain()
     }
 
+    pub(super) fn is_publish_quiescent(&self) -> bool {
+        self.runtime.state == ConnectionState::Active && self.session.outbound.is_quiescent()
+    }
+
     pub(super) fn next_deadline(&self) -> Option<Instant> {
         self.runtime.next_deadline()
     }

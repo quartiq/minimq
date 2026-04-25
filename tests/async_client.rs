@@ -313,7 +313,7 @@ fn connected_session<'a>(connector: &'a MockConnector) -> Session<'a, 'static, M
 fn fill_inflight_publish_slots(session: &mut Session<'_, 'static, MockConnector>) -> usize {
     let mut count = 0;
     loop {
-        match block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))) {
+        match block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))) {
             Ok(()) => count += 1,
             Err(PubError::Session(Error::Protocol(ProtocolError::InflightMetadataExhausted))) => {
                 return count;
@@ -363,7 +363,8 @@ fn publish_connects_session_on_demand() {
     connection.push_rx(&connack());
     let connector = MockConnector::new(connection);
     let mut session = Session::new(config(), &connector);
-    block_on(session.publish(Publication::new("data", b"payload").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"payload").qos(QoS::AtLeastOnce)))
+        .unwrap();
     assert!(session.is_connected());
     assert!(matches!(
         block_on(session.poll()).unwrap(),
@@ -382,13 +383,13 @@ fn publish_survives_cancellation_during_pending_write() {
 
     inspect.pend_writes(1);
     let mut future =
-        Box::pin(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce)));
+        Box::pin(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce)));
     assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
     drop(future);
 
     assert_eq!(inspect.tx().len(), 1);
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
-    block_on(session.publish(Publication::new("data", b"y").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"y").qos(QoS::AtLeastOnce))).unwrap();
 }
 
 #[test]
@@ -402,14 +403,14 @@ fn cancelled_publish_still_holds_receive_max_quota() {
 
     inspect.pend_writes(1);
     let mut future =
-        Box::pin(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce)));
+        Box::pin(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce)));
     assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
     drop(future);
 
-    let result = block_on(session.publish(Publication::new("data", b"y").qos(QoS::AtLeastOnce)));
+    let result = block_on(session.publish(Publication::bytes("data", b"y").qos(QoS::AtLeastOnce)));
     assert!(matches!(result, Err(PubError::Session(Error::NotReady))));
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
-    block_on(session.publish(Publication::new("data", b"z").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"z").qos(QoS::AtLeastOnce))).unwrap();
 }
 
 #[test]
@@ -442,7 +443,7 @@ fn qos2_pubrel_survives_cancellation_during_pending_write() {
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    block_on(session.publish(Publication::new("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
 
     inspect.pend_writes(1);
@@ -462,7 +463,7 @@ fn inflight_packets_are_not_replayed_during_normal_poll() {
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
     let tx_after_publish = connector.connections.borrow().front().is_none();
     assert!(tx_after_publish);
 
@@ -487,7 +488,7 @@ fn broker_disconnect_marks_inflight_for_replay_on_resume() {
         block_on(session.poll()).unwrap(),
         Event::Connected
     ));
-    block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
     assert!(matches!(
         block_on(session.poll()).unwrap(),
@@ -589,7 +590,7 @@ fn outbound_qos_acks_can_arrive_out_of_order() {
     let mut session = connected_session(&connector);
 
     for _ in 0..3 {
-        block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+        block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
     }
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
@@ -688,7 +689,7 @@ fn outbound_qos2_flow_allows_out_of_order_pubrec_and_pubcomp() {
     let mut session = connected_session(&connector);
 
     for _ in 0..2 {
-        block_on(session.publish(Publication::new("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
+        block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
     }
 
     for _ in 0..4 {
@@ -846,10 +847,10 @@ fn connack_receive_maximum_clamps_local_quota() {
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
-    block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
 
-    let result = block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce)));
+    let result = block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce)));
     assert!(matches!(result, Err(PubError::Session(Error::NotReady))));
 }
 
@@ -870,7 +871,7 @@ fn session_allows_publish_after_message_borrow_is_dropped() {
         assert_eq!(message.payload(), b"payload");
     }
 
-    block_on(session.publish(Publication::new("reply", b"ok").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("reply", b"ok").qos(QoS::AtLeastOnce))).unwrap();
 }
 
 #[test]
@@ -885,14 +886,14 @@ fn session_reconnects_after_write_error() {
     let connector = MockConnector::with_connections([first, second]);
     let mut session = Session::new(config(), &connector);
 
-    let error = block_on(session.publish(Publication::new("reply", b"ok").qos(QoS::AtLeastOnce)))
+    let error = block_on(session.publish(Publication::bytes("reply", b"ok").qos(QoS::AtLeastOnce)))
         .unwrap_err();
     assert!(matches!(
         error,
         PubError::Session(Error::Transport(ErrorKind::ConnectionReset))
     ));
 
-    block_on(session.publish(Publication::new("reply", b"ok").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("reply", b"ok").qos(QoS::AtLeastOnce))).unwrap();
 }
 
 #[test]
@@ -903,14 +904,14 @@ fn puback_failure_is_reported_and_clears_inflight() {
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
     assert!(matches!(
         block_on(session.poll()),
         Err(Error::Protocol(ProtocolError::Failed(
             minimq::ReasonCode::NotAuthorized
         )))
     ));
-    block_on(session.publish(Publication::new("data", b"y").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"y").qos(QoS::AtLeastOnce))).unwrap();
 }
 
 #[test]
@@ -921,14 +922,14 @@ fn pubrec_failure_is_reported_and_clears_inflight() {
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    block_on(session.publish(Publication::new("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
     assert!(matches!(
         block_on(session.poll()),
         Err(Error::Protocol(ProtocolError::Failed(
             minimq::ReasonCode::QuotaExceeded
         )))
     ));
-    block_on(session.publish(Publication::new("data", b"y").qos(QoS::ExactlyOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"y").qos(QoS::ExactlyOnce))).unwrap();
 }
 
 #[test]
@@ -940,7 +941,7 @@ fn pubcomp_failure_is_reported_and_clears_release_state() {
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    block_on(session.publish(Publication::new("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
     assert!(matches!(
         block_on(session.poll()),
@@ -948,7 +949,7 @@ fn pubcomp_failure_is_reported_and_clears_release_state() {
             minimq::ReasonCode::ImplementationError
         )))
     ));
-    block_on(session.publish(Publication::new("data", b"y").qos(QoS::ExactlyOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"y").qos(QoS::ExactlyOnce))).unwrap();
 }
 
 #[test]
@@ -998,7 +999,7 @@ fn session_reconnects_after_replay_write_error() {
         block_on(session.poll()).unwrap(),
         Event::Connected
     ));
-    block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
 
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
     assert!(matches!(
@@ -1038,7 +1039,7 @@ fn qos1_publish_replays_across_multiple_resumed_reconnects() {
         block_on(session.poll()).unwrap(),
         Event::Connected
     ));
-    block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
 
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
     assert!(matches!(
@@ -1090,7 +1091,7 @@ fn qos2_pubrel_replays_across_multiple_resumed_reconnects() {
         block_on(session.poll()).unwrap(),
         Event::Connected
     ));
-    block_on(session.publish(Publication::new("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
 
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
@@ -1136,7 +1137,7 @@ fn fresh_session_after_reconnect_drops_stale_replay_state() {
         block_on(session.poll()).unwrap(),
         Event::Connected
     ));
-    block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
 
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
     assert!(matches!(
@@ -1171,7 +1172,7 @@ fn stale_puback_after_resumed_replay_is_ignored() {
         block_on(session.poll()).unwrap(),
         Event::Connected
     ));
-    block_on(session.publish(Publication::new("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
 
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
     assert!(matches!(
@@ -1228,7 +1229,7 @@ fn publish_rejects_packets_larger_than_broker_maximum() {
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    let result = block_on(session.publish(Publication::new("data", b"x")));
+    let result = block_on(session.publish(Publication::bytes("data", b"x")));
     assert!(matches!(
         result,
         Err(PubError::Session(Error::Protocol(ProtocolError::Failed(

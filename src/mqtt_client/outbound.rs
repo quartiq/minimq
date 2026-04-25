@@ -74,6 +74,10 @@ impl<'a> Outbound<'a> {
         !self.retained.is_empty() || !self.pending_release.is_empty()
     }
 
+    pub(super) fn is_quiescent(&self) -> bool {
+        !self.has_pending_state()
+    }
+
     pub(super) fn retained_full(&self) -> bool {
         self.retained.is_full()
     }
@@ -426,7 +430,7 @@ mod tests {
         outbound.retain_packet(7, 0, 5).unwrap();
 
         let result = outbound
-            .encode_publish::<_, ()>(crate::packets::Pub::from(Publication::new("a", b"x")));
+            .encode_publish::<_, ()>(crate::packets::Pub::from(Publication::bytes("a", b"x")));
 
         assert!(matches!(
             result,
