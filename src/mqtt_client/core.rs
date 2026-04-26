@@ -809,7 +809,7 @@ impl<'buf> Core<'buf> {
             }
             OutboundStep::Retained(step) => match step.state {
                 SendState::Write { written } => {
-                    trace!(
+                    debug!(
                         "Driving retained packet write packet_id={} progress {}/{} control={} tx_used={} tx_capacity={} retained={} pending_release={}",
                         step.packet_id,
                         written,
@@ -842,7 +842,7 @@ impl<'buf> Core<'buf> {
                     );
                 }
                 SendState::Flush => {
-                    trace!("Flushing retained packet packet_id={}", step.packet_id);
+                    debug!("Flushing retained packet packet_id={}", step.packet_id);
                     if let Err(err) = Self::flush_step(connection, "Retained packet").await {
                         self.handle_disconnect();
                         return Err(err);
