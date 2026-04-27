@@ -3,8 +3,7 @@ use crate::packets::{Connect, DisconnectReq, Pub, Subscribe, Unsubscribe};
 use crate::ser::MAX_FIXED_HEADER_SIZE;
 use crate::types::{Auth, Properties, TopicFilter, Utf8String};
 use crate::{
-    Broker, ConfigBuilder, Error, Property, ProtocolError, PubError, QoS, Will, debug, info, trace,
-    warn,
+    ConfigBuilder, Error, Property, ProtocolError, PubError, QoS, Will, debug, info, trace, warn,
 };
 use core::num::NonZeroU16;
 use embassy_time::{Duration, Instant};
@@ -110,7 +109,6 @@ impl<'a> SessionData<'a> {
 
 #[derive(Debug)]
 pub(super) struct Core<'buf> {
-    broker: Broker<'buf>,
     client_id: String<64>,
     packet_reader: PacketReader<'buf>,
     session: SessionData<'buf>,
@@ -124,7 +122,6 @@ pub(super) struct Core<'buf> {
 impl<'buf> Core<'buf> {
     pub(super) fn new(config: ConfigBuilder<'buf>) -> Self {
         let (
-            broker,
             buffers,
             will,
             client_id,
@@ -136,7 +133,6 @@ impl<'buf> Core<'buf> {
         let (rx, tx) = buffers.into_parts();
 
         Self {
-            broker,
             client_id,
             packet_reader: PacketReader::new(rx),
             session: SessionData::new(tx),
@@ -146,10 +142,6 @@ impl<'buf> Core<'buf> {
             session_expiry_interval,
             downgrade_qos,
         }
-    }
-
-    pub(super) fn broker(&self) -> &Broker<'_> {
-        &self.broker
     }
 
     pub(super) fn is_connected(&self) -> bool {
@@ -201,8 +193,7 @@ impl<'buf> Core<'buf> {
         let clean_start = !self.session.session_present;
         let auth = self.auth;
         debug!(
-            "Sending CONNECT: broker={:?} client_id={} clean_start={} keepalive_s={} session_expiry={} receive_max={} rx_max_packet_size={}",
-            self.broker,
+            "Sending CONNECT: client_id={} clean_start={} keepalive_s={} session_expiry={} receive_max={} rx_max_packet_size={}",
             client_id,
             clean_start,
             keepalive,
@@ -447,7 +438,10 @@ impl<'buf> Core<'buf> {
             return Err(Error::Disconnected);
         }
 
-        let _ = self.maintain_step(connection, now).await?;
+        if let Err(err) = self.maintain_step(connection, now).await {
+            self.handle_disconnect();
+            return Err(err);
+        }
         if self.is_disconnected() {
             return Err(Error::Disconnected);
         }
@@ -460,10 +454,10 @@ impl<'buf> Core<'buf> {
         connection: &mut C,
         now: Instant,
     ) -> Result<super::Event<'_>, Error<C::Error>> {
-        match self
+        let packet = self
             .read_packet_mode(connection, now, ReadMode::Bounded)
-            .await?
-        {
+            .await?;
+        match packet {
             None => Ok(super::Event::Idle),
             Some(PacketOutcome::None) => Ok(super::Event::Idle),
             Some(PacketOutcome::Connected(_)) => {
@@ -979,14 +973,10 @@ mod tests {
     }
 
     fn core() -> Core<'static> {
-        let broker = "127.0.0.1:1883"
-            .parse::<std::net::SocketAddr>()
-            .unwrap()
-            .into();
         let rx = Box::leak(Box::new([0; 128]));
         let tx = Box::leak(Box::new([0; 1152]));
         Core::new(
-            ConfigBuilder::new(broker, Buffers::new(rx, tx))
+            ConfigBuilder::new(Buffers::new(rx, tx))
                 .client_id("test")
                 .unwrap()
                 .keepalive_interval(1),
@@ -994,13 +984,9 @@ mod tests {
     }
 
     fn core_with_rx<const RX: usize>(rx: &'static mut [u8; RX]) -> Core<'static> {
-        let broker = "127.0.0.1:1883"
-            .parse::<std::net::SocketAddr>()
-            .unwrap()
-            .into();
         let tx = Box::leak(Box::new([0; 1152]));
         Core::new(
-            ConfigBuilder::new(broker, Buffers::new(rx, tx))
+            ConfigBuilder::new(Buffers::new(rx, tx))
                 .client_id("test")
                 .unwrap()
                 .keepalive_interval(1),

@@ -2,8 +2,8 @@ mod support;
 
 use embedded_io_async::{ErrorKind, ErrorType, Read, ReadReady, Write, WriteReady};
 use minimq::{
-    Broker, Buffers, ConfigBuilder, ConnectEvent, Error, Event, ProtocolError, PubError,
-    Publication, QoS, Session, transport::Connector,
+    Buffers, ConfigBuilder, ConnectEvent, Error, Event, ProtocolError, PubError, Publication, QoS,
+    Session,
 };
 use std::{cell::RefCell, collections::VecDeque, future::poll_fn, rc::Rc, task::Poll};
 use support::{block_on, poll_once};
@@ -144,14 +144,8 @@ impl MockConnector {
     }
 }
 
-impl Connector for MockConnector {
-    type Error = ErrorKind;
-    type Connection<'a> = MockConnection;
-
-    async fn connect<'a>(
-        &'a self,
-        _broker: &Broker<'_>,
-    ) -> Result<Self::Connection<'a>, Self::Error> {
+impl MockConnector {
+    fn connect(&self) -> Result<MockConnection, ErrorKind> {
         self.connections
             .borrow_mut()
             .pop_front()
@@ -162,11 +156,7 @@ impl Connector for MockConnector {
 fn config() -> ConfigBuilder<'static> {
     let rx = Box::leak(Box::new([0; 128]));
     let tx = Box::leak(Box::new([0; 1152]));
-    let broker = "127.0.0.1:1883"
-        .parse::<std::net::SocketAddr>()
-        .unwrap()
-        .into();
-    ConfigBuilder::new(broker, Buffers::new(rx, tx))
+    ConfigBuilder::new(Buffers::new(rx, tx))
         .client_id("test")
         .unwrap()
 }
@@ -319,28 +309,28 @@ fn outbound_pubcomp(id: u16, reason: u8) -> [u8; 5] {
     [0x70, 0x03, (id >> 8) as u8, id as u8, reason]
 }
 
-fn connected_session<'a>(connector: &'a MockConnector) -> Session<'a, 'static, MockConnector> {
-    let mut session = Session::new(config(), connector);
-    expect_connected(&mut session);
+fn connected_session(connector: &MockConnector) -> Session<'static, MockConnection> {
+    let mut session = Session::new(config());
+    expect_connected(&mut session, connector);
     assert!(session.is_connected());
     session
 }
 
-fn expect_connected(session: &mut Session<'_, 'static, MockConnector>) {
+fn expect_connected(session: &mut Session<'static, MockConnection>, connector: &MockConnector) {
     assert!(matches!(
-        block_on(session.connect()).unwrap(),
+        block_on(session.connect(connector.connect().unwrap())).unwrap(),
         ConnectEvent::Connected
     ));
 }
 
-fn expect_reconnected(session: &mut Session<'_, 'static, MockConnector>) {
+fn expect_reconnected(session: &mut Session<'static, MockConnection>, connector: &MockConnector) {
     assert!(matches!(
-        block_on(session.connect()).unwrap(),
+        block_on(session.connect(connector.connect().unwrap())).unwrap(),
         ConnectEvent::Reconnected
     ));
 }
 
-fn expect_disconnected(session: &mut Session<'_, 'static, MockConnector>) {
+fn expect_disconnected(session: &mut Session<'static, MockConnection>) {
     for _ in 0..WAIT_STEPS {
         match block_on(session.poll()) {
             Err(Error::Disconnected) => return,
@@ -352,7 +342,7 @@ fn expect_disconnected(session: &mut Session<'_, 'static, MockConnector>) {
 }
 
 fn with_inbound<T>(
-    session: &mut Session<'_, 'static, MockConnector>,
+    session: &mut Session<'static, MockConnection>,
     f: impl FnOnce(minimq::InboundPublish<'_>) -> T,
 ) -> T {
     for _ in 0..WAIT_STEPS {
@@ -365,7 +355,7 @@ fn with_inbound<T>(
 }
 
 fn expect_poll_error(
-    session: &mut Session<'_, 'static, MockConnector>,
+    session: &mut Session<'static, MockConnection>,
     want: impl Fn(&Error<ErrorKind>) -> bool,
 ) {
     for _ in 0..WAIT_STEPS {
@@ -379,7 +369,7 @@ fn expect_poll_error(
 }
 
 fn wait_for_tx_frame(
-    session: &mut Session<'_, 'static, MockConnector>,
+    session: &mut Session<'static, MockConnection>,
     inspect: &MockConnection,
     expected: &[u8],
 ) {
@@ -408,7 +398,7 @@ fn wait_for_tx_frame(
     panic!("timed out waiting for tx frame");
 }
 
-fn fill_inflight_publish_slots(session: &mut Session<'_, 'static, MockConnector>) -> usize {
+fn fill_inflight_publish_slots(session: &mut Session<'static, MockConnection>) -> usize {
     let mut count = 0;
     loop {
         match block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))) {
@@ -426,9 +416,9 @@ fn fragmented_connack_still_establishes_session() {
     let mut connection = MockConnection::default();
     connection.push_rx_fragmented(&connack());
     let connector = MockConnector::new(connection);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     assert!(session.is_connected());
 }
 
@@ -454,7 +444,7 @@ fn publish_requires_connected_session() {
     let mut connection = MockConnection::default();
     connection.push_rx(&connack());
     let connector = MockConnector::new(connection);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
     let result =
         block_on(session.publish(Publication::bytes("data", b"payload").qos(QoS::AtLeastOnce)));
@@ -463,7 +453,7 @@ fn publish_requires_connected_session() {
         Err(PubError::Session(Error::Disconnected))
     ));
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     block_on(session.publish(Publication::bytes("data", b"payload").qos(QoS::AtLeastOnce)))
         .unwrap();
 }
@@ -599,12 +589,12 @@ fn broker_disconnect_marks_inflight_for_replay_on_resume() {
         second
     };
     let connector = MockConnector::with_connections([first, second]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
     expect_disconnected(&mut session);
-    expect_reconnected(&mut session);
+    expect_reconnected(&mut session, &connector);
 }
 
 #[test]
@@ -617,11 +607,11 @@ fn broker_disconnect_without_session_resume_reports_connected() {
     second.push_rx(&connack());
 
     let connector = MockConnector::with_connections([first, second]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     expect_disconnected(&mut session);
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
 }
 
 #[test]
@@ -631,16 +621,16 @@ fn failed_connack_disconnects_session_and_allows_reconnect() {
     let mut second = MockConnection::default();
     second.push_rx(&connack());
     let connector = MockConnector::with_connections([first, second]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
     assert!(matches!(
-        block_on(session.connect()),
+        block_on(session.connect(connector.connect().unwrap())),
         Err(Error::Protocol(ProtocolError::Failed(
             minimq::ReasonCode::NotAuthorized
         )))
     ));
     assert!(!session.is_connected());
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
 }
 
 #[test]
@@ -649,14 +639,14 @@ fn timed_out_connack_disconnects_session_and_allows_reconnect() {
     let mut second = MockConnection::default();
     second.push_rx(&connack());
     let connector = MockConnector::with_connections([first, second]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
     assert!(matches!(
-        block_on(session.connect()),
+        block_on(session.connect(connector.connect().unwrap())),
         Err(Error::Transport(ErrorKind::TimedOut))
     ));
     assert!(!session.is_connected());
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
 }
 
 #[test]
@@ -668,14 +658,14 @@ fn malformed_inbound_packet_disconnects_session_and_allows_reconnect() {
     let mut second = MockConnection::default();
     second.push_rx(&connack());
     let connector = MockConnector::with_connections([first, second]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     expect_poll_error(&mut session, |err| {
         matches!(err, Error::Protocol(ProtocolError::MalformedPacket))
     });
     assert!(!session.is_connected());
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
 }
 
 #[test]
@@ -719,12 +709,12 @@ fn subscribe_is_replayed_after_disconnect_until_suback() {
     second.push_rx(&suback(1, 0x01));
 
     let connector = MockConnector::with_connections([first, second]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     block_on(session.subscribe(&[minimq::types::TopicFilter::new("data")], &[])).unwrap();
     expect_disconnected(&mut session);
-    expect_reconnected(&mut session);
+    expect_reconnected(&mut session, &connector);
     wait_for_tx_frame(
         &mut session,
         &inspect,
@@ -837,13 +827,13 @@ fn resumed_session_suppresses_duplicate_inbound_qos2_publish() {
     second.push_rx(&pubrel(9));
 
     let connector = MockConnector::with_connections([first, second]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     with_inbound(&mut session, |message| assert_eq!(message.topic(), "data"));
 
     expect_disconnected(&mut session);
-    expect_reconnected(&mut session);
+    expect_reconnected(&mut session, &connector);
     wait_for_tx_frame(&mut session, &second_inspect, &outbound_pubcomp(9, 0x00));
 
     let tx = second_inspect.tx();
@@ -872,13 +862,13 @@ fn fresh_session_clears_pending_inbound_qos2_state() {
     second.push_rx(&pubrel(9));
 
     let connector = MockConnector::with_connections([first, second]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     with_inbound(&mut session, |message| assert_eq!(message.topic(), "data"));
 
     expect_disconnected(&mut session);
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     wait_for_tx_frame(&mut session, &second_inspect, &outbound_pubcomp(9, 0x92));
 
     assert!(
@@ -965,9 +955,9 @@ fn session_reconnects_after_write_error() {
     second.push_rx(&connack_session_present());
 
     let connector = MockConnector::with_connections([first, second]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     let error = block_on(session.publish(Publication::bytes("reply", b"ok").qos(QoS::AtLeastOnce)))
         .unwrap_err();
     assert!(matches!(
@@ -975,7 +965,7 @@ fn session_reconnects_after_write_error() {
         PubError::Session(Error::Transport(ErrorKind::ConnectionReset))
     ));
 
-    expect_reconnected(&mut session);
+    expect_reconnected(&mut session, &connector);
     block_on(session.publish(Publication::bytes("reply", b"ok").qos(QoS::AtLeastOnce))).unwrap();
 }
 
@@ -1041,10 +1031,10 @@ fn poll_requires_connected_session() {
     let mut connection = MockConnection::default();
     connection.push_rx(&connack());
     let connector = MockConnector::new(connection);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
     assert!(matches!(block_on(session.poll()), Err(Error::Disconnected)));
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
 }
 
 #[test]
@@ -1075,18 +1065,18 @@ fn session_reconnects_after_replay_write_error() {
     third.push_rx(&connack_session_present());
 
     let connector = MockConnector::with_connections([first, second, third]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
 
     expect_disconnected(&mut session);
-    expect_reconnected(&mut session);
+    expect_reconnected(&mut session, &connector);
     assert!(matches!(
         block_on(session.poll()),
         Err(Error::Transport(ErrorKind::ConnectionReset))
     ));
-    expect_reconnected(&mut session);
+    expect_reconnected(&mut session, &connector);
 }
 
 #[test]
@@ -1106,15 +1096,15 @@ fn qos1_publish_replays_across_multiple_resumed_reconnects() {
     third.push_rx(&puback(1));
 
     let connector = MockConnector::with_connections([first, second, third]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
 
     expect_disconnected(&mut session);
-    expect_reconnected(&mut session);
+    expect_reconnected(&mut session, &connector);
     expect_disconnected(&mut session);
-    expect_reconnected(&mut session);
+    expect_reconnected(&mut session, &connector);
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
 
     assert!(
@@ -1149,16 +1139,16 @@ fn qos2_pubrel_replays_across_multiple_resumed_reconnects() {
     third.push_rx(&pubcomp(1));
 
     let connector = MockConnector::with_connections([first, second, third]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
 
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
     expect_disconnected(&mut session);
-    expect_reconnected(&mut session);
+    expect_reconnected(&mut session, &connector);
     expect_disconnected(&mut session);
-    expect_reconnected(&mut session);
+    expect_reconnected(&mut session, &connector);
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
 
     assert!(
@@ -1186,13 +1176,13 @@ fn fresh_session_after_reconnect_drops_stale_replay_state() {
     second.push_rx(&connack());
 
     let connector = MockConnector::with_connections([first, second]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
 
     expect_disconnected(&mut session);
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
 
     assert!(
@@ -1215,13 +1205,13 @@ fn stale_puback_after_resumed_replay_is_ignored() {
     second.push_rx(&puback(1));
 
     let connector = MockConnector::with_connections([first, second]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
 
     expect_disconnected(&mut session);
-    expect_reconnected(&mut session);
+    expect_reconnected(&mut session, &connector);
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
 }
@@ -1232,26 +1222,18 @@ fn connect_uses_configured_session_expiry_interval() {
     let inspect = connection.clone();
     connection.push_rx(&connack());
     let connector = MockConnector::new(connection);
-    let broker = "127.0.0.1:1883"
-        .parse::<std::net::SocketAddr>()
-        .unwrap()
-        .into();
     let mut session = Session::new(
-        ConfigBuilder::new(
-            broker,
-            Buffers::new(
-                Box::leak(Box::new([0; 128])),
-                Box::leak(Box::new([0; 1152])),
-            ),
-        )
+        ConfigBuilder::new(Buffers::new(
+            Box::leak(Box::new([0; 128])),
+            Box::leak(Box::new([0; 1152])),
+        ))
         .client_id("test")
         .unwrap()
         .session_expiry_interval(7),
-        &connector,
     );
 
     assert!(matches!(
-        block_on(session.connect()).unwrap(),
+        block_on(session.connect(connector.connect().unwrap())).unwrap(),
         ConnectEvent::Connected
     ));
     assert!(
@@ -1300,7 +1282,7 @@ fn oversized_required_ack_disconnects_session() {
             Error::Protocol(ProtocolError::Failed(minimq::ReasonCode::PacketTooLarge))
         )
     });
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
 }
 
 #[test]
@@ -1331,12 +1313,12 @@ fn unsubscribe_replays_until_unsuback() {
     second.push_rx(&unsuback(1, 0x00));
 
     let connector = MockConnector::with_connections([first, second]);
-    let mut session = Session::new(config(), &connector);
+    let mut session = Session::new(config());
 
-    expect_connected(&mut session);
+    expect_connected(&mut session, &connector);
     block_on(session.unsubscribe(&["data"], &[])).unwrap();
     expect_disconnected(&mut session);
-    expect_reconnected(&mut session);
+    expect_reconnected(&mut session, &connector);
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
 
     assert_eq!(

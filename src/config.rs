@@ -1,4 +1,4 @@
-use crate::{Broker, ProtocolError, Will, types::Auth};
+use crate::{ProtocolError, Will, types::Auth};
 use embassy_time::Duration;
 use heapless::String;
 
@@ -78,7 +78,6 @@ pub enum SetupError {
 /// The builder only covers application-facing settings. Runtime MQTT state lives in [`Session`](crate::Session).
 #[derive(Debug)]
 pub struct ConfigBuilder<'a> {
-    broker: Broker<'a>,
     buffers: Buffers<'a>,
     will: Option<Will<'a>>,
     client_id: String<64>,
@@ -94,9 +93,8 @@ impl<'a> ConfigBuilder<'a> {
     /// The default session expiry is `u32::MAX`, which requests a long-lived persistent session.
     /// Call [`session_expiry_interval`](Self::session_expiry_interval) to choose a shorter-lived
     /// session or `0` for a clean session that expires on disconnect.
-    pub fn new(broker: Broker<'a>, buffers: Buffers<'a>) -> Self {
+    pub fn new(buffers: Buffers<'a>) -> Self {
         Self {
-            broker,
             buffers,
             will: None,
             client_id: String::new(),
@@ -108,12 +106,8 @@ impl<'a> ConfigBuilder<'a> {
     }
 
     /// Construct a session configuration by splitting one backing buffer into RX and TX regions.
-    pub fn from_buffer(
-        broker: Broker<'a>,
-        buffer: &'a mut [u8],
-        rx_size: usize,
-    ) -> Result<Self, SetupError> {
-        Ok(Self::new(broker, Buffers::split(buffer, rx_size)?))
+    pub fn from_buffer(buffer: &'a mut [u8], rx_size: usize) -> Result<Self, SetupError> {
+        Ok(Self::new(Buffers::split(buffer, rx_size)?))
     }
 
     /// Attach MQTT username/password authentication.
@@ -183,7 +177,6 @@ impl<'a> ConfigBuilder<'a> {
     pub(crate) fn into_parts(
         self,
     ) -> (
-        Broker<'a>,
         Buffers<'a>,
         Option<Will<'a>>,
         String<64>,
@@ -193,7 +186,6 @@ impl<'a> ConfigBuilder<'a> {
         Option<Auth<'a>>,
     ) {
         (
-            self.broker,
             self.buffers,
             self.will,
             self.client_id,
@@ -208,7 +200,6 @@ impl<'a> ConfigBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::net::SocketAddr;
 
     #[test]
     fn split_buffer() {
@@ -231,16 +222,11 @@ mod tests {
     fn builder() {
         let mut rx = [0; 10];
         let mut tx = [0; 20];
-        let broker: Broker<'_> = "127.0.0.1:1883".parse::<SocketAddr>().unwrap().into();
-        let (broker2, buffers, will, client_id, _, _, _, auth) = ConfigBuilder::new(
-            broker,
-            Buffers {
-                rx: &mut rx,
-                tx: &mut tx,
-            },
-        )
+        let (buffers, will, client_id, _, _, _, auth) = ConfigBuilder::new(Buffers {
+            rx: &mut rx,
+            tx: &mut tx,
+        })
         .into_parts();
-        assert_eq!(broker2, broker);
         assert_eq!(buffers.rx.len(), 10);
         assert_eq!(buffers.tx.len(), 20);
         assert!(will.is_none());
@@ -252,15 +238,11 @@ mod tests {
     fn will_does_not_consume_tx_buffer() {
         let mut rx = [0; 10];
         let mut tx = [0; 20];
-        let broker: Broker<'_> = "127.0.0.1:1883".parse::<SocketAddr>().unwrap().into();
         let will = Will::new("topic", b"x", &[]).unwrap();
-        let (_, buffers, _, _, _, _, _, _) = ConfigBuilder::new(
-            broker,
-            Buffers {
-                rx: &mut rx,
-                tx: &mut tx,
-            },
-        )
+        let (buffers, _, _, _, _, _, _) = ConfigBuilder::new(Buffers {
+            rx: &mut rx,
+            tx: &mut tx,
+        })
         .will(will)
         .unwrap()
         .into_parts();

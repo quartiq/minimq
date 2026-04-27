@@ -12,7 +12,8 @@ use crate::{
 };
 use embedded_io_async::{ErrorType, Read, ReadReady, Write, WriteReady};
 
-pub(super) trait Io: Read + Write + ReadReady + WriteReady + ErrorType {}
+/// Transport trait required by [`Session`](crate::Session).
+pub trait Io: Read + Write + ReadReady + WriteReady + ErrorType {}
 
 impl<T> Io for T where T: Read + Write + ReadReady + WriteReady + ErrorType {}
 

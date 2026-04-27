@@ -1,10 +1,9 @@
 use core::future::poll_fn;
 use core::pin::Pin;
 use core::task::Poll;
-use embedded_io_async::{Error as _, ErrorKind, ErrorType, Read, ReadReady, Write, WriteReady};
+use embedded_io_async::{ErrorType, Read, ReadReady, Write, WriteReady};
 use minimq::{
-    Broker, Buffers, ConfigBuilder, ConnectEvent, Error, Event, Publication, QoS, Session,
-    transport::Connector,
+    Buffers, ConfigBuilder, ConnectEvent, Error, Event, Publication, QoS, Session,
     types::{SubscriptionOptions, TopicFilter},
 };
 use std::{
@@ -47,10 +46,10 @@ fn unique_topic() -> String {
     format!("minimq/test/{nanos}")
 }
 
-fn config<'a>(broker: Broker<'a>, client_id: &str) -> ConfigBuilder<'a> {
+fn config(client_id: &str) -> ConfigBuilder<'static> {
     let rx = Box::leak(Box::new([0; 1024]));
     let tx = Box::leak(Box::new([0; 2048]));
-    ConfigBuilder::new(broker, Buffers::new(rx, tx))
+    ConfigBuilder::new(Buffers::new(rx, tx))
         .client_id(client_id)
         .unwrap()
 }
@@ -115,41 +114,25 @@ impl WriteReady for TokioConnection {
     }
 }
 
-#[derive(Copy, Clone)]
-struct TokioConnector;
-
-impl Connector for TokioConnector {
-    type Error = std::io::Error;
-    type Connection<'a> = TokioConnection;
-
-    async fn connect<'a>(
-        &'a self,
-        broker: &Broker<'_>,
-    ) -> Result<Self::Connection<'a>, Self::Error> {
-        let addr = match broker {
-            Broker::SocketAddr(addr) => *addr,
-            Broker::Hostname { host, port } => lookup_host((*host, *port))
-                .await?
-                .next()
-                .ok_or(std::io::ErrorKind::NotFound)?,
-        };
-        TcpStream::connect(addr).await.map(TokioConnection)
-    }
+async fn connect_addr(addr: SocketAddr) -> std::io::Result<TokioConnection> {
+    TcpStream::connect(addr).await.map(TokioConnection)
 }
 
-async fn poll_until_ready<'a, C>(
-    session: &mut Session<'_, 'a, C>,
+async fn connect_host(host: &str, port: u16) -> std::io::Result<TokioConnection> {
+    let addr = lookup_host((host, port))
+        .await?
+        .next()
+        .ok_or(std::io::ErrorKind::NotFound)?;
+    connect_addr(addr).await
+}
+
+async fn poll_until_ready(
+    session: &mut Session<'_, TokioConnection>,
     want_inbound: bool,
-) -> Option<(String, Vec<u8>, QoS)>
-where
-    C: Connector,
-    C::Error: embedded_io_async::Error + core::fmt::Debug,
-{
+) -> Option<(String, Vec<u8>, QoS)> {
     for _ in 0..200 {
         match session.poll().await {
-            Ok(Event::Idle) if !want_inbound => {
-                return None;
-            }
+            Ok(Event::Idle) if !want_inbound => return None,
             Ok(Event::Inbound(message)) if want_inbound => {
                 return Some((
                     message.topic().to_string(),
@@ -159,7 +142,7 @@ where
             }
             Ok(_) => {}
             Err(Error::Transport(err)) => match err.kind() {
-                ErrorKind::TimedOut | ErrorKind::Interrupted => {}
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted => {}
                 _ => panic!("session poll failed: {err:?}"),
             },
             Err(err) => panic!("session poll failed: {err:?}"),
@@ -168,17 +151,16 @@ where
     panic!("timed out waiting for broker activity");
 }
 
-async fn assert_roundtrip<'a, C>(
-    subscriber: &mut Session<'_, 'a, C>,
-    publisher: &mut Session<'_, 'a, C>,
+async fn assert_roundtrip(
+    subscriber: &mut Session<'_, TokioConnection>,
+    publisher: &mut Session<'_, TokioConnection>,
+    subscriber_io: TokioConnection,
+    publisher_io: TokioConnection,
     topic: &str,
     payload: &[u8],
-) where
-    C: Connector,
-    C::Error: embedded_io_async::Error + core::fmt::Debug,
-{
+) {
     assert!(matches!(
-        subscriber.connect().await.unwrap(),
+        subscriber.connect(subscriber_io).await.unwrap(),
         ConnectEvent::Connected | ConnectEvent::Reconnected
     ));
     let topics = [TopicFilter::new(topic)
@@ -187,7 +169,7 @@ async fn assert_roundtrip<'a, C>(
     let _ = poll_until_ready(subscriber, false).await;
 
     assert!(matches!(
-        publisher.connect().await.unwrap(),
+        publisher.connect(publisher_io).await.unwrap(),
         ConnectEvent::Connected | ConnectEvent::Reconnected
     ));
     publisher
@@ -203,20 +185,21 @@ async fn assert_roundtrip<'a, C>(
 }
 
 #[tokio::test]
-async fn real_broker_qos1_roundtrip_over_tcp_connector() {
+async fn real_broker_qos1_roundtrip_over_tcp() {
     let Some(addr) = socket_broker() else {
         eprintln!("skipping real broker test; set {BROKER_ADDR_ENV}=host:port");
         return;
     };
 
-    let connector = TokioConnector;
-    let mut subscriber = Session::new(config(addr.into(), &unique_client_id("sub")), &connector);
-    let mut publisher = Session::new(config(addr.into(), &unique_client_id("pub")), &connector);
+    let mut subscriber = Session::new(config(&unique_client_id("sub")));
+    let mut publisher = Session::new(config(&unique_client_id("pub")));
     let topic = unique_topic();
 
     assert_roundtrip(
         &mut subscriber,
         &mut publisher,
+        connect_addr(addr).await.unwrap(),
+        connect_addr(addr).await.unwrap(),
         &topic,
         b"hello from minimq",
     )
@@ -224,20 +207,24 @@ async fn real_broker_qos1_roundtrip_over_tcp_connector() {
 }
 
 #[tokio::test]
-async fn real_broker_qos1_roundtrip_over_dns_connector() {
+async fn real_broker_qos1_roundtrip_over_dns() {
     let Some(host) = hostname_broker() else {
         eprintln!("skipping hostname broker test; set {BROKER_HOST_ENV}=hostname");
         return;
     };
 
-    let broker = Broker::hostname(
-        &host,
-        socket_broker().map(|addr| addr.port()).unwrap_or(1883),
-    );
-    let connector = TokioConnector;
-    let mut subscriber = Session::new(config(broker, &unique_client_id("dns-sub")), &connector);
-    let mut publisher = Session::new(config(broker, &unique_client_id("dns-pub")), &connector);
+    let port = socket_broker().map(|addr| addr.port()).unwrap_or(1883);
+    let mut subscriber = Session::new(config(&unique_client_id("dns-sub")));
+    let mut publisher = Session::new(config(&unique_client_id("dns-pub")));
     let topic = unique_topic();
 
-    assert_roundtrip(&mut subscriber, &mut publisher, &topic, b"hello over dns").await;
+    assert_roundtrip(
+        &mut subscriber,
+        &mut publisher,
+        connect_host(&host, port).await.unwrap(),
+        connect_host(&host, port).await.unwrap(),
+        &topic,
+        b"hello over dns",
+    )
+    .await;
 }
