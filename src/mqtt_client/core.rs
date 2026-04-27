@@ -27,6 +27,13 @@ enum ReadMode {
     Blocking,
 }
 
+#[derive(Copy, Clone)]
+enum FlushedPacket {
+    Control(ControlAction),
+    Release(u16),
+    Retained(u16),
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(super) enum ConnectionState {
     Disconnected,
@@ -70,8 +77,8 @@ impl RuntimeState {
     }
 
     pub(super) fn note_outbound_activity(&mut self, now: Instant) {
-        self.next_ping = (self.keepalive_interval.as_secs() != 0)
-            .then_some(now + self.keepalive_interval)
+        self.next_ping =
+            (self.keepalive_interval.as_secs() != 0).then_some(now + self.keepalive_interval)
     }
 }
 
@@ -389,10 +396,9 @@ impl<'buf> Core<'buf> {
             self.handle_disconnect();
             return Err(PubError::Session(err));
         }
-        if let Err(err) = connection.flush().await {
-            warn!("QoS0 PUBLISH flush failed: {:?}", err.kind());
+        if let Err(err) = Self::flush_step(connection, "QoS0 PUBLISH").await {
             self.handle_disconnect();
-            return Err(PubError::Session(Error::Transport(err)));
+            return Err(PubError::Session(err));
         }
         self.runtime.note_outbound_activity(Instant::now());
 
@@ -706,6 +712,25 @@ impl<'buf> Core<'buf> {
         Ok(())
     }
 
+    fn disconnect_on_error<T, E>(&mut self, result: Result<T, Error<E>>) -> Result<T, Error<E>> {
+        if result.is_err() {
+            self.handle_disconnect();
+        }
+        result
+    }
+
+    fn complete_flush(&mut self, packet: FlushedPacket, now: Instant) {
+        if matches!(packet, FlushedPacket::Control(ControlAction::PingReq)) {
+            self.runtime.ping_timeout = Some(now + Duration::from_millis(PING_TIMEOUT_MS));
+        }
+        self.runtime.note_outbound_activity(now);
+        match packet {
+            FlushedPacket::Control(action) => self.session.outbound.flush_control(action),
+            FlushedPacket::Release(packet_id) => self.session.outbound.flush_release(packet_id),
+            FlushedPacket::Retained(packet_id) => self.session.outbound.flush_retained(packet_id),
+        }
+    }
+
     async fn perform_outbound_step<C: Io>(
         &mut self,
         connection: &mut C,
@@ -729,19 +754,10 @@ impl<'buf> Core<'buf> {
                         step.action,
                         self.runtime.maximum_packet_size,
                     )?;
-                    let count = match Self::write_step_bytes(
-                        connection,
-                        "Control packet",
-                        &packet[written..],
-                    )
-                    .await
-                    {
-                        Ok(count) => count,
-                        Err(err) => {
-                            self.handle_disconnect();
-                            return Err(err);
-                        }
-                    };
+                    let count = self.disconnect_on_error(
+                        Self::write_step_bytes(connection, "Control packet", &packet[written..])
+                            .await,
+                    )?;
                     self.session.outbound.set_control_written(
                         step.action,
                         written + count,
@@ -750,64 +766,43 @@ impl<'buf> Core<'buf> {
                 }
                 SendState::Flush => {
                     trace!("Flushing control packet {:?}", step.action);
-                    if let Err(err) = Self::flush_step(connection, "Control packet").await {
-                        self.handle_disconnect();
-                        return Err(err);
-                    }
-                    if matches!(step.action, ControlAction::PingReq) {
-                        self.runtime.ping_timeout =
-                            Some(now + Duration::from_millis(PING_TIMEOUT_MS));
-                    }
-                    self.runtime.note_outbound_activity(now);
-                    self.session.outbound.flush_control(step.action);
+                    self.disconnect_on_error(Self::flush_step(connection, "Control packet").await)?;
+                    self.complete_flush(FlushedPacket::Control(step.action), now);
                 }
                 SendState::Sent => {}
             },
-            OutboundStep::Release(step) => {
-                match step.state {
-                    SendState::Write { written } => {
-                        trace!(
-                            "Driving PUBREL write packet_id={} progress_from={} control={} retained={} pending_release={}",
-                            step.packet_id,
-                            written,
-                            self.session.outbound.pending_control_len(),
-                            self.session.outbound.retained_len(),
-                            self.session.outbound.pending_release_len()
-                        );
-                        let packet = serialize_pubrel(
-                            &mut small_buf,
-                            step.packet_id,
-                            step.reason,
-                            self.runtime.maximum_packet_size,
-                        )?;
-                        let count =
-                            match Self::write_step_bytes(connection, "PUBREL", &packet[written..])
-                                .await
-                            {
-                                Ok(count) => count,
-                                Err(err) => {
-                                    self.handle_disconnect();
-                                    return Err(err);
-                                }
-                            };
-                        self.session.outbound.set_release_written(
-                            step.packet_id,
-                            written + count,
-                            packet.len(),
-                        );
-                    }
-                    SendState::Flush => {
-                        trace!("Flushing PUBREL packet packet_id={}", step.packet_id);
-                        if let Err(err) = Self::flush_step(connection, "PUBREL").await {
-                            self.handle_disconnect();
-                            return Err(err);
-                        }
-                        self.session.outbound.flush_release(step.packet_id);
-                        self.runtime.note_outbound_activity(now);
-                    }
-                    SendState::Sent => {}
+            OutboundStep::Release(step) => match step.state {
+                SendState::Write { written } => {
+                    trace!(
+                        "Driving PUBREL write packet_id={} progress_from={} control={} retained={} pending_release={}",
+                        step.packet_id,
+                        written,
+                        self.session.outbound.pending_control_len(),
+                        self.session.outbound.retained_len(),
+                        self.session.outbound.pending_release_len()
+                    );
+                    let packet = serialize_pubrel(
+                        &mut small_buf,
+                        step.packet_id,
+                        step.reason,
+                        self.runtime.maximum_packet_size,
+                    )?;
+                    let count = self.disconnect_on_error(
+                        Self::write_step_bytes(connection, "PUBREL", &packet[written..]).await,
+                    )?;
+                    self.session.outbound.set_release_written(
+                        step.packet_id,
+                        written + count,
+                        packet.len(),
+                    );
                 }
-            }
+                SendState::Flush => {
+                    trace!("Flushing PUBREL packet packet_id={}", step.packet_id);
+                    self.disconnect_on_error(Self::flush_step(connection, "PUBREL").await)?;
+                    self.complete_flush(FlushedPacket::Release(step.packet_id), now);
+                }
+                SendState::Sent => {}
+            },
             OutboundStep::Retained(step) => match step.state {
                 SendState::Write { written } => {
                     debug!(
@@ -822,20 +817,11 @@ impl<'buf> Core<'buf> {
                         self.session.outbound.pending_release_len()
                     );
                     Self::require_packet_size(self.runtime.maximum_packet_size, step.len)?;
-                    let packet = self.session.outbound.retained_packet(step.offset, step.len);
-                    let count = match Self::write_step_bytes(
-                        connection,
-                        "Retained packet",
-                        &packet[written..],
-                    )
-                    .await
-                    {
-                        Ok(count) => count,
-                        Err(err) => {
-                            self.handle_disconnect();
-                            return Err(err);
-                        }
-                    };
+                    let count = self.disconnect_on_error({
+                        let packet = self.session.outbound.retained_packet(step.offset, step.len);
+                        Self::write_step_bytes(connection, "Retained packet", &packet[written..])
+                            .await
+                    })?;
                     self.session.outbound.set_retained_written(
                         step.packet_id,
                         written + count,
@@ -844,12 +830,10 @@ impl<'buf> Core<'buf> {
                 }
                 SendState::Flush => {
                     debug!("Flushing retained packet packet_id={}", step.packet_id);
-                    if let Err(err) = Self::flush_step(connection, "Retained packet").await {
-                        self.handle_disconnect();
-                        return Err(err);
-                    }
-                    self.session.outbound.flush_retained(step.packet_id);
-                    self.runtime.note_outbound_activity(now);
+                    self.disconnect_on_error(
+                        Self::flush_step(connection, "Retained packet").await,
+                    )?;
+                    self.complete_flush(FlushedPacket::Retained(step.packet_id), now);
                 }
                 SendState::Sent => {}
             },
