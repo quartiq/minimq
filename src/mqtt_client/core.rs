@@ -111,7 +111,7 @@ impl RuntimeState {
     }
 
     fn keepalive_send_interval(&self) -> Option<Duration> {
-        let keepalive_ms = self.keepalive_interval.as_millis() as u64;
+        let keepalive_ms = self.keepalive_interval.as_millis();
         if keepalive_ms == 0 {
             return None;
         }
@@ -232,7 +232,7 @@ impl<'buf> Core<'buf> {
             Property::ReceiveMaximum(self.session.pending_server_packet_ids.capacity() as u16),
         ];
         let will = self.will.clone();
-        let keepalive = self.keepalive_secs();
+        let keepalive = self.runtime.keepalive_interval.as_secs() as u16;
         let clean_start = !self.session.session_present;
         let auth = self.auth;
         debug!(
@@ -870,10 +870,6 @@ impl<'buf> Core<'buf> {
         self.session.outbound.arm_replay();
         self.runtime.disconnect();
         self.packet_reader.reset();
-    }
-
-    fn keepalive_secs(&self) -> u16 {
-        self.runtime.keepalive_interval.as_secs() as u16
     }
 
     fn require_retained_slot<E>(&self) -> Result<(), Error<E>> {
