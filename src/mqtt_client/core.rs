@@ -206,20 +206,12 @@ impl<'buf> Core<'buf> {
         self.runtime.state == ConnectionState::Active && self.session.outbound.is_quiescent()
     }
 
-    pub(super) fn connect_event(&self) -> super::ConnectEvent {
-        if self.runtime.session_resumed {
-            super::ConnectEvent::Reconnected
-        } else {
-            super::ConnectEvent::Connected
-        }
-    }
-
     pub(super) async fn connect<C: Io>(
         &mut self,
         connection: &mut C,
     ) -> Result<super::ConnectEvent, Error<C::Error>> {
         if self.runtime.state == ConnectionState::Active {
-            return Ok(self.connect_event());
+            return Err(Error::NotReady);
         }
 
         let client_id = self.client_id.clone();
@@ -628,7 +620,7 @@ impl<'buf> Core<'buf> {
                 return Err(err.into());
             }
         };
-        let result = {
+        let (result, disconnect) = {
             let mut ctx = PacketContext {
                 client_id: &mut self.client_id,
                 session: &mut self.session,
@@ -636,13 +628,13 @@ impl<'buf> Core<'buf> {
             };
             let result = handle_packet(&mut ctx, packet, now);
             let disconnect = Self::should_disconnect_after_packet(ctx.runtime.state, &result);
-            if disconnect {
-                warn!("Disconnecting session after packet handling error");
-                ctx.session.outbound.arm_replay();
-                ctx.runtime.disconnect();
-            }
-            result
+            (result, disconnect)
         };
+        if disconnect {
+            warn!("Disconnecting session after packet handling error");
+            self.session.outbound.arm_replay();
+            self.runtime.disconnect();
+        }
         match result {
             Ok(outcome) => {
                 if self.runtime.state == ConnectionState::Disconnected {

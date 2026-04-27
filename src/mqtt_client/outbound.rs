@@ -453,7 +453,20 @@ pub(super) fn serialize_control_packet<E>(
     packet: ControlAction,
     maximum_packet_size: Option<u32>,
 ) -> Result<&[u8], Error<E>> {
-    let bytes = match packet {
+    let bytes = encode_control_packet(buffer, packet).map_err(Error::Protocol)?;
+    if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
+        return Err(Error::Protocol(ProtocolError::Failed(
+            ReasonCode::PacketTooLarge,
+        )));
+    }
+    Ok(bytes)
+}
+
+fn encode_control_packet(
+    buffer: &mut [u8; CONTROL_PACKET_LEN],
+    packet: ControlAction,
+) -> Result<&[u8], ProtocolError> {
+    match packet {
         ControlAction::PubAck { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
             buffer,
             &PubAck {
@@ -477,13 +490,7 @@ pub(super) fn serialize_control_packet<E>(
         ),
         ControlAction::PingReq => crate::ser::MqttSerializer::to_buffer(buffer, &PingReq),
     }
-    .map_err(|err| Error::Protocol(err.into()))?;
-    if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
-        return Err(Error::Protocol(ProtocolError::Failed(
-            ReasonCode::PacketTooLarge,
-        )));
-    }
-    Ok(bytes)
+    .map_err(ProtocolError::from)
 }
 
 fn require_packet_size(maximum_packet_size: Option<u32>, len: usize) -> Result<(), ProtocolError> {
@@ -498,32 +505,7 @@ pub(super) fn check_control_packet_size(
     action: ControlAction,
 ) -> Result<(), ProtocolError> {
     let mut buffer = [0u8; CONTROL_PACKET_LEN];
-    let len = match action {
-        ControlAction::PubAck { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
-            &mut buffer,
-            &PubAck {
-                packet_identifier: packet_id,
-                reason: reason.into(),
-            },
-        ),
-        ControlAction::PubRec { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
-            &mut buffer,
-            &PubRec {
-                packet_id,
-                reason: reason.into(),
-            },
-        ),
-        ControlAction::PubComp { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
-            &mut buffer,
-            &PubComp {
-                packet_id,
-                reason: reason.into(),
-            },
-        ),
-        ControlAction::PingReq => crate::ser::MqttSerializer::to_buffer(&mut buffer, &PingReq),
-    }
-    .map_err(ProtocolError::from)?
-    .len();
+    let len = encode_control_packet(&mut buffer, action)?.len();
     require_packet_size(maximum_packet_size, len)
 }
 
@@ -533,15 +515,7 @@ pub(super) fn check_pubrel_size(
     reason: ReasonCode,
 ) -> Result<(), ProtocolError> {
     let mut buffer = [0u8; CONTROL_PACKET_LEN];
-    let len = crate::ser::MqttSerializer::to_buffer(
-        &mut buffer,
-        &PubRel {
-            packet_id,
-            reason: reason.into(),
-        },
-    )
-    .map_err(ProtocolError::from)?
-    .len();
+    let len = encode_pubrel(&mut buffer, packet_id, reason)?.len();
     require_packet_size(maximum_packet_size, len)
 }
 
@@ -551,20 +525,28 @@ pub(super) fn serialize_pubrel<E>(
     reason: ReasonCode,
     maximum_packet_size: Option<u32>,
 ) -> Result<&[u8], Error<E>> {
-    let bytes = crate::ser::MqttSerializer::to_buffer(
-        buffer,
-        &PubRel {
-            packet_id,
-            reason: reason.into(),
-        },
-    )
-    .map_err(|err| Error::Protocol(err.into()))?;
+    let bytes = encode_pubrel(buffer, packet_id, reason).map_err(Error::Protocol)?;
     if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
         return Err(Error::Protocol(ProtocolError::Failed(
             ReasonCode::PacketTooLarge,
         )));
     }
     Ok(bytes)
+}
+
+fn encode_pubrel(
+    buffer: &mut [u8; CONTROL_PACKET_LEN],
+    packet_id: u16,
+    reason: ReasonCode,
+) -> Result<&[u8], ProtocolError> {
+    crate::ser::MqttSerializer::to_buffer(
+        buffer,
+        &PubRel {
+            packet_id,
+            reason: reason.into(),
+        },
+    )
+    .map_err(ProtocolError::from)
 }
 
 pub(super) async fn write_packet<C: Io, T>(
