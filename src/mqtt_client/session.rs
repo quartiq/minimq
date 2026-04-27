@@ -21,13 +21,6 @@ impl<'buf, IO> Session<'buf, IO>
 where
     IO: Io,
 {
-    fn keeps_transport(err: &Error<IO::Error>) -> bool {
-        matches!(
-            err,
-            Error::Protocol(ProtocolError::Failed(reason)) if *reason != ReasonCode::PacketTooLarge
-        )
-    }
-
     /// Construct a session from a setup builder.
     pub fn new(config: ConfigBuilder<'buf>) -> Self {
         Self {
@@ -53,19 +46,15 @@ where
         self.core.is_publish_quiescent()
     }
 
-    fn clear_disconnected_transport(&mut self) {
-        if self.core.is_disconnected() {
-            self.connection = None;
-        }
-    }
-
     /// Gracefully close the current MQTT transport with `DISCONNECT`.
     pub async fn disconnect(&mut self) -> Result<(), Error<IO::Error>> {
         let Some(mut connection) = self.connection.take() else {
             return Ok(());
         };
         let result = self.core.disconnect(&mut connection).await;
-        self.clear_disconnected_transport();
+        if self.core.is_disconnected() {
+            self.connection = None;
+        }
         result
     }
 
@@ -82,7 +71,9 @@ where
             return Err(Error::Disconnected);
         };
         let result = self.core.subscribe(connection, topics, properties).await;
-        self.clear_disconnected_transport();
+        if self.core.is_disconnected() {
+            self.connection = None;
+        }
         result
     }
 
@@ -96,7 +87,9 @@ where
             return Err(Error::Disconnected);
         };
         let result = self.core.unsubscribe(connection, topics, properties).await;
-        self.clear_disconnected_transport();
+        if self.core.is_disconnected() {
+            self.connection = None;
+        }
         result
     }
 
@@ -115,7 +108,9 @@ where
             return Err(PubError::Session(Error::Disconnected));
         };
         let result = self.core.publish(connection, publication).await;
-        self.clear_disconnected_transport();
+        if self.core.is_disconnected() {
+            self.connection = None;
+        }
         result
     }
 
@@ -157,7 +152,11 @@ where
                 Ok(event)
             }
             Err(err) => {
-                if Self::keeps_transport(&err) {
+                if matches!(
+                    err,
+                    Error::Protocol(ProtocolError::Failed(reason))
+                        if reason != ReasonCode::PacketTooLarge
+                ) {
                     self.connection = Some(connection);
                 }
                 Err(err)
