@@ -241,6 +241,21 @@ fn connack_session_present() -> [u8; 5] {
     [0x20, 0x03, 0x01, 0x00, 0x00]
 }
 
+fn connack_assigned_client_id(client_id: &str) -> Vec<u8> {
+    let property_len = 1 + 2 + client_id.len();
+    let remaining_len = 2 + 1 + property_len;
+    let mut packet = Vec::with_capacity(2 + remaining_len);
+    packet.push(0x20);
+    packet.push(remaining_len as u8);
+    packet.push(0x00);
+    packet.push(0x00);
+    packet.push(property_len as u8);
+    packet.push(0x12);
+    packet.extend_from_slice(&(client_id.len() as u16).to_be_bytes());
+    packet.extend_from_slice(client_id.as_bytes());
+    packet
+}
+
 fn inbound_publish_qos2(id: u16, topic: &str, payload: &[u8]) -> Vec<u8> {
     let remaining = 2 + topic.len() + 2 + 1 + payload.len();
     let mut packet = Vec::with_capacity(2 + remaining);
@@ -628,6 +643,40 @@ fn failed_connack_disconnects_session_and_allows_reconnect() {
         Err(Error::Protocol(ProtocolError::Failed(
             minimq::ReasonCode::NotAuthorized
         )))
+    ));
+    assert!(!session.is_connected());
+    expect_connected(&mut session, &connector);
+}
+
+#[test]
+fn zero_receive_maximum_disconnects_session_and_allows_reconnect() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack_receive_max(0));
+    let mut second = MockConnection::default();
+    second.push_rx(&connack());
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config());
+
+    assert!(matches!(
+        block_on(session.connect(connector.connect().unwrap())),
+        Err(Error::Protocol(ProtocolError::InvalidProperty))
+    ));
+    assert!(!session.is_connected());
+    expect_connected(&mut session, &connector);
+}
+
+#[test]
+fn oversized_assigned_client_id_disconnects_session_and_allows_reconnect() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack_assigned_client_id(&"a".repeat(65)));
+    let mut second = MockConnection::default();
+    second.push_rx(&connack());
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config());
+
+    assert!(matches!(
+        block_on(session.connect(connector.connect().unwrap())),
+        Err(Error::Protocol(ProtocolError::ProvidedClientIdTooLong))
     ));
     assert!(!session.is_connected());
     expect_connected(&mut session, &connector);

@@ -245,19 +245,22 @@ impl<'buf> Core<'buf> {
             self.packet_reader.buffer.len()
         );
 
-        write_packet(
-            self.packet_reader.buffer,
-            connection,
-            &Connect {
-                keepalive,
-                properties: Properties::Slice(&properties),
-                client_id: Utf8String(client_id.as_str()),
-                auth,
-                will,
-                clean_start,
-            },
-        )
-        .await?;
+        {
+            let buffer = self.session.outbound.scratch_space();
+            write_packet(
+                buffer,
+                connection,
+                &Connect {
+                    keepalive,
+                    properties: Properties::Slice(&properties),
+                    client_id: Utf8String(client_id.as_str()),
+                    auth,
+                    will,
+                    clean_start,
+                },
+            )
+            .await?;
+        }
 
         self.runtime.state = ConnectionState::Establishing;
         self.runtime.next_ping = None;
@@ -668,6 +671,7 @@ impl<'buf> Core<'buf> {
                 ProtocolError::MalformedPacket
                     | ProtocolError::UnexpectedPacket
                     | ProtocolError::InvalidProperty
+                    | ProtocolError::ProvidedClientIdTooLong
                     | ProtocolError::WrongQos
                     | ProtocolError::UnsupportedPacket
                     | ProtocolError::BadIdentifier
@@ -988,16 +992,6 @@ mod tests {
         )
     }
 
-    fn core_with_rx<const RX: usize>(rx: &'static mut [u8; RX]) -> Core<'static> {
-        let tx = Box::leak(Box::new([0; 1152]));
-        Core::new(
-            ConfigBuilder::new(Buffers::new(rx, tx))
-                .client_id("test")
-                .unwrap()
-                .keepalive_interval(1),
-        )
-    }
-
     #[test]
     fn maintain_sends_pingreq_when_due() {
         let mut core = core();
@@ -1152,9 +1146,33 @@ mod tests {
     }
 
     #[test]
-    fn connect_returns_insufficient_memory_when_rx_is_smaller_than_fixed_header() {
-        let rx = Box::leak(Box::new([0; MAX_FIXED_HEADER_SIZE - 1]));
-        let mut core = core_with_rx(rx);
+    fn connect_uses_tx_buffer_when_rx_only_covers_connack() {
+        let rx = Box::leak(Box::new([0; 8]));
+        let tx = Box::leak(Box::new([0; 128]));
+        let mut core = Core::new(
+            ConfigBuilder::new(Buffers::new(rx, tx))
+                .client_id("0123456789abcdef")
+                .unwrap(),
+        );
+        let mut connection = MockConnection::default();
+        connection.push_rx(&[0x20, 0x03, 0x00, 0x00, 0x00]);
+
+        let result = block_on(core.connect(&mut connection));
+
+        assert!(matches!(result, Ok(super::super::ConnectEvent::Connected)));
+        assert_eq!(connection.tx.len(), 1);
+        assert!(connection.tx[0].len() > rx.len());
+    }
+
+    #[test]
+    fn connect_returns_insufficient_memory_when_tx_is_too_small() {
+        let rx = Box::leak(Box::new([0; 8]));
+        let tx = Box::leak(Box::new([0; MAX_FIXED_HEADER_SIZE - 1]));
+        let mut core = Core::new(
+            ConfigBuilder::new(Buffers::new(rx, tx))
+                .client_id("test")
+                .unwrap(),
+        );
         let mut connection = MockConnection::default();
 
         let result = block_on(core.connect(&mut connection));
