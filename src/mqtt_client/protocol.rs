@@ -68,6 +68,9 @@ pub(super) fn handle_packet<'pkt, 'state>(
                         cx.runtime.keepalive_interval = Duration::from_secs(keepalive as u64);
                     }
                     Property::ReceiveMaximum(max) => {
+                        if max == 0 {
+                            return Err(ProtocolError::InvalidProperty.into());
+                        }
                         let local = cx.session.outbound.max_inflight();
                         cx.runtime.send_quota = max.min(local);
                         cx.runtime.max_send_quota = max.min(local);
