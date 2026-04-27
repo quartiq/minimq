@@ -1,5 +1,5 @@
-use embassy_futures::select::{Either, select};
-use embassy_time::{Instant, Timer};
+use embassy_time::Instant;
+use embassy_time::{TimeoutError, WithTimeout};
 use embedded_io_async::Error as _;
 use embedded_io_async::ErrorKind;
 
@@ -196,16 +196,15 @@ where
             let Some(connection) = self.connection.as_mut() else {
                 return Err(Error::Disconnected);
             };
-            return match select(self.core.read(connection, now), Timer::at(deadline)).await {
-                Either::First(result) => match result {
-                    Ok(result) => Ok(result),
-                    Err(Error::Transport(err)) => match err.kind() {
-                        ErrorKind::TimedOut | ErrorKind::Interrupted => Ok(None),
-                        _ => Err(Error::Transport(err)),
-                    },
-                    Err(err) => Err(err),
+            let read_result = self.core.read(connection, now);
+            return match read_result.with_deadline(deadline).await {
+                Err(TimeoutError) => Ok(None),
+                Ok(Ok(result)) => Ok(result),
+                Ok(Err(Error::Transport(err))) => match err.kind() {
+                    ErrorKind::TimedOut | ErrorKind::Interrupted => Ok(None),
+                    _ => Err(Error::Transport(err)),
                 },
-                Either::Second(_) => Ok(None),
+                Ok(Err(err)) => Err(err),
             };
         }
 
