@@ -26,13 +26,13 @@ num_enum = { version = "0.7", default-features = false }
 heapless = { version = "0.9.1" }
 log = { version = "0.4", default-features = false }
 embedded-io-async = "0.7"
-embedded-nal-async = "0.9"
-embassy-futures = "0.1.2"
 embassy-time = "0.5.1"
 serde = { version = "1", features = ["derive"], default-features = false }
 thiserror = { version = "2", default-features = false }
 
 [dev-dependencies]
+embassy-futures = "0.1.2"
+embedded-nal-async = "0.9"
 log = "0.4"
 env_logger = "0.11"
 embassy-time = { version = "0.5.1", features = ["std", "generic-queue-8"] }

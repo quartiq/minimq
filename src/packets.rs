@@ -245,7 +245,7 @@ impl From<ReasonCode> for Reason<'_> {
         Self {
             reason: Some(ReasonData {
                 code,
-                _properties: Some(Properties::Slice(&[])),
+                _properties: None,
             }),
         }
     }
@@ -303,7 +303,7 @@ mod tests {
             properties: crate::types::Properties::Slice(&[]),
             retain: crate::Retain::NotRetained,
             topic: crate::types::Utf8String("ABC"),
-            payload: &[0xAB, 0xCD],
+            payload: &[0xAB, 0xCD][..],
         };
 
         let mut buffer: [u8; 900] = [0; 900];
@@ -330,7 +330,7 @@ mod tests {
             dup: false,
             properties: crate::types::Properties::Slice(&[]),
             retain: crate::Retain::NotRetained,
-            payload: &[0xAB, 0xCD],
+            payload: &[0xAB, 0xCD][..],
         };
 
         let mut buffer: [u8; 900] = [0; 900];
@@ -406,7 +406,7 @@ mod tests {
                 crate::properties::Property::ResponseTopic(crate::types::Utf8String("A")),
             ]),
             retain: crate::Retain::NotRetained,
-            payload: &[0xAB, 0xCD],
+            payload: &[0xAB, 0xCD][..],
         };
 
         let mut buffer: [u8; 900] = [0; 900];
@@ -438,7 +438,7 @@ mod tests {
                 ),
             ]),
             retain: crate::Retain::NotRetained,
-            payload: &[0xAB, 0xCD],
+            payload: &[0xAB, 0xCD][..],
         };
 
         let mut buffer: [u8; 900] = [0; 900];
@@ -535,13 +535,12 @@ mod tests {
 
     #[test]
     fn serialize_pubrel() {
-        let good_pubrel: [u8; 6] = [
+        let good_pubrel: [u8; 5] = [
             6 << 4 | 0b10, // PubRel
-            0x04,          // Remaining length
+            0x03,          // Remaining length
             0x00,
             0x05, // Identifier
             0x10, // Response Code
-            0x00, // Properties length
         ];
 
         let pubrel = crate::packets::PubRel {

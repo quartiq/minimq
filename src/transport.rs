@@ -1,6 +1,6 @@
 use crate::Broker;
 use core::net::SocketAddr;
-use embedded_io_async::ErrorKind;
+use embedded_io_async::{ErrorKind, ReadReady, WriteReady};
 
 /// Transport error categories exposed by `minimq`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
@@ -73,6 +73,8 @@ pub trait Connector {
     /// Connected byte stream used by the session.
     type Connection<'a>: embedded_io_async::Read<Error = Self::Error>
         + embedded_io_async::Write<Error = Self::Error>
+        + ReadReady<Error = Self::Error>
+        + WriteReady<Error = Self::Error>
         + 'a
     where
         Self: 'a;
@@ -130,6 +132,7 @@ impl<T> Connector for TcpConnector<T>
 where
     T: embedded_nal_async::TcpConnect,
     T::Error: embedded_io_async::Error,
+    for<'a> T::Connection<'a>: ReadReady<Error = T::Error> + WriteReady<Error = T::Error>,
 {
     type Error = TransportError<T::Error>;
     type Connection<'a>
@@ -199,6 +202,7 @@ where
     T: embedded_nal_async::TcpConnect,
     T::Error: embedded_io_async::Error,
     D: embedded_nal_async::Dns,
+    for<'a> T::Connection<'a>: ReadReady<Error = T::Error> + WriteReady<Error = T::Error>,
 {
     type Error = TransportError<T::Error>;
     type Connection<'a>
@@ -266,11 +270,31 @@ where
     }
 }
 
+impl<C> ReadReady for TcpConnection<C>
+where
+    C: ReadReady,
+    C::Error: embedded_io_async::Error,
+{
+    fn read_ready(&mut self) -> Result<bool, Self::Error> {
+        self.0.read_ready().map_err(TransportError::Io)
+    }
+}
+
+impl<C> WriteReady for TcpConnection<C>
+where
+    C: WriteReady,
+    C::Error: embedded_io_async::Error,
+{
+    fn write_ready(&mut self) -> Result<bool, Self::Error> {
+        self.0.write_ready().map_err(TransportError::Io)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::MQTT_INSECURE_DEFAULT_PORT;
-    use embedded_io_async::{ErrorType, Read, Write};
+    use embedded_io_async::{ErrorType, Read, ReadReady, Write, WriteReady};
     use std::net::IpAddr;
 
     #[derive(Debug)]
@@ -293,6 +317,18 @@ mod tests {
 
         async fn flush(&mut self) -> Result<(), Self::Error> {
             Ok(())
+        }
+    }
+
+    impl ReadReady for NeverSocket {
+        fn read_ready(&mut self) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+    }
+
+    impl WriteReady for NeverSocket {
+        fn write_ready(&mut self) -> Result<bool, Self::Error> {
+            Ok(true)
         }
     }
 

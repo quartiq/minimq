@@ -1,4 +1,5 @@
 use crate::packets::Pub;
+use crate::packets::{PingReq, PubAck, PubComp, PubRec, PubRel};
 use crate::ser::MAX_FIXED_HEADER_SIZE;
 use crate::{Error, ProtocolError, PubError, ReasonCode, trace};
 use heapless::Vec;
@@ -7,7 +8,22 @@ use super::Io;
 
 const CONTROL_PACKET_LEN: usize = 9;
 pub(super) const MAX_RETAINED: usize = 8;
+pub(super) const MAX_PENDING_CONTROL: usize = 8;
 pub(super) const MAX_PENDING_RELEASE: usize = 8;
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub(super) enum ControlAction {
+    PubAck { packet_id: u16, reason: ReasonCode },
+    PubRec { packet_id: u16, reason: ReasonCode },
+    PubComp { packet_id: u16, reason: ReasonCode },
+    PingReq,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct PendingControl {
+    action: ControlAction,
+    state: SendState,
+}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub(super) struct PendingRelease {
@@ -31,6 +47,32 @@ pub(super) enum SendState {
     Sent,
 }
 
+impl SendState {
+    fn is_fresh(self) -> bool {
+        matches!(self, Self::Write { written: 0 })
+    }
+
+    fn is_in_progress(self) -> bool {
+        matches!(self, Self::Write { written: 1.. } | Self::Flush)
+    }
+
+    fn set_written(&mut self, written: usize, len: usize) {
+        *self = if written >= len {
+            Self::Flush
+        } else {
+            Self::Write { written }
+        };
+    }
+
+    fn matches_priority(self, in_progress: bool) -> bool {
+        if in_progress {
+            self.is_in_progress()
+        } else {
+            self.is_fresh()
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(super) struct RetainedStep {
     pub(super) packet_id: u16,
@@ -46,10 +88,24 @@ pub(super) struct ReleaseStep {
     pub(super) state: SendState,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub(super) struct ControlStep {
+    pub(super) action: ControlAction,
+    pub(super) state: SendState,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub(super) enum OutboundStep {
+    Control(ControlStep),
+    Release(ReleaseStep),
+    Retained(RetainedStep),
+}
+
 #[derive(Debug)]
 pub(super) struct Outbound<'a> {
     buf: &'a mut [u8],
     used: usize,
+    pending_control: Vec<PendingControl, MAX_PENDING_CONTROL>,
     retained: Vec<RetainedPacket, MAX_RETAINED>,
     pending_release: Vec<PendingRelease, MAX_PENDING_RELEASE>,
 }
@@ -59,6 +115,7 @@ impl<'a> Outbound<'a> {
         Self {
             buf,
             used: 0,
+            pending_control: Vec::new(),
             retained: Vec::new(),
             pending_release: Vec::new(),
         }
@@ -66,12 +123,19 @@ impl<'a> Outbound<'a> {
 
     pub(super) fn clear(&mut self) {
         self.used = 0;
+        self.pending_control.clear();
         self.retained.clear();
         self.pending_release.clear();
     }
 
     fn has_pending_state(&self) -> bool {
-        !self.retained.is_empty() || !self.pending_release.is_empty()
+        !self.pending_control.is_empty()
+            || !self.retained.is_empty()
+            || !self.pending_release.is_empty()
+    }
+
+    pub(super) fn is_quiescent(&self) -> bool {
+        !self.has_pending_state()
     }
 
     pub(super) fn retained_full(&self) -> bool {
@@ -88,6 +152,10 @@ impl<'a> Outbound<'a> {
 
     pub(super) fn retained_len(&self) -> usize {
         self.retained.len()
+    }
+
+    pub(super) fn pending_control_len(&self) -> usize {
+        self.pending_control.len()
     }
 
     pub(super) fn pending_release_len(&self) -> usize {
@@ -107,6 +175,21 @@ impl<'a> Outbound<'a> {
     pub(super) fn scratch_space(&mut self) -> &mut [u8] {
         self.compact();
         &mut self.buf[self.used..]
+    }
+
+    pub(super) fn queue_control(&mut self, action: ControlAction) -> Result<(), ProtocolError> {
+        self.pending_control
+            .push(PendingControl {
+                action,
+                state: SendState::Write { written: 0 },
+            })
+            .map_err(|_| ProtocolError::InflightMetadataExhausted)
+    }
+
+    pub(super) fn has_pending_pingreq(&self) -> bool {
+        self.pending_control.iter().any(|entry| {
+            matches!(entry.action, ControlAction::PingReq) && entry.state != SendState::Sent
+        })
     }
 
     pub(super) fn ack_packet(&mut self, packet_id: u16) -> bool {
@@ -211,25 +294,64 @@ impl<'a> Outbound<'a> {
         Ok(())
     }
 
-    pub(super) fn next_retained_step(&self) -> Option<RetainedStep> {
-        self.retained.iter().find_map(|entry| {
-            (entry.state != SendState::Sent).then_some(RetainedStep {
-                packet_id: entry.packet_id,
-                offset: entry.offset,
-                len: entry.len,
-                state: entry.state,
-            })
-        })
+    pub(super) fn next_step(&self) -> Option<OutboundStep> {
+        for in_progress in [true, false] {
+            for entry in &self.pending_control {
+                if entry.state.matches_priority(in_progress) {
+                    return Some(OutboundStep::Control(ControlStep {
+                        action: entry.action,
+                        state: entry.state,
+                    }));
+                }
+            }
+            for entry in &self.pending_release {
+                if entry.state.matches_priority(in_progress) {
+                    return Some(OutboundStep::Release(ReleaseStep {
+                        packet_id: entry.packet_id,
+                        reason: entry.reason,
+                        state: entry.state,
+                    }));
+                }
+            }
+            for entry in &self.retained {
+                if entry.state.matches_priority(in_progress) {
+                    return Some(OutboundStep::Retained(RetainedStep {
+                        packet_id: entry.packet_id,
+                        offset: entry.offset,
+                        len: entry.len,
+                        state: entry.state,
+                    }));
+                }
+            }
+        }
+        None
     }
 
-    pub(super) fn next_release_step(&self) -> Option<ReleaseStep> {
-        self.pending_release.iter().find_map(|entry| {
-            (entry.state != SendState::Sent).then_some(ReleaseStep {
-                packet_id: entry.packet_id,
-                reason: entry.reason,
-                state: entry.state,
-            })
-        })
+    pub(super) fn set_control_written(
+        &mut self,
+        action: ControlAction,
+        written: usize,
+        len: usize,
+    ) {
+        if let Some(entry) = self
+            .pending_control
+            .iter_mut()
+            .find(|entry| entry.action == action)
+        {
+            entry.state.set_written(written, len);
+        }
+    }
+
+    pub(super) fn flush_control(&mut self, action: ControlAction) {
+        if let Some(entry) = self
+            .pending_control
+            .iter_mut()
+            .find(|entry| entry.action == action)
+        {
+            entry.state = SendState::Sent;
+        }
+        self.pending_control
+            .retain(|entry| entry.state != SendState::Sent);
     }
 
     pub(super) fn set_retained_written(&mut self, packet_id: u16, written: usize, len: usize) {
@@ -238,11 +360,7 @@ impl<'a> Outbound<'a> {
             .iter_mut()
             .find(|entry| entry.packet_id == packet_id)
         {
-            entry.state = if written >= len {
-                SendState::Flush
-            } else {
-                SendState::Write { written }
-            };
+            entry.state.set_written(written, len);
         }
     }
 
@@ -262,11 +380,7 @@ impl<'a> Outbound<'a> {
             .iter_mut()
             .find(|entry| entry.packet_id == packet_id)
         {
-            entry.state = if written >= len {
-                SendState::Flush
-            } else {
-                SendState::Write { written }
-            };
+            entry.state.set_written(written, len);
         }
     }
 
@@ -286,13 +400,17 @@ impl<'a> Outbound<'a> {
         }
 
         trace!(
-            "Arming outbound replay retained={} pending_release={} tx_used={} tx_capacity={}",
+            "Arming outbound replay control={} retained={} pending_release={} tx_used={} tx_capacity={}",
+            self.pending_control.len(),
             self.retained.len(),
             self.pending_release.len(),
             self.used,
             self.buf.len()
         );
         self.mark_retained_dup();
+        for entry in &mut self.pending_control {
+            entry.state = SendState::Write { written: 0 };
+        }
         for entry in &mut self.retained {
             entry.state = SendState::Write { written: 0 };
         }
@@ -330,6 +448,125 @@ impl<'a> Outbound<'a> {
     }
 }
 
+pub(super) fn serialize_control_packet<E>(
+    buffer: &mut [u8; CONTROL_PACKET_LEN],
+    packet: ControlAction,
+    maximum_packet_size: Option<u32>,
+) -> Result<&[u8], Error<E>> {
+    let bytes = match packet {
+        ControlAction::PubAck { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
+            buffer,
+            &PubAck {
+                packet_identifier: packet_id,
+                reason: reason.into(),
+            },
+        ),
+        ControlAction::PubRec { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
+            buffer,
+            &PubRec {
+                packet_id,
+                reason: reason.into(),
+            },
+        ),
+        ControlAction::PubComp { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
+            buffer,
+            &PubComp {
+                packet_id,
+                reason: reason.into(),
+            },
+        ),
+        ControlAction::PingReq => crate::ser::MqttSerializer::to_buffer(buffer, &PingReq),
+    }
+    .map_err(|err| Error::Protocol(err.into()))?;
+    if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
+        return Err(Error::Protocol(ProtocolError::Failed(
+            ReasonCode::PacketTooLarge,
+        )));
+    }
+    Ok(bytes)
+}
+
+fn require_packet_size(maximum_packet_size: Option<u32>, len: usize) -> Result<(), ProtocolError> {
+    if maximum_packet_size.is_some_and(|max| len > max as usize) {
+        return Err(ProtocolError::Failed(ReasonCode::PacketTooLarge));
+    }
+    Ok(())
+}
+
+pub(super) fn check_control_packet_size(
+    maximum_packet_size: Option<u32>,
+    action: ControlAction,
+) -> Result<(), ProtocolError> {
+    let mut buffer = [0u8; CONTROL_PACKET_LEN];
+    let len = match action {
+        ControlAction::PubAck { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
+            &mut buffer,
+            &PubAck {
+                packet_identifier: packet_id,
+                reason: reason.into(),
+            },
+        ),
+        ControlAction::PubRec { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
+            &mut buffer,
+            &PubRec {
+                packet_id,
+                reason: reason.into(),
+            },
+        ),
+        ControlAction::PubComp { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
+            &mut buffer,
+            &PubComp {
+                packet_id,
+                reason: reason.into(),
+            },
+        ),
+        ControlAction::PingReq => crate::ser::MqttSerializer::to_buffer(&mut buffer, &PingReq),
+    }
+    .map_err(ProtocolError::from)?
+    .len();
+    require_packet_size(maximum_packet_size, len)
+}
+
+pub(super) fn check_pubrel_size(
+    maximum_packet_size: Option<u32>,
+    packet_id: u16,
+    reason: ReasonCode,
+) -> Result<(), ProtocolError> {
+    let mut buffer = [0u8; CONTROL_PACKET_LEN];
+    let len = crate::ser::MqttSerializer::to_buffer(
+        &mut buffer,
+        &PubRel {
+            packet_id,
+            reason: reason.into(),
+        },
+    )
+    .map_err(ProtocolError::from)?
+    .len();
+    require_packet_size(maximum_packet_size, len)
+}
+
+pub(super) fn serialize_pubrel<E>(
+    buffer: &mut [u8; CONTROL_PACKET_LEN],
+    packet_id: u16,
+    reason: ReasonCode,
+    maximum_packet_size: Option<u32>,
+) -> Result<&[u8], Error<E>> {
+    let bytes = crate::ser::MqttSerializer::to_buffer(
+        buffer,
+        &PubRel {
+            packet_id,
+            reason: reason.into(),
+        },
+    )
+    .map_err(|err| Error::Protocol(err.into()))?;
+    if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
+        return Err(Error::Protocol(ProtocolError::Failed(
+            ReasonCode::PacketTooLarge,
+        )));
+    }
+    Ok(bytes)
+}
+
 pub(super) async fn write_packet<C: Io, T>(
     buffer: &mut [u8],
     connection: &mut C,
@@ -340,27 +577,6 @@ where
 {
     let bytes = crate::ser::MqttSerializer::to_buffer(buffer, packet)
         .map_err(|err| Error::Protocol(err.into()))?;
-    write_all(connection, bytes).await?;
-    connection.flush().await.map_err(Error::Transport)?;
-    Ok(())
-}
-
-pub(super) async fn write_control_packet<C: Io, T>(
-    connection: &mut C,
-    packet: &T,
-    maximum_packet_size: Option<u32>,
-) -> Result<(), Error<C::Error>>
-where
-    T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
-{
-    let mut buffer = [0u8; CONTROL_PACKET_LEN];
-    let bytes = crate::ser::MqttSerializer::to_buffer(&mut buffer, packet)
-        .map_err(|err| Error::Protocol(err.into()))?;
-    if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
-        return Err(Error::Protocol(ProtocolError::Failed(
-            ReasonCode::PacketTooLarge,
-        )));
-    }
     write_all(connection, bytes).await?;
     connection.flush().await.map_err(Error::Transport)?;
     Ok(())
@@ -382,7 +598,7 @@ pub(super) async fn write_all<C: Io>(
 
 #[cfg(test)]
 mod tests {
-    use super::Outbound;
+    use super::{ControlAction, Outbound, OutboundStep, SendState};
     use crate::{
         packets::Subscribe,
         publication::Publication,
@@ -426,13 +642,33 @@ mod tests {
         outbound.retain_packet(7, 0, 5).unwrap();
 
         let result = outbound
-            .encode_publish::<_, ()>(crate::packets::Pub::from(Publication::new("a", b"x")));
+            .encode_publish::<_, ()>(crate::packets::Pub::from(Publication::bytes("a", b"x")));
 
         assert!(matches!(
             result,
             Err(crate::PubError::Session(crate::Error::Protocol(
                 crate::ProtocolError::Encode(crate::SerError::InsufficientMemory)
             )))
+        ));
+    }
+
+    #[test]
+    fn arm_replay_restarts_pending_control_from_byte_zero() {
+        let mut storage = [0u8; 32];
+        let mut outbound = Outbound::new(&mut storage);
+        let action = ControlAction::PubAck {
+            packet_id: 7,
+            reason: crate::ReasonCode::Success,
+        };
+        outbound.queue_control(action).unwrap();
+        outbound.set_control_written(action, 5, 5);
+
+        outbound.arm_replay();
+
+        assert!(matches!(
+            outbound.next_step(),
+            Some(OutboundStep::Control(step))
+                if step.action == action && step.state == SendState::Write { written: 0 }
         ));
     }
 }

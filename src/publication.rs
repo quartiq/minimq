@@ -90,14 +90,6 @@ impl ToPayload for &str {
     }
 }
 
-impl<const N: usize> ToPayload for &[u8; N] {
-    type Error = ();
-
-    fn serialize(self, buffer: &mut [u8]) -> Result<usize, ()> {
-        (&self[..]).serialize(buffer)
-    }
-}
-
 impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for F {
     type Error = E;
     fn serialize(self, buffer: &mut [u8]) -> Result<usize, E> {
@@ -153,5 +145,19 @@ impl<'a, P> Publication<'a, P> {
     pub fn correlate(mut self, data: &'a [u8]) -> Self {
         self.properties = self.properties.with_correlation(data);
         self
+    }
+}
+
+impl<'a> Publication<'a, &'a [u8]> {
+    /// Construct a byte-slice publication without relying on generic array inference.
+    pub fn bytes(topic: &'a str, payload: &'a [u8]) -> Self {
+        Self::new(topic, payload)
+    }
+}
+
+impl<'a> Publication<'a, &'a str> {
+    /// Construct a UTF-8 string publication.
+    pub fn text(topic: &'a str, payload: &'a str) -> Self {
+        Self::new(topic, payload)
     }
 }

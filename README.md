@@ -12,61 +12,111 @@ The main API is [`Session`].
 
 ## What You Use
 
-- [`Broker`]: broker endpoint
 - [`Buffers`]: caller-owned RX/TX memory
 - [`ConfigBuilder`]: session configuration
-- [`transport::Connector`]: transport boundary
+- [`Io`]: transport boundary for an established byte stream
 - [`Session`]: the client you drive
 - [`Event`]: output of [`Session::poll()`]
 
 ## Example
 
-```ignore
+```no_run
 use core::net::SocketAddr;
-use minimq::{
-    Broker, ConfigBuilder, Event, QoS, Session,
-    transport::TcpConnector, types::TopicFilter,
-};
-use std_embedded_nal_async::Stack;
+# use std::io;
+# struct MyIo;
+# use embedded_io_async::{ErrorType, Read, ReadReady, Write, WriteReady};
+# impl ErrorType for MyIo {
+#     type Error = io::Error;
+# }
+# impl Read for MyIo {
+#     async fn read(&mut self, _buf: &mut [u8]) -> Result<usize, Self::Error> {
+#         todo!()
+#     }
+# }
+# impl Write for MyIo {
+#     async fn write(&mut self, _buf: &[u8]) -> Result<usize, Self::Error> {
+#         todo!()
+#     }
+#     async fn flush(&mut self) -> Result<(), Self::Error> {
+#         todo!()
+#     }
+# }
+# impl ReadReady for MyIo {
+#     fn read_ready(&mut self) -> Result<bool, Self::Error> {
+#         todo!()
+#     }
+# }
+# impl WriteReady for MyIo {
+#     fn write_ready(&mut self) -> Result<bool, Self::Error> {
+#         todo!()
+#     }
+# }
+# async fn open_io(_addr: SocketAddr) -> Result<MyIo, io::Error> { todo!() }
+use minimq::{Buffers, ConfigBuilder, ConnectEvent, Error, Event, Session, types::TopicFilter};
 
-async fn run() -> Result<(), minimq::SessionError<TcpConnector<Stack>>> {
-    let mut storage = [0u8; 1024];
-    let broker: Broker<'_> = "127.0.0.1:1883".parse::<SocketAddr>()?.into();
-    let connector = TcpConnector::new(Stack::default());
+async fn run() {
+    let rx = &mut [0u8; 256];
+    let tx = &mut [0u8; 768];
+    let addr: SocketAddr = "127.0.0.1:1883".parse().unwrap();
     let mut session = Session::new(
-        ConfigBuilder::from_buffer(broker, &mut storage, 256)?.client_id("demo")?,
-        &connector,
+        ConfigBuilder::new(Buffers::new(rx, tx))
+            .client_id("demo")
+            .unwrap(),
     );
 
     loop {
-        match session.poll().await? {
-            Event::Connected => {
-                session.subscribe(&[TopicFilter::new("demo/in")], &[]).await?;
+        let io = open_io(addr).await.unwrap();
+        match session.connect(io).await.unwrap() {
+            ConnectEvent::Connected => {
+                session
+                    .subscribe(&[TopicFilter::new("demo/in")], &[])
+                    .await
+                    .unwrap();
             }
-            Event::Reconnected => {}
-            Event::Inbound(message) => {
-                if let Some(reply) = message.reply("ack") {
-                    session.publish(reply.qos(QoS::AtLeastOnce)).await?;
-                }
+            ConnectEvent::Reconnected => {}
+        }
+
+        loop {
+            match session.poll().await {
+                Ok(Event::Inbound(message)) => println!("topic={}", message.topic()),
+                Ok(Event::Idle) => {}
+                Err(Error::Disconnected) => break,
+                Err(err) => panic!("{err}"),
             }
-            Event::Idle => {}
         }
     }
 }
+
+# fn main() {}
 ```
+
+The attached transport must implement [`embedded_io_async::Read`], [`embedded_io_async::Write`],
+[`embedded_io_async::ReadReady`], and [`embedded_io_async::WriteReady`].
+
+For a TLS connectivity example that uses `embedded-tls` without those readiness traits, see
+`examples/tls_public_broker.rs`. That example is useful for transport integration, but its
+`poll()` loop is not bounded because `embedded-tls` does not expose read/write readiness.
 
 ## Session Model
 
-You provide a broker endpoint, packet buffers, a transport connector, and a loop that keeps
-calling [`Session::poll()`].
+You provide packet buffers plus an already-established transport, and a loop that explicitly
+passes that transport into [`Session::connect()`] to establish or resume the broker session.
 
-`Session` owns reconnects, keepalive, retransmission, and inbound packet delivery.
+[`Session::connect()`] takes ownership of the provided transport and performs the unbounded MQTT
+`CONNECT` / `CONNACK` handshake. Once
+connected, [`Session::poll()`] does bounded keepalive, retransmission, and inbound packet delivery
+on the established session. The session drops the transport again on graceful disconnect,
+connection failure, or transport/protocol loss.
 
-- [`Event::Connected`] means the broker created a fresh session. Re-establish subscriptions here.
-- [`Event::Reconnected`] means the broker resumed the existing MQTT session. Existing
+- [`ConnectEvent::Connected`] means the broker created a fresh session. Re-establish subscriptions
+  here.
+- [`ConnectEvent::Reconnected`] means the broker resumed the existing MQTT session. Existing
   subscriptions and in-flight QoS state were kept.
 - [`Event::Inbound`] carries one inbound publish.
-- [`Event::Idle`] means no inbound publish was produced on that poll step.
+- [`Event::Idle`] means no inbound publish was produced on that bounded poll step.
+
+If [`Session::poll()`] returns [`Error::Disconnected`], the caller decides when to call
+[`Session::connect()`] with a fresh transport again.
 
 ## Buffers
 
@@ -97,7 +147,4 @@ Use [`Buffers::split()`] if you prefer one contiguous slab.
 `minimq` uses:
 
 - [`embedded_io_async`] for byte I/O
-- [`embedded_nal_async`] adapters in `transport`
 - [`embassy_time`] for timing
-
-Secure MQTT over TLS works fine, for example with embedded-tls: `examples/tls_public_broker.rs`.

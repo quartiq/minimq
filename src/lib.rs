@@ -1,8 +1,6 @@
 #![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
 
-/// Broker endpoint types.
-pub mod broker;
 /// Session configuration and caller-owned buffers.
 pub mod config;
 mod de;
@@ -15,16 +13,13 @@ mod properties;
 pub mod publication;
 mod reason_codes;
 mod ser;
-/// Transport connector traits and adapters.
-pub mod transport;
 /// MQTT-specific value types used by the public API.
 pub mod types;
 mod varint;
 mod will;
 
-pub use broker::Broker;
 pub use config::{Buffers, ConfigBuilder, SetupError};
-pub use mqtt_client::{Event, InboundPublish, Session};
+pub use mqtt_client::{ConnectEvent, Event, InboundPublish, Io, Session};
 pub use properties::Property;
 pub use publication::{OwnedResponseTarget, Publication};
 pub use reason_codes::ReasonCode;
@@ -41,11 +36,11 @@ use num_enum::TryFromPrimitive;
 
 pub(crate) use log::{debug, info, trace, warn};
 
-/// Session error type for a specific connector.
-pub type SessionError<C> = Error<<C as crate::transport::Connector>::Error>;
+/// Session error type for a specific transport.
+pub type SessionError<IO> = Error<<IO as embedded_io_async::ErrorType>::Error>;
 
-/// Publish error type for a specific connector and payload serializer.
-pub type PublishError<C, P> = PubError<P, <C as crate::transport::Connector>::Error>;
+/// Publish error type for a specific transport and payload serializer.
+pub type PublishError<IO, P> = PubError<P, <IO as embedded_io_async::ErrorType>::Error>;
 
 /// Default port number for unencrypted MQTT traffic.
 pub const MQTT_INSECURE_DEFAULT_PORT: u16 = 1883;

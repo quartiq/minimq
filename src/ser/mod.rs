@@ -547,7 +547,7 @@ mod tests {
     fn publish_encode_rejects_buffers_smaller_than_fixed_header() {
         for len in 0..super::MAX_FIXED_HEADER_SIZE {
             let mut buf = vec![0u8; len];
-            let publish = crate::packets::Pub::from(Publication::new("a", b"x"));
+            let publish = crate::packets::Pub::from(Publication::bytes("a", b"x"));
             let result = MqttSerializer::pub_to_buffer(&mut buf, publish);
             assert!(matches!(
                 result,

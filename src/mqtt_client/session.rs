@@ -1,89 +1,89 @@
-use embassy_futures::select::{Either, select};
-use embassy_time::{Instant, Timer};
-use embedded_io_async::Error as _;
-use embedded_io_async::ErrorKind;
+use embassy_time::Instant;
 
 use crate::{
-    ConfigBuilder, Error, Property, PubError, QoS, publication::Publication, transport::Connector,
-    types::TopicFilter,
+    ConfigBuilder, Error, Property, ProtocolError, PubError, QoS, ReasonCode,
+    publication::Publication, types::TopicFilter,
 };
 
-use super::{Event, InboundPublish, core::Core};
+use super::{ConnectEvent, Event, Io, core::Core};
 
 /// One long-lived MQTT client session.
 ///
-/// Drive the session by calling [`poll`](Self::poll) regularly. The same session is also used for
-/// outbound `publish`, `subscribe`, and `unsubscribe` operations.
-pub struct Session<'a, 'buf, C: Connector> {
+/// Drive the session by calling [`poll`](Self::poll) regularly after
+/// [`connect`](Self::connect) has taken ownership of a live transport. The same session is also
+/// used for outbound `publish`, `subscribe`, and `unsubscribe` operations.
+pub struct Session<'buf, IO> {
     core: Core<'buf>,
-    connector: &'a C,
-    connection: Option<C::Connection<'a>>,
-    pending_activation: Option<bool>,
+    connection: Option<IO>,
 }
 
-impl<'a, 'buf, C> Session<'a, 'buf, C>
+impl<'buf, IO> Session<'buf, IO>
 where
-    C: Connector,
+    IO: Io,
 {
-    /// Construct a session from a setup builder and transport connector.
-    pub fn new(config: ConfigBuilder<'buf>, connector: &'a C) -> Self {
+    fn keeps_transport(err: &Error<IO::Error>) -> bool {
+        matches!(
+            err,
+            Error::Protocol(ProtocolError::Failed(reason)) if *reason != ReasonCode::PacketTooLarge
+        )
+    }
+
+    /// Construct a session from a setup builder.
+    pub fn new(config: ConfigBuilder<'buf>) -> Self {
         Self {
             core: Core::new(config),
-            connector,
             connection: None,
-            pending_activation: None,
         }
     }
 
     /// Return whether the MQTT session is currently established.
-    ///
-    /// This does not force a connection attempt. [`poll`](Self::poll), [`publish`](Self::publish),
-    /// and other outbound operations may connect on demand.
     pub fn is_connected(&self) -> bool {
         self.core.is_connected()
     }
 
     /// Return whether the session currently has the local capacity to attempt a
     /// publish at the requested QoS.
-    ///
-    /// This check is pessimistic for local backpressure: if it returns `false`,
-    /// `publish()` would currently fail with local readiness/backpressure.
-    ///
-    /// It is optimistic overall: if it returns `true`, `publish()` can still
-    /// fail for payload-dependent serialization, broker-advertised
-    /// `MaximumPacketSize`, disconnects, or transport errors.
     pub fn can_publish(&mut self, qos: QoS) -> bool {
         self.core.can_publish(qos)
     }
 
+    /// Return whether the session has no in-flight retained MQTT packets or
+    /// pending release state.
+    pub fn is_publish_quiescent(&self) -> bool {
+        self.core.is_publish_quiescent()
+    }
+
+    fn clear_disconnected_transport(&mut self) {
+        if self.core.is_disconnected() {
+            self.connection = None;
+        }
+    }
+
     /// Gracefully close the current MQTT transport with `DISCONNECT`.
-    ///
-    /// This only closes the current transport. A later [`poll`](Self::poll) will connect again.
-    /// If the broker preserves the MQTT session, subscriptions and in-flight state may resume.
-    pub async fn disconnect(&mut self) -> Result<(), Error<C::Error>> {
-        self.pending_activation = None;
-        let Some(connection) = self.connection.as_mut() else {
+    pub async fn disconnect(&mut self) -> Result<(), Error<IO::Error>> {
+        let Some(mut connection) = self.connection.take() else {
             return Ok(());
         };
-        let result = self.core.disconnect(connection).await;
-        self.connection = None;
+        let result = self.core.disconnect(&mut connection).await;
+        self.clear_disconnected_transport();
         result
     }
 
     /// Send a `SUBSCRIBE`.
     ///
-    /// Call this after [`Event::Connected`](crate::Event::Connected). A resumed
-    /// [`Event::Reconnected`](crate::Event::Reconnected) already kept broker-side subscriptions.
+    /// Call this after [`connect`](Self::connect). A resumed [`ConnectEvent::Reconnected`]
+    /// already kept broker-side subscriptions.
     pub async fn subscribe(
         &mut self,
         topics: &[TopicFilter<'_>],
         properties: &[Property<'_>],
-    ) -> Result<(), Error<C::Error>> {
-        let _ = self.ensure_connected().await?;
+    ) -> Result<(), Error<IO::Error>> {
         let Some(connection) = self.connection.as_mut() else {
             return Err(Error::Disconnected);
         };
-        self.core.subscribe(connection, topics, properties).await
+        let result = self.core.subscribe(connection, topics, properties).await;
+        self.clear_disconnected_transport();
+        result
     }
 
     /// Send an `UNSUBSCRIBE`.
@@ -91,12 +91,13 @@ where
         &mut self,
         topics: &[&str],
         properties: &[Property<'_>],
-    ) -> Result<(), Error<C::Error>> {
-        let _ = self.ensure_connected().await?;
+    ) -> Result<(), Error<IO::Error>> {
         let Some(connection) = self.connection.as_mut() else {
             return Err(Error::Disconnected);
         };
-        self.core.unsubscribe(connection, topics, properties).await
+        let result = self.core.unsubscribe(connection, topics, properties).await;
+        self.clear_disconnected_transport();
+        result
     }
 
     /// Send a `PUBLISH`.
@@ -106,120 +107,61 @@ where
     pub async fn publish<P>(
         &mut self,
         publication: Publication<'_, P>,
-    ) -> Result<(), PubError<P::Error, C::Error>>
+    ) -> Result<(), PubError<P::Error, IO::Error>>
     where
         P: crate::publication::ToPayload,
     {
-        let _ = self.ensure_connected().await.map_err(PubError::Session)?;
         let Some(connection) = self.connection.as_mut() else {
             return Err(PubError::Session(Error::Disconnected));
         };
-        self.core.publish(connection, publication).await
+        let result = self.core.publish(connection, publication).await;
+        self.clear_disconnected_transport();
+        result
+    }
+
+    /// Establish or resume the MQTT session on a newly supplied transport.
+    ///
+    /// The session takes ownership of `io` for the lifetime of the connected session and drops it
+    /// again on disconnect or connection failure.
+    pub async fn connect(&mut self, io: IO) -> Result<ConnectEvent, Error<IO::Error>> {
+        if self.connection.is_some() || self.core.is_connected() {
+            return Err(Error::NotReady);
+        }
+        self.connection = Some(io);
+        let result = {
+            let connection = self.connection.as_mut().unwrap();
+            self.core.connect(connection).await
+        };
+        if result.is_err() {
+            self.connection = None;
+        }
+        result
     }
 
     /// Advance the session once.
-    ///
-    /// `poll()` drives reconnect, keepalive, retransmission, and inbound packet handling. Call it
-    /// regularly from your main loop.
-    pub async fn poll(&mut self) -> Result<Event<'_>, Error<C::Error>> {
-        let _ = self.ensure_connected().await?;
-        if let Some(resumed) = self.pending_activation.take() {
-            return Ok(if resumed {
-                Event::Reconnected
-            } else {
-                Event::Connected
-            });
-        }
-
-        match self.step().await? {
-            Some(inbound) => Ok(Event::Inbound(inbound)),
-            None => Ok(Event::Idle),
-        }
+    pub async fn poll(&mut self) -> Result<Event<'_>, Error<IO::Error>> {
+        self.step().await
     }
 
-    async fn ensure_connected(&mut self) -> Result<bool, Error<C::Error>> {
-        let mut activated = false;
-        loop {
-            if self.core.is_disconnected() {
-                self.connection = None;
-            }
-
-            if self.connection.is_none() {
-                let connection = self
-                    .connector
-                    .connect(self.core.broker())
-                    .await
-                    .map_err(Error::Transport)?;
+    /// Advance the session once without blocking on idle transport reads.
+    pub async fn step(&mut self) -> Result<Event<'_>, Error<IO::Error>> {
+        if !self.core.is_connected() {
+            return Err(Error::Disconnected);
+        }
+        let Some(mut connection) = self.connection.take() else {
+            return Err(Error::Disconnected);
+        };
+        match self.core.step_event(&mut connection, Instant::now()).await {
+            Ok(event) => {
                 self.connection = Some(connection);
-                let Some(connection) = self.connection.as_mut() else {
-                    return Err(Error::Disconnected);
-                };
-                self.core.connect(connection).await?;
-                activated = true;
+                Ok(event)
             }
-
-            if self.core.is_connected() {
-                if activated {
-                    self.pending_activation = Some(self.core.session_resumed());
+            Err(err) => {
+                if Self::keeps_transport(&err) {
+                    self.connection = Some(connection);
                 }
-                return Ok(activated);
+                Err(err)
             }
-
-            let _ = self.step().await?;
         }
-    }
-
-    async fn step(&mut self) -> Result<Option<InboundPublish<'_>>, Error<C::Error>> {
-        let now = Instant::now();
-        let Some(connection) = self.connection.as_mut() else {
-            return Err(Error::Disconnected);
-        };
-        self.core.maintain(connection, now).await?;
-
-        if self.core.is_disconnected() {
-            self.connection = None;
-            return Ok(None);
-        }
-
-        if let Some(deadline) = self.core.next_deadline() {
-            if deadline <= Instant::now() {
-                let Some(connection) = self.connection.as_mut() else {
-                    return Err(Error::Disconnected);
-                };
-                self.core.maintain(connection, Instant::now()).await?;
-                if self.core.is_disconnected() {
-                    self.connection = None;
-                }
-                return Ok(None);
-            }
-
-            let Some(connection) = self.connection.as_mut() else {
-                return Err(Error::Disconnected);
-            };
-            return match select(self.core.read(connection, now), Timer::at(deadline)).await {
-                Either::First(result) => match result {
-                    Ok(result) => Ok(result),
-                    Err(Error::Transport(err)) => match err.kind() {
-                        ErrorKind::TimedOut | ErrorKind::Interrupted => Ok(None),
-                        _ => Err(Error::Transport(err)),
-                    },
-                    Err(err) => Err(err),
-                },
-                Either::Second(_) => Ok(None),
-            };
-        }
-
-        let Some(connection) = self.connection.as_mut() else {
-            return Err(Error::Disconnected);
-        };
-        let result = match self.core.read(connection, now).await {
-            Ok(result) => result,
-            Err(Error::Transport(err)) => match err.kind() {
-                ErrorKind::TimedOut | ErrorKind::Interrupted => return Ok(None),
-                _ => return Err(Error::Transport(err)),
-            },
-            Err(err) => return Err(err),
-        };
-        Ok(result)
     }
 }
