@@ -105,8 +105,19 @@ impl RuntimeState {
     }
 
     pub(super) fn note_outbound_activity(&mut self, now: Instant) {
-        self.next_ping =
-            (self.keepalive_interval.as_secs() != 0).then_some(now + self.keepalive_interval)
+        self.next_ping = self
+            .keepalive_send_interval()
+            .map(|interval| now + interval);
+    }
+
+    fn keepalive_send_interval(&self) -> Option<Duration> {
+        let keepalive_ms = self.keepalive_interval.as_millis();
+        if keepalive_ms == 0 {
+            return None;
+        }
+
+        let lead_ms = PING_TIMEOUT_MS.min(keepalive_ms / 2);
+        Some(Duration::from_millis(keepalive_ms - lead_ms))
     }
 }
 
@@ -221,7 +232,7 @@ impl<'buf> Core<'buf> {
             Property::ReceiveMaximum(self.session.pending_server_packet_ids.capacity() as u16),
         ];
         let will = self.will.clone();
-        let keepalive = self.keepalive_secs();
+        let keepalive = self.runtime.keepalive_interval.as_secs() as u16;
         let clean_start = !self.session.session_present;
         let auth = self.auth;
         debug!(
@@ -750,6 +761,12 @@ impl<'buf> Core<'buf> {
                         written + count,
                         packet.len(),
                     );
+                    if written + count < packet.len() {
+                        return Ok(());
+                    }
+                    trace!("Flushing control packet {:?}", step.action);
+                    flush_step_or_disconnect!(self, connection, "Control packet");
+                    self.complete_flush(FlushedPacket::Control(step.action), now);
                 }
                 SendState::Flush => {
                     trace!("Flushing control packet {:?}", step.action);
@@ -781,6 +798,12 @@ impl<'buf> Core<'buf> {
                         written + count,
                         packet.len(),
                     );
+                    if written + count < packet.len() {
+                        return Ok(());
+                    }
+                    trace!("Flushing PUBREL packet packet_id={}", step.packet_id);
+                    flush_step_or_disconnect!(self, connection, "PUBREL");
+                    self.complete_flush(FlushedPacket::Release(step.packet_id), now);
                 }
                 SendState::Flush => {
                     trace!("Flushing PUBREL packet packet_id={}", step.packet_id);
@@ -817,6 +840,12 @@ impl<'buf> Core<'buf> {
                         written + count,
                         step.len,
                     );
+                    if written + count < step.len {
+                        return Ok(());
+                    }
+                    debug!("Flushing retained packet packet_id={}", step.packet_id);
+                    flush_step_or_disconnect!(self, connection, "Retained packet");
+                    self.complete_flush(FlushedPacket::Retained(step.packet_id), now);
                 }
                 SendState::Flush => {
                     debug!("Flushing retained packet packet_id={}", step.packet_id);
@@ -841,10 +870,6 @@ impl<'buf> Core<'buf> {
         self.session.outbound.arm_replay();
         self.runtime.disconnect();
         self.packet_reader.reset();
-    }
-
-    fn keepalive_secs(&self) -> u16 {
-        self.runtime.keepalive_interval.as_secs() as u16
     }
 
     fn require_retained_slot<E>(&self) -> Result<(), Error<E>> {
@@ -982,7 +1007,6 @@ mod tests {
         core.runtime.next_ping = Some(now);
 
         assert!(block_on(core.maintain_step(&mut connection, now)).unwrap());
-        assert!(block_on(core.maintain_step(&mut connection, now)).unwrap());
 
         assert!(
             connection
@@ -996,8 +1020,19 @@ mod tests {
         );
         assert_eq!(
             core.runtime.next_ping,
-            Some(now + core.runtime.keepalive_interval)
+            Some(now + core.runtime.keepalive_send_interval().unwrap())
         );
+    }
+
+    #[test]
+    fn long_keepalive_schedules_ping_before_expiry() {
+        let mut core = core();
+        let now = Instant::now();
+        core.runtime.keepalive_interval = Duration::from_secs(30);
+
+        core.runtime.note_outbound_activity(now);
+
+        assert_eq!(core.runtime.next_ping, Some(now + Duration::from_secs(25)));
     }
 
     #[test]
@@ -1008,7 +1043,6 @@ mod tests {
         core.runtime.state = ConnectionState::Active;
         core.runtime.next_ping = Some(now);
 
-        assert!(block_on(core.maintain_step(&mut connection, now)).unwrap());
         assert!(block_on(core.maintain_step(&mut connection, now)).unwrap());
         assert!(
             !block_on(core.maintain_step(&mut connection, now + Duration::from_millis(600)))
@@ -1077,11 +1111,9 @@ mod tests {
         core.runtime.next_ping = Some(now);
 
         block_on(core.publish(&mut connection, crate::Publication::bytes("A", b"5"))).unwrap();
-        assert!(
-            core.runtime
-                .next_ping
-                .is_some_and(|deadline| deadline >= now + core.runtime.keepalive_interval)
-        );
+        assert!(core.runtime.next_ping.is_some_and(
+            |deadline| deadline >= now + core.runtime.keepalive_send_interval().unwrap()
+        ));
     }
 
     #[test]
