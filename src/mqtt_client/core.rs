@@ -21,10 +21,45 @@ use super::protocol::{PacketContext, PacketOutcome, handle_packet};
 const PING_TIMEOUT_MS: u64 = 5_000;
 const MAX_INBOUND_QOS2: usize = 8;
 
+macro_rules! write_step_or_disconnect {
+    ($self:expr, $connection:expr, $bytes:expr, $context:literal) => {{
+        match $connection.write($bytes).await {
+            Ok(0) => {
+                warn!(concat!($context, " write returned WriteZero"));
+                $self.handle_disconnect();
+                return Err(Error::WriteZero);
+            }
+            Ok(count) => count,
+            Err(err) => {
+                warn!(concat!($context, " write failed: {:?}"), err.kind());
+                $self.handle_disconnect();
+                return Err(Error::Transport(err));
+            }
+        }
+    }};
+}
+
+macro_rules! flush_step_or_disconnect {
+    ($self:expr, $connection:expr, $context:literal) => {{
+        if let Err(err) = $connection.flush().await {
+            warn!(concat!($context, " flush failed: {:?}"), err.kind());
+            $self.handle_disconnect();
+            return Err(Error::Transport(err));
+        }
+    }};
+}
+
 #[derive(Copy, Clone)]
 enum ReadMode {
     Bounded,
     Blocking,
+}
+
+#[derive(Copy, Clone)]
+enum FlushedPacket {
+    Control(ControlAction),
+    Release(u16),
+    Retained(u16),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -67,6 +102,11 @@ impl RuntimeState {
         self.session_resumed = false;
         self.next_ping = None;
         self.ping_timeout = None;
+    }
+
+    pub(super) fn note_outbound_activity(&mut self, now: Instant) {
+        self.next_ping =
+            (self.keepalive_interval.as_secs() != 0).then_some(now + self.keepalive_interval)
     }
 }
 
@@ -389,6 +429,7 @@ impl<'buf> Core<'buf> {
             self.handle_disconnect();
             return Err(PubError::Session(Error::Transport(err)));
         }
+        self.runtime.note_outbound_activity(Instant::now());
 
         Ok(())
     }
@@ -671,33 +712,16 @@ impl<'buf> Core<'buf> {
         Ok(self.session.outbound.next_step())
     }
 
-    async fn write_step_bytes<C: Io>(
-        connection: &mut C,
-        context: &'static str,
-        bytes: &[u8],
-    ) -> Result<usize, Error<C::Error>> {
-        match connection.write(bytes).await {
-            Ok(0) => {
-                warn!("{context} write returned WriteZero");
-                Err(Error::WriteZero)
-            }
-            Ok(count) => Ok(count),
-            Err(err) => {
-                warn!("{context} write failed: {:?}", err.kind());
-                Err(Error::Transport(err))
-            }
+    fn complete_flush(&mut self, packet: FlushedPacket, now: Instant) {
+        if matches!(packet, FlushedPacket::Control(ControlAction::PingReq)) {
+            self.runtime.ping_timeout = Some(now + Duration::from_millis(PING_TIMEOUT_MS));
         }
-    }
-
-    async fn flush_step<C: Io>(
-        connection: &mut C,
-        context: &'static str,
-    ) -> Result<(), Error<C::Error>> {
-        if let Err(err) = connection.flush().await {
-            warn!("{context} flush failed: {:?}", err.kind());
-            return Err(Error::Transport(err));
+        self.runtime.note_outbound_activity(now);
+        match packet {
+            FlushedPacket::Control(action) => self.session.outbound.flush_control(action),
+            FlushedPacket::Release(packet_id) => self.session.outbound.flush_release(packet_id),
+            FlushedPacket::Retained(packet_id) => self.session.outbound.flush_retained(packet_id),
         }
-        Ok(())
     }
 
     async fn perform_outbound_step<C: Io>(
@@ -723,19 +747,12 @@ impl<'buf> Core<'buf> {
                         step.action,
                         self.runtime.maximum_packet_size,
                     )?;
-                    let count = match Self::write_step_bytes(
+                    let count = write_step_or_disconnect!(
+                        self,
                         connection,
-                        "Control packet",
                         &packet[written..],
-                    )
-                    .await
-                    {
-                        Ok(count) => count,
-                        Err(err) => {
-                            self.handle_disconnect();
-                            return Err(err);
-                        }
-                    };
+                        "Control packet"
+                    );
                     self.session.outbound.set_control_written(
                         step.action,
                         written + count,
@@ -744,63 +761,42 @@ impl<'buf> Core<'buf> {
                 }
                 SendState::Flush => {
                     trace!("Flushing control packet {:?}", step.action);
-                    if let Err(err) = Self::flush_step(connection, "Control packet").await {
-                        self.handle_disconnect();
-                        return Err(err);
-                    }
-                    if matches!(step.action, ControlAction::PingReq) {
-                        self.runtime.ping_timeout =
-                            Some(now + Duration::from_millis(PING_TIMEOUT_MS));
-                        self.runtime.next_ping = Some(now + self.runtime.keepalive_interval / 2);
-                    }
-                    self.session.outbound.flush_control(step.action);
+                    flush_step_or_disconnect!(self, connection, "Control packet");
+                    self.complete_flush(FlushedPacket::Control(step.action), now);
                 }
                 SendState::Sent => {}
             },
-            OutboundStep::Release(step) => {
-                match step.state {
-                    SendState::Write { written } => {
-                        trace!(
-                            "Driving PUBREL write packet_id={} progress_from={} control={} retained={} pending_release={}",
-                            step.packet_id,
-                            written,
-                            self.session.outbound.pending_control_len(),
-                            self.session.outbound.retained_len(),
-                            self.session.outbound.pending_release_len()
-                        );
-                        let packet = serialize_pubrel(
-                            &mut small_buf,
-                            step.packet_id,
-                            step.reason,
-                            self.runtime.maximum_packet_size,
-                        )?;
-                        let count =
-                            match Self::write_step_bytes(connection, "PUBREL", &packet[written..])
-                                .await
-                            {
-                                Ok(count) => count,
-                                Err(err) => {
-                                    self.handle_disconnect();
-                                    return Err(err);
-                                }
-                            };
-                        self.session.outbound.set_release_written(
-                            step.packet_id,
-                            written + count,
-                            packet.len(),
-                        );
-                    }
-                    SendState::Flush => {
-                        trace!("Flushing PUBREL packet packet_id={}", step.packet_id);
-                        if let Err(err) = Self::flush_step(connection, "PUBREL").await {
-                            self.handle_disconnect();
-                            return Err(err);
-                        }
-                        self.session.outbound.flush_release(step.packet_id);
-                    }
-                    SendState::Sent => {}
+            OutboundStep::Release(step) => match step.state {
+                SendState::Write { written } => {
+                    trace!(
+                        "Driving PUBREL write packet_id={} progress_from={} control={} retained={} pending_release={}",
+                        step.packet_id,
+                        written,
+                        self.session.outbound.pending_control_len(),
+                        self.session.outbound.retained_len(),
+                        self.session.outbound.pending_release_len()
+                    );
+                    let packet = serialize_pubrel(
+                        &mut small_buf,
+                        step.packet_id,
+                        step.reason,
+                        self.runtime.maximum_packet_size,
+                    )?;
+                    let count =
+                        write_step_or_disconnect!(self, connection, &packet[written..], "PUBREL");
+                    self.session.outbound.set_release_written(
+                        step.packet_id,
+                        written + count,
+                        packet.len(),
+                    );
                 }
-            }
+                SendState::Flush => {
+                    trace!("Flushing PUBREL packet packet_id={}", step.packet_id);
+                    flush_step_or_disconnect!(self, connection, "PUBREL");
+                    self.complete_flush(FlushedPacket::Release(step.packet_id), now);
+                }
+                SendState::Sent => {}
+            },
             OutboundStep::Retained(step) => match step.state {
                 SendState::Write { written } => {
                     debug!(
@@ -815,19 +811,14 @@ impl<'buf> Core<'buf> {
                         self.session.outbound.pending_release_len()
                     );
                     Self::require_packet_size(self.runtime.maximum_packet_size, step.len)?;
-                    let packet = self.session.outbound.retained_packet(step.offset, step.len);
-                    let count = match Self::write_step_bytes(
-                        connection,
-                        "Retained packet",
-                        &packet[written..],
-                    )
-                    .await
-                    {
-                        Ok(count) => count,
-                        Err(err) => {
-                            self.handle_disconnect();
-                            return Err(err);
-                        }
+                    let count = {
+                        let packet = self.session.outbound.retained_packet(step.offset, step.len);
+                        write_step_or_disconnect!(
+                            self,
+                            connection,
+                            &packet[written..],
+                            "Retained packet"
+                        )
                     };
                     self.session.outbound.set_retained_written(
                         step.packet_id,
@@ -837,11 +828,8 @@ impl<'buf> Core<'buf> {
                 }
                 SendState::Flush => {
                     debug!("Flushing retained packet packet_id={}", step.packet_id);
-                    if let Err(err) = Self::flush_step(connection, "Retained packet").await {
-                        self.handle_disconnect();
-                        return Err(err);
-                    }
-                    self.session.outbound.flush_retained(step.packet_id);
+                    flush_step_or_disconnect!(self, connection, "Retained packet");
+                    self.complete_flush(FlushedPacket::Retained(step.packet_id), now);
                 }
                 SendState::Sent => {}
             },
@@ -1014,6 +1002,10 @@ mod tests {
             core.runtime.ping_timeout,
             Some(now + Duration::from_millis(PING_TIMEOUT_MS))
         );
+        assert_eq!(
+            core.runtime.next_ping,
+            Some(now + core.runtime.keepalive_interval)
+        );
     }
 
     #[test]
@@ -1062,6 +1054,42 @@ mod tests {
         }
         assert_eq!(core.runtime.ping_timeout, None);
         assert_eq!(core.runtime.state, ConnectionState::Active);
+    }
+
+    #[test]
+    fn inbound_publish_does_not_refresh_keepalive_deadline() {
+        let mut core = core();
+        let mut connection = MockConnection::default();
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(1);
+        core.runtime.state = ConnectionState::Active;
+        core.runtime.next_ping = Some(deadline);
+        connection.push_rx(&[0x30, 0x05, 0x00, 0x01, b'A', 0x00, 0x05]);
+
+        for _ in 0..3 {
+            let result = block_on(core.step_event(&mut connection, now)).unwrap();
+            if matches!(result, super::super::Event::Inbound(_)) {
+                break;
+            }
+            assert!(matches!(result, super::super::Event::Idle), "{result:?}");
+        }
+        assert_eq!(core.runtime.next_ping, Some(deadline));
+    }
+
+    #[test]
+    fn qos0_publish_refreshes_keepalive_deadline() {
+        let mut core = core();
+        let mut connection = MockConnection::default();
+        let now = Instant::now();
+        core.runtime.state = ConnectionState::Active;
+        core.runtime.next_ping = Some(now);
+
+        block_on(core.publish(&mut connection, crate::Publication::bytes("A", b"5"))).unwrap();
+        assert!(
+            core.runtime
+                .next_ping
+                .is_some_and(|deadline| deadline >= now + core.runtime.keepalive_interval)
+        );
     }
 
     #[test]
