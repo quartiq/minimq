@@ -20,46 +20,74 @@ The main API is [`Session`].
 
 ## Example
 
-```ignore
+```no_run
 use core::net::SocketAddr;
-use minimq::{
-    Buffers, ConfigBuilder, ConnectEvent, Error, Event, Io, QoS, Session, types::TopicFilter,
-};
-use tokio::net::TcpStream;
+# use std::io;
+# struct MyIo;
+# use embedded_io_async::{ErrorType, Read, ReadReady, Write, WriteReady};
+# impl ErrorType for MyIo {
+#     type Error = io::Error;
+# }
+# impl Read for MyIo {
+#     async fn read(&mut self, _buf: &mut [u8]) -> Result<usize, Self::Error> {
+#         todo!()
+#     }
+# }
+# impl Write for MyIo {
+#     async fn write(&mut self, _buf: &[u8]) -> Result<usize, Self::Error> {
+#         todo!()
+#     }
+#     async fn flush(&mut self) -> Result<(), Self::Error> {
+#         todo!()
+#     }
+# }
+# impl ReadReady for MyIo {
+#     fn read_ready(&mut self) -> Result<bool, Self::Error> {
+#         todo!()
+#     }
+# }
+# impl WriteReady for MyIo {
+#     fn write_ready(&mut self) -> Result<bool, Self::Error> {
+#         todo!()
+#     }
+# }
+# async fn open_io(_addr: SocketAddr) -> Result<MyIo, io::Error> { todo!() }
+use minimq::{Buffers, ConfigBuilder, ConnectEvent, Error, Event, Session, types::TopicFilter};
 
-async fn open_io(addr: SocketAddr) -> Result<impl Io<Error = std::io::Error>, std::io::Error> {
-    Ok(embedded_io_adapters::tokio_1::FromTokio::new(TcpStream::connect(addr).await?))
-}
-
-async fn run() -> Result<(), minimq::SessionError<impl Io<Error = std::io::Error>>> {
+async fn run() {
     let rx = &mut [0u8; 256];
     let tx = &mut [0u8; 768];
-    let addr: SocketAddr = "127.0.0.1:1883".parse()?;
-    let mut session = Session::new(ConfigBuilder::new(Buffers::new(rx, tx)).client_id("demo")?);
+    let addr: SocketAddr = "127.0.0.1:1883".parse().unwrap();
+    let mut session = Session::new(
+        ConfigBuilder::new(Buffers::new(rx, tx))
+            .client_id("demo")
+            .unwrap(),
+    );
 
     loop {
-        let io = open_io(addr).await?;
-        match session.connect(io).await? {
+        let io = open_io(addr).await.unwrap();
+        match session.connect(io).await.unwrap() {
             ConnectEvent::Connected => {
-                session.subscribe(&[TopicFilter::new("demo/in")], &[]).await?;
+                session
+                    .subscribe(&[TopicFilter::new("demo/in")], &[])
+                    .await
+                    .unwrap();
             }
             ConnectEvent::Reconnected => {}
         }
 
         loop {
             match session.poll().await {
-                Ok(Event::Inbound(message)) => {
-                    if let Some(reply) = message.reply("ack") {
-                        session.publish(reply.qos(QoS::AtLeastOnce)).await?;
-                    }
-                }
+                Ok(Event::Inbound(message)) => println!("topic={}", message.topic()),
                 Ok(Event::Idle) => {}
                 Err(Error::Disconnected) => break,
-                Err(err) => return Err(err),
+                Err(err) => panic!("{err}"),
             }
         }
     }
 }
+
+# fn main() {}
 ```
 
 The attached transport must implement [`embedded_io_async::Read`], [`embedded_io_async::Write`],
