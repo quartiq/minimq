@@ -35,7 +35,9 @@ pub(super) struct RuntimeState {
     pub(super) max_send_quota: u16,
     pub(super) maximum_packet_size: Option<u32>,
     pub(super) max_qos: Option<QoS>,
+    /// When to send next PINGREG?
     pub(super) next_ping: Option<Instant>,
+    /// Already send PINGREQ, wait PINGRESP until?
     pub(super) ping_timeout: Option<Instant>,
 }
 
@@ -61,6 +63,11 @@ impl RuntimeState {
             (None, Some(timeout)) => Some(timeout),
             (None, None) => None,
         }
+    }
+
+    pub(super) fn mark_sent(&mut self) {
+        self.next_ping = (self.keepalive_interval.as_secs() != 0)
+            .then_some(Instant::now() + self.keepalive_interval / 2);
     }
 
     pub(super) fn disconnect(&mut self) {
@@ -377,6 +384,7 @@ impl<'buf> Core<'buf> {
             self.handle_disconnect();
             return Err(PubError::Session(Error::Transport(err)));
         }
+        self.runtime.mark_sent();
 
         Ok(())
     }
@@ -421,7 +429,7 @@ impl<'buf> Core<'buf> {
                 return Err(err);
             }
             self.runtime.ping_timeout = Some(now + Duration::from_millis(PING_TIMEOUT_MS));
-            self.runtime.next_ping = Some(now + self.runtime.keepalive_interval / 2);
+            self.runtime.mark_sent();
         }
 
         Ok(())
@@ -617,6 +625,7 @@ impl<'buf> Core<'buf> {
                             return Err(Error::Transport(err));
                         }
                         self.session.outbound.flush_retained(step.packet_id);
+                        self.runtime.mark_sent();
                     }
                     SendState::Sent => {}
                 }
@@ -671,6 +680,7 @@ impl<'buf> Core<'buf> {
                             return Err(Error::Transport(err));
                         }
                         self.session.outbound.flush_release(step.packet_id);
+                        self.runtime.mark_sent();
                     }
                     SendState::Sent => {}
                 }

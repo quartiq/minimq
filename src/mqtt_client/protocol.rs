@@ -75,7 +75,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
 
             cx.runtime.state = ConnectionState::Active;
             cx.session.register_connected();
-            cx.runtime.next_ping = Some(now + cx.runtime.keepalive_interval / 2);
+            cx.runtime.mark_sent();
             cx.runtime.ping_timeout = None;
             if ack.session_present {
                 info!("Connected and resumed existing broker session");
@@ -201,6 +201,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                 cx.runtime.maximum_packet_size,
             )
             .await?;
+            cx.runtime.mark_sent(); // after every write_control_packet
         }
         ReceivedPacket::Publish(info) => {
             let retain = info.retain;
@@ -235,6 +236,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                         cx.runtime.maximum_packet_size,
                     )
                     .await?;
+                    cx.runtime.mark_sent();
                 }
                 QoS::ExactlyOnce => {
                     let packet_id = info.packet_id.ok_or(ProtocolError::MalformedPacket)?;
@@ -261,6 +263,7 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                         cx.runtime.maximum_packet_size,
                     )
                     .await?;
+                    cx.runtime.mark_sent();
                     if duplicate || !reason.success() {
                         debug!(
                             "Ignoring inbound QoS2 PUBLISH after PUBREC packet_id={} duplicate={} reason={:?}",
@@ -270,8 +273,6 @@ pub(super) async fn handle_packet<'pkt, 'state, C: Io>(
                     }
                 }
             }
-
-            cx.runtime.next_ping = Some(now + cx.runtime.keepalive_interval / 2);
             return Ok(Some(InboundPublish::new(
                 info.topic.0,
                 info.payload,
