@@ -68,6 +68,11 @@ impl RuntimeState {
         self.next_ping = None;
         self.ping_timeout = None;
     }
+
+    pub(super) fn note_outbound_activity(&mut self, now: Instant) {
+        self.next_ping = (self.keepalive_interval.as_secs() != 0)
+            .then_some(now + self.keepalive_interval)
+    }
 }
 
 #[derive(Debug)]
@@ -389,6 +394,7 @@ impl<'buf> Core<'buf> {
             self.handle_disconnect();
             return Err(PubError::Session(Error::Transport(err)));
         }
+        self.runtime.note_outbound_activity(Instant::now());
 
         Ok(())
     }
@@ -751,8 +757,8 @@ impl<'buf> Core<'buf> {
                     if matches!(step.action, ControlAction::PingReq) {
                         self.runtime.ping_timeout =
                             Some(now + Duration::from_millis(PING_TIMEOUT_MS));
-                        self.runtime.next_ping = Some(now + self.runtime.keepalive_interval / 2);
                     }
+                    self.runtime.note_outbound_activity(now);
                     self.session.outbound.flush_control(step.action);
                 }
                 SendState::Sent => {}
@@ -797,6 +803,7 @@ impl<'buf> Core<'buf> {
                             return Err(err);
                         }
                         self.session.outbound.flush_release(step.packet_id);
+                        self.runtime.note_outbound_activity(now);
                     }
                     SendState::Sent => {}
                 }
@@ -842,6 +849,7 @@ impl<'buf> Core<'buf> {
                         return Err(err);
                     }
                     self.session.outbound.flush_retained(step.packet_id);
+                    self.runtime.note_outbound_activity(now);
                 }
                 SendState::Sent => {}
             },
@@ -1014,6 +1022,10 @@ mod tests {
             core.runtime.ping_timeout,
             Some(now + Duration::from_millis(PING_TIMEOUT_MS))
         );
+        assert_eq!(
+            core.runtime.next_ping,
+            Some(now + core.runtime.keepalive_interval)
+        );
     }
 
     #[test]
@@ -1062,6 +1074,42 @@ mod tests {
         }
         assert_eq!(core.runtime.ping_timeout, None);
         assert_eq!(core.runtime.state, ConnectionState::Active);
+    }
+
+    #[test]
+    fn inbound_publish_does_not_refresh_keepalive_deadline() {
+        let mut core = core();
+        let mut connection = MockConnection::default();
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(1);
+        core.runtime.state = ConnectionState::Active;
+        core.runtime.next_ping = Some(deadline);
+        connection.push_rx(&[0x30, 0x05, 0x00, 0x01, b'A', 0x00, 0x05]);
+
+        for _ in 0..3 {
+            let result = block_on(core.step_event(&mut connection, now)).unwrap();
+            if matches!(result, super::super::Event::Inbound(_)) {
+                break;
+            }
+            assert!(matches!(result, super::super::Event::Idle), "{result:?}");
+        }
+        assert_eq!(core.runtime.next_ping, Some(deadline));
+    }
+
+    #[test]
+    fn qos0_publish_refreshes_keepalive_deadline() {
+        let mut core = core();
+        let mut connection = MockConnection::default();
+        let now = Instant::now();
+        core.runtime.state = ConnectionState::Active;
+        core.runtime.next_ping = Some(now);
+
+        block_on(core.publish(&mut connection, crate::Publication::bytes("A", b"5"))).unwrap();
+        assert!(
+            core.runtime
+                .next_ping
+                .is_some_and(|deadline| deadline >= now + core.runtime.keepalive_interval)
+        );
     }
 
     #[test]

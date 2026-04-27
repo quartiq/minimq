@@ -91,7 +91,7 @@ pub(super) fn handle_packet<'pkt, 'state>(
 
             cx.runtime.state = ConnectionState::Active;
             cx.session.register_connected();
-            cx.runtime.next_ping = Some(now + cx.runtime.keepalive_interval / 2);
+            cx.runtime.note_outbound_activity(now);
             cx.runtime.ping_timeout = None;
             if ack.session_present {
                 info!("Connected and resumed existing broker session");
@@ -277,8 +277,6 @@ pub(super) fn handle_packet<'pkt, 'state>(
                     }
                 }
             }
-
-            cx.runtime.next_ping = Some(now + cx.runtime.keepalive_interval / 2);
             return Ok(PacketOutcome::Inbound(InboundPublish::new(
                 info.topic.0,
                 info.payload,
