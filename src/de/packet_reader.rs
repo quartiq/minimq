@@ -109,6 +109,10 @@ impl<'a> PacketReader<'a> {
     }
 
     pub fn received_packet(&mut self) -> Result<ReceivedPacket<'_>, Error> {
+        self.take_packet().map(|(_, packet)| packet)
+    }
+
+    pub fn take_packet(&mut self) -> Result<(usize, ReceivedPacket<'_>), Error> {
         let packet_length = *self.packet_length.as_ref().ok_or(Error::MalformedPacket)?;
         trace!(
             "PacketReader handing off complete packet of {} bytes",
@@ -119,7 +123,10 @@ impl<'a> PacketReader<'a> {
         // immediately ready to begin receiving a new packet.
         self.reset();
 
-        ReceivedPacket::from_buffer(&self.buffer[..packet_length])
+        Ok((
+            packet_length,
+            ReceivedPacket::from_buffer(&self.buffer[..packet_length])?,
+        ))
     }
 }
 

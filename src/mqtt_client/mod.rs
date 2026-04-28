@@ -10,12 +10,12 @@ use crate::{
     publication::{OwnedResponseTarget, Publication, ResponseTarget},
     types::Properties,
 };
-use embedded_io_async::{ErrorType, Read, ReadReady, Write, WriteReady};
+use embedded_io_async::{ErrorType, Read, Write};
 
 /// Transport trait required by [`Session`](crate::Session).
-pub trait Io: Read + Write + ReadReady + WriteReady + ErrorType {}
+pub trait Io: Read + Write + ErrorType {}
 
-impl<T> Io for T where T: Read + Write + ReadReady + WriteReady + ErrorType {}
+impl<T> Io for T where T: Read + Write + ErrorType {}
 
 /// Inbound MQTT `PUBLISH` delivered by [`Event::Inbound`].
 #[derive(Debug)]
@@ -109,8 +109,6 @@ impl<'a> InboundPublish<'a> {
 /// Output of [`Session::poll`](crate::Session::poll).
 #[derive(Debug)]
 pub enum Event<'a> {
-    /// No inbound message was produced.
-    Idle,
     /// An inbound publish was received.
     Inbound(InboundPublish<'a>),
 }

@@ -1,5 +1,3 @@
-use embassy_time::Instant;
-
 use crate::{
     ConfigBuilder, Error, Property, ProtocolError, PubError, QoS, ReasonCode,
     publication::Publication, types::TopicFilter,
@@ -74,15 +72,17 @@ where
         result
     }
 
-    async fn step_slot<'a>(
+    async fn poll_slot<'a>(
         core: &'a mut Core<'buf>,
         slot: &mut Option<IO>,
     ) -> Result<Event<'a>, Error<IO::Error>> {
         let Some(connection) = slot.as_mut() else {
             return Err(Error::Disconnected);
         };
-        match core.step_event(connection, Instant::now()).await {
-            Ok(event) => Ok(event),
+        match core.wait_for_inbound(connection).await {
+            Ok(()) => Ok(core
+                .take_inbound_event()
+                .expect("wait_for_inbound returned without a buffered publish")),
             Err(err) => {
                 if Self::drops_connection(&err)
                     || matches!(
@@ -226,17 +226,10 @@ where
         result
     }
 
-    /// Advance the session once.
+    /// Wait until an inbound publish arrives or the session disconnects.
     ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
     pub async fn poll(&mut self) -> Result<Event<'_>, Error<IO::Error>> {
-        self.step().await
-    }
-
-    /// Advance the session once without blocking on idle transport reads.
-    ///
-    /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
-    pub async fn step(&mut self) -> Result<Event<'_>, Error<IO::Error>> {
-        Self::step_slot(&mut self.core, &mut self.connection).await
+        Self::poll_slot(&mut self.core, &mut self.connection).await
     }
 }

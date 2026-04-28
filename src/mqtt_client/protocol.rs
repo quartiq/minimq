@@ -2,7 +2,6 @@ use crate::de::received_packet::ReceivedPacket;
 use crate::{Error, ProtocolError, QoS, ReasonCode, debug, info, trace};
 use embassy_time::Instant;
 
-use super::InboundPublish;
 use super::core::{RuntimeState, SessionData};
 use super::outbound::{ControlAction, check_control_packet_size, check_pubrel_size};
 
@@ -11,16 +10,16 @@ pub(super) struct PacketContext<'a, 'buf> {
     pub(super) runtime: &'a mut RuntimeState,
 }
 
-pub(super) enum PacketOutcome<'pkt> {
+pub(super) enum PacketOutcome {
     None,
-    Inbound(InboundPublish<'pkt>),
+    Inbound,
 }
 
 pub(super) fn handle_packet<'pkt, 'state>(
     cx: &mut PacketContext<'_, 'state>,
     packet: ReceivedPacket<'pkt>,
     _now: Instant,
-) -> Result<PacketOutcome<'pkt>, Error<core::convert::Infallible>> {
+) -> Result<PacketOutcome, Error<core::convert::Infallible>> {
     match packet {
         ReceivedPacket::ConnAck(_) => return Err(ProtocolError::UnexpectedPacket.into()),
         ReceivedPacket::SubAck(ack) => {
@@ -200,13 +199,7 @@ pub(super) fn handle_packet<'pkt, 'state>(
                     }
                 }
             }
-            return Ok(PacketOutcome::Inbound(InboundPublish::new(
-                info.topic.0,
-                info.payload,
-                info.properties,
-                retain,
-                qos,
-            )));
+            return Ok(PacketOutcome::Inbound);
         }
         ReceivedPacket::Disconnect(_) => {
             info!("Received broker DISCONNECT");

@@ -8,7 +8,7 @@ use crate::{
 };
 use core::convert::TryFrom;
 use core::num::NonZeroU16;
-use embassy_time::{Duration, Instant};
+use embassy_time::{Duration, Instant, with_deadline};
 use embedded_io_async::Error as _;
 use embedded_io_async::ErrorKind;
 use heapless::{String, Vec};
@@ -49,12 +49,6 @@ macro_rules! flush_step_or_disconnect {
             return Err(Error::Transport(err));
         }
     }};
-}
-
-#[derive(Copy, Clone)]
-enum ReadMode {
-    Bounded,
-    Blocking,
 }
 
 #[derive(Copy, Clone)]
@@ -111,6 +105,15 @@ impl RuntimeState {
         let lead_ms = PING_TIMEOUT_MS.min(keepalive_ms / 2);
         Some(Duration::from_millis(keepalive_ms - lead_ms))
     }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        match (self.next_ping, self.ping_timeout) {
+            (Some(next_ping), Some(ping_timeout)) => Some(next_ping.min(ping_timeout)),
+            (Some(next_ping), None) => Some(next_ping),
+            (None, Some(ping_timeout)) => Some(ping_timeout),
+            (None, None) => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -160,6 +163,29 @@ pub(super) struct Core<'buf> {
     auth: Option<Auth<'buf>>,
     session_expiry_interval: u32,
     downgrade_qos: bool,
+}
+
+pub(super) struct PendingInbound<'a, 'buf> {
+    core: &'a mut Core<'buf>,
+    packet_length: usize,
+}
+
+impl<'a, 'buf> PendingInbound<'a, 'buf> {
+    pub(super) fn into_event(self) -> super::Event<'a> {
+        let ReceivedPacket::Publish(info) =
+            ReceivedPacket::from_buffer(&self.core.packet_reader.buffer[..self.packet_length])
+                .expect("pending inbound packet must remain decodable")
+        else {
+            unreachable!("pending inbound packet must be a PUBLISH");
+        };
+        super::Event::Inbound(super::InboundPublish::new(
+            info.topic.0,
+            info.payload,
+            info.properties,
+            info.retain,
+            info.qos,
+        ))
+    }
 }
 
 impl<'buf> Core<'buf> {
@@ -246,12 +272,7 @@ impl<'buf> Core<'buf> {
         self.runtime.next_ping = None;
         self.runtime.ping_timeout = None;
 
-        if !self
-            .read_packet_mode(connection, ReadMode::Blocking)
-            .await?
-        {
-            return Err(Error::Protocol(ProtocolError::UnexpectedPacket));
-        }
+        self.read_packet(connection).await?;
         let packet = {
             let packet_reader = &mut self.packet_reader;
             match packet_reader.received_packet() {
@@ -557,29 +578,6 @@ impl<'buf> Core<'buf> {
         result
     }
 
-    pub(super) async fn step_event<C: Io>(
-        &mut self,
-        connection: &mut C,
-        now: Instant,
-    ) -> Result<super::Event<'_>, Error<C::Error>> {
-        self.maintain_step(connection, now).await?;
-        self.read_step_event(connection, now).await
-    }
-
-    async fn read_step_event<C: Io>(
-        &mut self,
-        connection: &mut C,
-        now: Instant,
-    ) -> Result<super::Event<'_>, Error<C::Error>> {
-        if !self.read_packet_mode(connection, ReadMode::Bounded).await? {
-            return Ok(super::Event::Idle);
-        }
-        match self.dispatch_received_packet(now)? {
-            PacketOutcome::None => Ok(super::Event::Idle),
-            PacketOutcome::Inbound(inbound) => Ok(super::Event::Inbound(inbound)),
-        }
-    }
-
     fn should_queue_pingreq(&self, now: Instant) -> bool {
         self.runtime.ping_timeout.is_none()
             && self
@@ -601,11 +599,47 @@ impl<'buf> Core<'buf> {
         Ok(())
     }
 
-    async fn read_packet_mode<C: Io>(
+    pub(super) async fn wait_for_inbound<C: Io>(
         &mut self,
         connection: &mut C,
-        mode: ReadMode,
-    ) -> Result<bool, Error<C::Error>> {
+    ) -> Result<PendingInbound<'_, 'buf>, Error<C::Error>> {
+        loop {
+            let now = Instant::now();
+            self.maintain_step(connection, now).await?;
+
+            if self.packet_reader.packet_available() {
+                match self.dispatch_received_packet(now)? {
+                    Some(packet_length) => {
+                        return Ok(PendingInbound {
+                            core: self,
+                            packet_length,
+                        });
+                    }
+                    PacketOutcome::None => continue,
+                }
+            }
+
+            let deadline = self.runtime.next_deadline();
+            let read = self.read_packet(connection);
+            match deadline {
+                Some(deadline) => match with_deadline(deadline, read).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => return Err(err),
+                    Err(_) => continue,
+                },
+                None => read.await?,
+            }
+
+            if let Some(packet_length) = self.dispatch_received_packet(Instant::now())? {
+                return Ok(PendingInbound {
+                    core: self,
+                    packet_length,
+                });
+            }
+        }
+    }
+
+    async fn read_packet<C: Io>(&mut self, connection: &mut C) -> Result<(), Error<C::Error>> {
         while !self.packet_reader.packet_available() {
             let buffer = match self.packet_reader.receive_buffer() {
                 Ok(buffer) => buffer,
@@ -617,27 +651,16 @@ impl<'buf> Core<'buf> {
             if buffer.is_empty() {
                 break;
             }
-            if matches!(mode, ReadMode::Bounded)
-                && !connection.read_ready().map_err(Error::Transport)?
-            {
-                return Ok(false);
-            }
 
             let count = match connection.read(buffer).await {
                 Ok(count) => count,
                 Err(err) => {
                     let kind = err.kind();
                     if matches!(kind, ErrorKind::TimedOut | ErrorKind::Interrupted) {
-                        trace!("Read interrupted/timed out while waiting for packet");
-                        return match mode {
-                            ReadMode::Bounded => Ok(false),
-                            ReadMode::Blocking => {
-                                self.handle_disconnect();
-                                Err(Error::Transport(err))
-                            }
-                        };
+                        trace!("Transport read timed out/interrupted");
+                    } else {
+                        warn!("Transport read failed: {:?}", kind);
                     }
-                    warn!("Transport read failed: {:?}", kind);
                     self.handle_disconnect();
                     return Err(Error::Transport(err));
                 }
@@ -649,31 +672,19 @@ impl<'buf> Core<'buf> {
             }
             self.packet_reader.commit(count);
             trace!("Read {} transport bytes", count);
-            if matches!(mode, ReadMode::Bounded) {
-                let packet_ready = match self.packet_reader.receive_buffer() {
-                    Ok(buffer) => buffer.is_empty(),
-                    Err(err) => {
-                        self.handle_disconnect();
-                        return Err(err.into());
-                    }
-                };
-                if !packet_ready {
-                    return Ok(false);
-                }
-            }
         }
 
-        Ok(self.packet_reader.packet_available())
+        Ok(())
     }
 
-    fn dispatch_received_packet<E>(&mut self, now: Instant) -> Result<PacketOutcome<'_>, Error<E>> {
+    fn dispatch_received_packet<E>(&mut self, now: Instant) -> Result<Option<usize>, Error<E>> {
         if !self.packet_reader.packet_available() {
-            return Ok(PacketOutcome::None);
+            return Ok(None);
         }
 
-        let packet = {
+        let (packet_length, packet) = {
             let packet_reader = &mut self.packet_reader;
-            match packet_reader.received_packet() {
+            match packet_reader.take_packet() {
                 Ok(packet) => packet,
                 Err(err) => {
                     warn!("Failed to decode inbound packet: {:?}", err);
@@ -697,11 +708,14 @@ impl<'buf> Core<'buf> {
             self.session.outbound.arm_replay();
             self.runtime.reset_transport();
         }
-        result.map_err(Self::map_packet_error)
+        match result.map_err(Self::map_packet_error)? {
+            PacketOutcome::Inbound => Ok(Some(packet_length)),
+            PacketOutcome::None => Ok(None),
+        }
     }
 
     fn should_disconnect_after_packet(
-        result: &Result<PacketOutcome<'_>, Error<core::convert::Infallible>>,
+        result: &Result<PacketOutcome, Error<core::convert::Infallible>>,
     ) -> bool {
         matches!(
             result,
@@ -742,11 +756,6 @@ impl<'buf> Core<'buf> {
         let Some(step) = self.next_outbound_step(now)? else {
             return Ok(false);
         };
-
-        if !connection.write_ready().map_err(Error::Transport)? {
-            return Ok(false);
-        }
-
         self.perform_outbound_step(connection, step, now).await?;
         Ok(true)
     }
@@ -956,7 +965,8 @@ impl<'buf> Core<'buf> {
 mod tests {
     use super::*;
     use crate::{Buffers, ConfigBuilder, tests::block_on};
-    use embedded_io_async::{ErrorType, Read, ReadReady, Write, WriteReady};
+    use embassy_time::Duration;
+    use embedded_io_async::{ErrorType, Read, Write};
     use std::collections::VecDeque;
     use std::vec::Vec;
 
@@ -992,12 +1002,6 @@ mod tests {
         }
     }
 
-    impl ReadReady for MockConnection {
-        fn read_ready(&mut self) -> Result<bool, Self::Error> {
-            Ok(!self.rx.is_empty())
-        }
-    }
-
     impl Write for MockConnection {
         async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
             if let Some(err) = self.write_error.take() {
@@ -1009,12 +1013,6 @@ mod tests {
 
         async fn flush(&mut self) -> Result<(), Self::Error> {
             Ok(())
-        }
-    }
-
-    impl WriteReady for MockConnection {
-        fn write_ready(&mut self) -> Result<bool, Self::Error> {
-            Ok(true)
         }
     }
 
@@ -1096,16 +1094,11 @@ mod tests {
         assert!(block_on(core.maintain_step(&mut connection, now)).unwrap());
         connection.push_rx(&[0xD0, 0x00]);
 
-        for _ in 0..3 {
-            let result = block_on(core.step_event(&mut connection, now));
-            assert!(
-                matches!(result, Ok(super::super::Event::Idle)),
-                "{result:?}"
-            );
-            if core.runtime.ping_timeout.is_none() {
-                break;
-            }
-        }
+        block_on(core.read_packet(&mut connection)).unwrap();
+        let result = core
+            .dispatch_received_packet::<ErrorKind>(Instant::now())
+            .unwrap();
+        assert!(matches!(result, PacketOutcome::None));
         assert_eq!(core.runtime.ping_timeout, None);
         assert!(core.runtime.next_ping.is_some());
     }
@@ -1119,13 +1112,12 @@ mod tests {
         core.runtime.next_ping = Some(deadline);
         connection.push_rx(&[0x30, 0x05, 0x00, 0x01, b'A', 0x00, 0x05]);
 
-        for _ in 0..3 {
-            let result = block_on(core.step_event(&mut connection, now)).unwrap();
-            if matches!(result, super::super::Event::Inbound(_)) {
-                break;
-            }
-            assert!(matches!(result, super::super::Event::Idle), "{result:?}");
-        }
+        block_on(core.wait_for_inbound(&mut connection)).unwrap();
+        let result = core.take_inbound_event();
+        assert!(
+            matches!(result, Some(super::super::Event::Inbound(_))),
+            "{result:?}"
+        );
         assert_eq!(core.runtime.next_ping, Some(deadline));
     }
 

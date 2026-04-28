@@ -1,11 +1,10 @@
 //! TLS connectivity example for `embedded-tls`.
 //!
-//! `embedded-tls` does not expose `ReadReady` / `WriteReady`, so this adapter reports
-//! unconditional readiness and the resulting `Session::poll()` loop is not bounded.
-//! Use this as a TLS transport example, not as a model for a readiness-aware connector.
+//! Use this as a TLS transport example. Bounded/cooperative session driving is done by wrapping
+//! the cancel-safe blocking `Session::poll()` in an external timeout at the call site.
 
 use embedded_io_adapters::tokio_1::FromTokio;
-use embedded_io_async::{ErrorKind, ErrorType, Read, ReadReady, Write, WriteReady};
+use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 use minimq::{
     ConfigBuilder, ConnectEvent, Event, Property, Publication, QoS, Session, types::TopicFilter,
@@ -65,18 +64,6 @@ impl Write for EmqxTlsConnection {
     }
 }
 
-impl ReadReady for EmqxTlsConnection {
-    fn read_ready(&mut self) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
-impl WriteReady for EmqxTlsConnection {
-    fn write_ready(&mut self) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
 async fn connect_tls(host: &str, port: u16) -> Result<EmqxTlsConnection, EmqxTlsError> {
     let stream = TcpStream::connect((host, port))
         .await
@@ -121,12 +108,13 @@ async fn connect(
 async fn flush(
     session: &mut Session<'_, EmqxTlsConnection>,
 ) -> Result<(), minimq::SessionError<EmqxTlsConnection>> {
-    while !matches!(
-        tokio::time::timeout(Duration::from_secs(10), session.poll())
-            .await
-            .unwrap()?,
-        Event::Idle
-    ) {}
+    while !session.is_publish_quiescent() {
+        match tokio::time::timeout(Duration::from_millis(10), session.poll()).await {
+            Ok(Ok(Event::Inbound(_))) => {}
+            Ok(Err(err)) => return Err(err),
+            Err(_) => {}
+        }
+    }
     Ok(())
 }
 
@@ -148,7 +136,7 @@ async fn recv(
                 );
                 return Ok(());
             }
-            Event::Inbound(_) | Event::Idle => {}
+            Event::Inbound(_) => {}
         }
     }
 }
