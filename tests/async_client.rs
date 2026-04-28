@@ -15,6 +15,7 @@ struct MockIo {
     rx: VecDeque<Vec<u8>>,
     tx: Vec<Vec<u8>>,
     write_error: Option<(usize, ErrorKind)>,
+    pending_reads: usize,
     pending_writes: usize,
     pending_flushes: usize,
 }
@@ -39,6 +40,10 @@ impl MockConnection {
         self.inner.borrow_mut().write_error = Some((successful_writes, err));
     }
 
+    fn pend_reads(&mut self, count: usize) {
+        self.inner.borrow_mut().pending_reads = count;
+    }
+
     fn pend_writes(&mut self, count: usize) {
         self.inner.borrow_mut().pending_writes = count;
     }
@@ -58,23 +63,34 @@ impl ErrorType for MockConnection {
 
 impl Read for MockConnection {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        let Some(mut chunk) = self.inner.borrow_mut().rx.pop_front() else {
-            return Err(ErrorKind::TimedOut);
-        };
+        poll_fn(|cx| {
+            let mut inner = self.inner.borrow_mut();
+            if inner.pending_reads != 0 {
+                inner.pending_reads -= 1;
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
 
-        let len = buf.len().min(chunk.len());
-        buf[..len].copy_from_slice(&chunk[..len]);
-        if len < chunk.len() {
-            chunk.drain(..len);
-            self.inner.borrow_mut().rx.push_front(chunk);
-        }
-        Ok(len)
+            let Some(mut chunk) = inner.rx.pop_front() else {
+                return Poll::Ready(Err(ErrorKind::TimedOut));
+            };
+
+            let len = buf.len().min(chunk.len());
+            buf[..len].copy_from_slice(&chunk[..len]);
+            if len < chunk.len() {
+                chunk.drain(..len);
+                inner.rx.push_front(chunk);
+            }
+            Poll::Ready(Ok(len))
+        })
+        .await
     }
 }
 
 impl ReadReady for MockConnection {
     fn read_ready(&mut self) -> Result<bool, Self::Error> {
-        Ok(!self.inner.borrow().rx.is_empty())
+        let inner = self.inner.borrow();
+        Ok(inner.pending_reads != 0 || !inner.rx.is_empty())
     }
 }
 
@@ -540,6 +556,23 @@ fn subscribe_survives_cancellation_during_pending_flush() {
     assert_eq!(inspect.tx().len(), 2);
     assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
     assert_eq!(inspect.tx().len(), 2);
+}
+
+#[test]
+fn poll_survives_cancellation_during_pending_read() {
+    let mut connection = MockConnection::default();
+    let mut inspect = connection.clone();
+    connection.push_rx(&connack());
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    inspect.pend_reads(1);
+    let mut future = Box::pin(session.poll());
+    assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
+    drop(future);
+
+    assert!(session.is_connected());
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
 }
 
 #[test]
@@ -1087,6 +1120,50 @@ fn poll_requires_connected_session() {
 }
 
 #[test]
+fn connect_rolls_back_after_cancellation_during_pending_write() {
+    let mut first = MockConnection::default();
+    first.pend_writes(1);
+    first.push_rx(&connack());
+    let second = {
+        let mut connection = MockConnection::default();
+        connection.push_rx(&connack());
+        connection
+    };
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config());
+
+    let mut future = Box::pin(session.connect(connector.connect().unwrap()));
+    assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
+    drop(future);
+
+    assert!(!session.is_connected());
+    assert!(matches!(block_on(session.poll()), Err(Error::Disconnected)));
+    expect_connected(&mut session, &connector);
+}
+
+#[test]
+fn connect_rolls_back_after_cancellation_during_pending_connack() {
+    let mut first = MockConnection::default();
+    first.pend_reads(1);
+    first.push_rx(&connack());
+    let second = {
+        let mut connection = MockConnection::default();
+        connection.push_rx(&connack());
+        connection
+    };
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config());
+
+    let mut future = Box::pin(session.connect(connector.connect().unwrap()));
+    assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
+    drop(future);
+
+    assert!(!session.is_connected());
+    assert!(matches!(block_on(session.poll()), Err(Error::Disconnected)));
+    expect_connected(&mut session, &connector);
+}
+
+#[test]
 fn disconnect_sends_disconnect_packet_and_drops_connection() {
     let mut connection = MockConnection::default();
     let inspect = connection.clone();
@@ -1096,6 +1173,25 @@ fn disconnect_sends_disconnect_packet_and_drops_connection() {
 
     block_on(session.disconnect()).unwrap();
 
+    assert!(!session.is_connected());
+    assert_eq!(inspect.tx().last().unwrap(), &disconnect_req());
+}
+
+#[test]
+fn disconnect_survives_cancellation_during_pending_write() {
+    let mut connection = MockConnection::default();
+    let mut inspect = connection.clone();
+    connection.push_rx(&connack());
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    inspect.pend_writes(1);
+    let mut future = Box::pin(session.disconnect());
+    assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
+    drop(future);
+
+    assert!(session.is_connected());
+    block_on(session.disconnect()).unwrap();
     assert!(!session.is_connected());
     assert_eq!(inspect.tx().last().unwrap(), &disconnect_req());
 }

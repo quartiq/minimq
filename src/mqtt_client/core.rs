@@ -203,6 +203,10 @@ impl<'buf> Core<'buf> {
         self.runtime.state == ConnectionState::Disconnected
     }
 
+    pub(super) fn rollback_transport(&mut self) {
+        self.handle_disconnect();
+    }
+
     pub(super) fn can_publish(&mut self, qos: QoS) -> bool {
         if self.runtime.state != ConnectionState::Active {
             return false;
