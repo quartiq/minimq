@@ -1,6 +1,4 @@
-mod core;
 mod outbound;
-mod protocol;
 mod session;
 
 pub use session::Session;
@@ -13,6 +11,10 @@ use crate::{
 use embedded_io_async::{ErrorType, Read, Write};
 
 /// Transport trait required by [`Session`](crate::Session).
+///
+/// Ordinary lack of inbound data must leave the read future pending. If `read()` returns
+/// `TimedOut` or `Interrupted`, [`Session::poll`](crate::Session::poll) treats that as transport
+/// failure and disconnects the session.
 pub trait Io: Read + Write + ErrorType {}
 
 impl<T> Io for T where T: Read + Write + ErrorType {}

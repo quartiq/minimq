@@ -1135,7 +1135,7 @@ fn poll_requires_connected_session() {
 }
 
 #[test]
-fn connect_rolls_back_after_cancellation_during_pending_write() {
+fn connect_retries_cleanly_after_cancellation_during_pending_write() {
     let mut first = MockConnection::default();
     first.pend_writes(1);
     first.push_rx(&connack());
@@ -1157,7 +1157,7 @@ fn connect_rolls_back_after_cancellation_during_pending_write() {
 }
 
 #[test]
-fn connect_rolls_back_after_cancellation_during_pending_connack() {
+fn connect_retries_cleanly_after_cancellation_during_pending_connack() {
     let mut first = MockConnection::default();
     first.pend_reads(1);
     first.push_rx(&connack());

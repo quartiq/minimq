@@ -81,6 +81,9 @@ async fn run() {
 
 The attached transport must implement [`embedded_io_async::Read`] and
 [`embedded_io_async::Write`].
+Ordinary lack of inbound data must keep the read future pending; if the transport returns
+`TimedOut` or `Interrupted`, [`Session::poll()`] treats that as transport failure and disconnects
+the session.
 
 For a TLS connectivity example and for caller-side bounded/cooperative driving via external
 timeouts, see `examples/tls_public_broker.rs`.
@@ -104,6 +107,8 @@ transport/protocol loss.
 
 If [`Session::poll()`] returns [`Error::Disconnected`], the caller decides when to call
 [`Session::connect()`] with a fresh transport again.
+Other transport/protocol errors already tear down the attached transport locally; callers should
+handle the error and reconnect rather than retrying `poll()` on the same session state.
 
 For bounded or cooperative polling, wrap the cancel-safe blocking [`Session::poll()`] future in an
 external timeout such as [`embassy_time::with_timeout()`] or [`embassy_time::with_deadline()`].
