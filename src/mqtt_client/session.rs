@@ -55,6 +55,13 @@ impl<'buf, IO> Session<'buf, IO>
 where
     IO: Io,
 {
+    fn drops_connection(err: &Error<IO::Error>) -> bool {
+        matches!(
+            err,
+            Error::Disconnected | Error::Transport(_) | Error::WriteZero
+        )
+    }
+
     async fn disconnect_slot(
         core: &mut Core<'buf>,
         slot: &mut Option<IO>,
@@ -71,20 +78,32 @@ where
         core: &'a mut Core<'buf>,
         slot: &mut Option<IO>,
     ) -> Result<Event<'a>, Error<IO::Error>> {
-        if !core.is_connected() {
-            return Err(Error::Disconnected);
-        }
         let Some(connection) = slot.as_mut() else {
             return Err(Error::Disconnected);
         };
         match core.step_event(connection, Instant::now()).await {
             Ok(event) => Ok(event),
             Err(err) => {
-                if !matches!(
-                    err,
-                    Error::Protocol(ProtocolError::Failed(reason))
-                        if reason != ReasonCode::PacketTooLarge
-                ) {
+                if Self::drops_connection(&err)
+                    || matches!(
+                        err,
+                        Error::Protocol(ProtocolError::Failed(reason))
+                            if reason == ReasonCode::PacketTooLarge
+                    )
+                    || matches!(
+                        err,
+                        Error::Protocol(
+                            ProtocolError::MalformedPacket
+                                | ProtocolError::UnexpectedPacket
+                                | ProtocolError::InvalidProperty
+                                | ProtocolError::ProvidedClientIdTooLong
+                                | ProtocolError::WrongQos
+                                | ProtocolError::UnsupportedPacket
+                                | ProtocolError::BadIdentifier
+                                | ProtocolError::Deserialization(_)
+                        )
+                    )
+                {
                     *slot = None;
                 }
                 Err(err)
@@ -102,13 +121,13 @@ where
 
     /// Return whether the MQTT session is currently established.
     pub fn is_connected(&self) -> bool {
-        self.core.is_connected()
+        self.connection.is_some()
     }
 
     /// Return whether the session currently has the local capacity to attempt a
     /// publish at the requested QoS.
     pub fn can_publish(&mut self, qos: QoS) -> bool {
-        self.core.can_publish(qos)
+        self.connection.is_some() && self.core.can_publish(qos)
     }
 
     /// Return whether the session has no in-flight retained MQTT packets or
@@ -139,7 +158,7 @@ where
             return Err(Error::Disconnected);
         };
         let result = self.core.subscribe(connection, topics, properties).await;
-        if self.core.is_disconnected() {
+        if result.as_ref().err().is_some_and(Self::drops_connection) {
             self.connection = None;
         }
         result
@@ -157,7 +176,7 @@ where
             return Err(Error::Disconnected);
         };
         let result = self.core.unsubscribe(connection, topics, properties).await;
-        if self.core.is_disconnected() {
+        if result.as_ref().err().is_some_and(Self::drops_connection) {
             self.connection = None;
         }
         result
@@ -182,7 +201,7 @@ where
             return Err(PubError::Session(Error::Disconnected));
         };
         let result = self.core.publish(connection, publication).await;
-        if self.core.is_disconnected() {
+        if matches!(&result, Err(PubError::Session(err)) if Self::drops_connection(err)) {
             self.connection = None;
         }
         result
@@ -194,7 +213,7 @@ where
     /// again on disconnect or connection failure. If cancelled during the handshake, the session
     /// rolls back to disconnected state and drops `io`.
     pub async fn connect(&mut self, mut io: IO) -> Result<ConnectEvent, Error<IO::Error>> {
-        if self.connection.is_some() || self.core.is_connected() {
+        if self.connection.is_some() {
             return Err(Error::NotReady);
         }
         let result = {

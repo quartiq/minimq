@@ -682,6 +682,23 @@ fn failed_connack_disconnects_session_and_allows_reconnect() {
 }
 
 #[test]
+fn broker_disconnect_during_connect_disconnects_session_and_allows_reconnect() {
+    let mut first = MockConnection::default();
+    first.push_rx(&disconnect());
+    let mut second = MockConnection::default();
+    second.push_rx(&connack());
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config());
+
+    assert!(matches!(
+        block_on(session.connect(connector.connect().unwrap())),
+        Err(Error::Disconnected)
+    ));
+    assert!(!session.is_connected());
+    expect_connected(&mut session, &connector);
+}
+
+#[test]
 fn zero_receive_maximum_disconnects_session_and_allows_reconnect() {
     let mut first = MockConnection::default();
     first.push_rx(&connack_receive_max(0));
@@ -1332,6 +1349,41 @@ fn fresh_session_after_reconnect_drops_stale_replay_state() {
 
     assert!(
         second_inspect
+            .tx()
+            .iter()
+            .all(|frame| frame.first() != Some(&0x3A))
+    );
+}
+
+#[test]
+fn fresh_session_failed_connack_still_drops_stale_replay_state() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.push_rx(&disconnect());
+
+    let mut second = MockConnection::default();
+    second.push_rx(&connack_receive_max(0));
+
+    let mut third = MockConnection::default();
+    let third_inspect = third.clone();
+    third.push_rx(&connack());
+
+    let connector = MockConnector::with_connections([first, second, third]);
+    let mut session = Session::new(config());
+
+    expect_connected(&mut session, &connector);
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+
+    expect_disconnected(&mut session);
+    assert!(matches!(
+        block_on(session.connect(connector.connect().unwrap())),
+        Err(Error::Protocol(ProtocolError::InvalidProperty))
+    ));
+    expect_connected(&mut session, &connector);
+    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+
+    assert!(
+        third_inspect
             .tx()
             .iter()
             .all(|frame| frame.first() != Some(&0x3A))

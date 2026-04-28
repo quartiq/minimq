@@ -1,108 +1,28 @@
 use crate::de::received_packet::ReceivedPacket;
-use crate::{Error, Property, ProtocolError, QoS, ReasonCode, debug, info, trace, warn};
-use core::convert::TryFrom;
-use embassy_time::{Duration, Instant};
-use heapless::String;
+use crate::{Error, ProtocolError, QoS, ReasonCode, debug, info, trace};
+use embassy_time::Instant;
 
 use super::InboundPublish;
-use super::core::{ConnectionState, RuntimeState, SessionData};
+use super::core::{RuntimeState, SessionData};
 use super::outbound::{ControlAction, check_control_packet_size, check_pubrel_size};
 
 pub(super) struct PacketContext<'a, 'buf> {
-    pub(super) client_id: &'a mut String<64>,
     pub(super) session: &'a mut SessionData<'buf>,
     pub(super) runtime: &'a mut RuntimeState,
 }
 
 pub(super) enum PacketOutcome<'pkt> {
     None,
-    Connected(bool),
     Inbound(InboundPublish<'pkt>),
 }
 
 pub(super) fn handle_packet<'pkt, 'state>(
     cx: &mut PacketContext<'_, 'state>,
     packet: ReceivedPacket<'pkt>,
-    now: Instant,
+    _now: Instant,
 ) -> Result<PacketOutcome<'pkt>, Error<core::convert::Infallible>> {
-    if cx.runtime.state == ConnectionState::Establishing
-        && !matches!(
-            packet,
-            ReceivedPacket::ConnAck(_) | ReceivedPacket::Disconnect(_)
-        )
-    {
-        return Err(ProtocolError::UnexpectedPacket.into());
-    }
-    if cx.runtime.state == ConnectionState::Active && matches!(packet, ReceivedPacket::ConnAck(_)) {
-        return Err(ProtocolError::UnexpectedPacket.into());
-    }
-
     match packet {
-        ReceivedPacket::ConnAck(ack) => {
-            if let Err(err) = ack.reason_code.as_result() {
-                warn!("Broker rejected CONNECT with reason {:?}", ack.reason_code);
-                cx.runtime.disconnect();
-                return Err(err.into());
-            }
-            cx.runtime.session_resumed = ack.session_present;
-            if !ack.session_present {
-                debug!("Broker started a fresh session; resetting local session state");
-                cx.session.reset();
-            }
-
-            cx.runtime.send_quota = cx.session.outbound.max_inflight();
-            cx.runtime.max_send_quota = cx.session.outbound.max_inflight();
-            cx.runtime.max_qos = None;
-            cx.runtime.maximum_packet_size = None;
-
-            for property in ack.properties.into_iter() {
-                match property? {
-                    Property::MaximumPacketSize(size) => {
-                        cx.runtime.maximum_packet_size = Some(size)
-                    }
-                    Property::AssignedClientIdentifier(id) => {
-                        *cx.client_id = String::try_from(id.0)
-                            .map_err(|_| ProtocolError::ProvidedClientIdTooLong)?;
-                    }
-                    Property::ServerKeepAlive(keepalive) => {
-                        cx.runtime.keepalive_interval = Duration::from_secs(keepalive as u64);
-                    }
-                    Property::ReceiveMaximum(max) => {
-                        if max == 0 {
-                            return Err(ProtocolError::InvalidProperty.into());
-                        }
-                        let local = cx.session.outbound.max_inflight();
-                        cx.runtime.send_quota = max.min(local);
-                        cx.runtime.max_send_quota = max.min(local);
-                    }
-                    Property::MaximumQoS(max) => {
-                        cx.runtime.max_qos =
-                            Some(QoS::try_from(max).map_err(|_| ProtocolError::WrongQos)?);
-                    }
-                    _ => {}
-                }
-            }
-
-            debug!(
-                "Activated session state resumed={} send_quota={}/{} max_qos={:?} broker_max_packet_size={:?}",
-                ack.session_present,
-                cx.runtime.send_quota,
-                cx.runtime.max_send_quota,
-                cx.runtime.max_qos,
-                cx.runtime.maximum_packet_size
-            );
-
-            cx.runtime.state = ConnectionState::Active;
-            cx.session.register_connected();
-            cx.runtime.note_outbound_activity(now);
-            cx.runtime.ping_timeout = None;
-            if ack.session_present {
-                info!("Connected and resumed existing broker session");
-            } else {
-                info!("Connected with a fresh broker session");
-            }
-            return Ok(PacketOutcome::Connected(ack.session_present));
-        }
+        ReceivedPacket::ConnAck(_) => return Err(ProtocolError::UnexpectedPacket.into()),
         ReceivedPacket::SubAck(ack) => {
             if !cx.session.outbound.ack_packet(ack.packet_identifier) {
                 debug!(
@@ -291,7 +211,8 @@ pub(super) fn handle_packet<'pkt, 'state>(
         ReceivedPacket::Disconnect(_) => {
             info!("Received broker DISCONNECT");
             cx.session.outbound.arm_replay();
-            cx.runtime.disconnect();
+            cx.runtime.reset_transport();
+            return Err(Error::Disconnected);
         }
     }
 

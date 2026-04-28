@@ -1,10 +1,12 @@
 use crate::de::PacketReader;
+use crate::de::received_packet::ReceivedPacket;
 use crate::packets::{Connect, DisconnectReq, Pub, Subscribe, Unsubscribe};
 use crate::ser::MAX_FIXED_HEADER_SIZE;
 use crate::types::{Auth, Properties, TopicFilter, Utf8String};
 use crate::{
     ConfigBuilder, Error, Property, ProtocolError, PubError, QoS, Will, debug, info, trace, warn,
 };
+use core::convert::TryFrom;
 use core::num::NonZeroU16;
 use embassy_time::{Duration, Instant};
 use embedded_io_async::Error as _;
@@ -62,16 +64,8 @@ enum FlushedPacket {
     Retained(u16),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(super) enum ConnectionState {
-    Disconnected,
-    Establishing,
-    Active,
-}
-
 #[derive(Debug)]
 pub(super) struct RuntimeState {
-    pub(super) state: ConnectionState,
     pub(super) session_resumed: bool,
     pub(super) keepalive_interval: Duration,
     pub(super) send_quota: u16,
@@ -85,7 +79,6 @@ pub(super) struct RuntimeState {
 impl RuntimeState {
     fn new(keepalive_interval: Duration) -> Self {
         Self {
-            state: ConnectionState::Disconnected,
             session_resumed: false,
             keepalive_interval,
             send_quota: u16::MAX,
@@ -97,8 +90,7 @@ impl RuntimeState {
         }
     }
 
-    pub(super) fn disconnect(&mut self) {
-        self.state = ConnectionState::Disconnected;
+    pub(super) fn reset_transport(&mut self) {
         self.session_resumed = false;
         self.next_ping = None;
         self.ping_timeout = None;
@@ -195,22 +187,11 @@ impl<'buf> Core<'buf> {
         }
     }
 
-    pub(super) fn is_connected(&self) -> bool {
-        self.runtime.state == ConnectionState::Active
-    }
-
-    pub(super) fn is_disconnected(&self) -> bool {
-        self.runtime.state == ConnectionState::Disconnected
-    }
-
     pub(super) fn rollback_transport(&mut self) {
         self.handle_disconnect();
     }
 
     pub(super) fn can_publish(&mut self, qos: QoS) -> bool {
-        if self.runtime.state != ConnectionState::Active {
-            return false;
-        }
         if qos == QoS::AtMostOnce {
             return self.session.outbound.scratch_space().len() >= MAX_FIXED_HEADER_SIZE;
         }
@@ -218,17 +199,13 @@ impl<'buf> Core<'buf> {
     }
 
     pub(super) fn is_publish_quiescent(&self) -> bool {
-        self.runtime.state == ConnectionState::Active && self.session.outbound.is_quiescent()
+        self.session.outbound.is_quiescent()
     }
 
     pub(super) async fn connect<C: Io>(
         &mut self,
         connection: &mut C,
     ) -> Result<super::ConnectEvent, Error<C::Error>> {
-        if self.runtime.state == ConnectionState::Active {
-            return Err(Error::NotReady);
-        }
-
         let client_id = self.client_id.clone();
         let properties = [
             Property::MaximumPacketSize(self.packet_reader.buffer.len() as u32),
@@ -266,22 +243,135 @@ impl<'buf> Core<'buf> {
             .await?;
         }
 
-        self.runtime.state = ConnectionState::Establishing;
         self.runtime.next_ping = None;
         self.runtime.ping_timeout = None;
 
-        match self
-            .read_packet_blocking(connection, Instant::now())
+        if !self
+            .read_packet_mode(connection, ReadMode::Blocking)
             .await?
         {
-            PacketOutcome::Connected(resumed) => Ok(if resumed {
-                super::ConnectEvent::Reconnected
-            } else {
-                super::ConnectEvent::Connected
-            }),
-            PacketOutcome::None | PacketOutcome::Inbound(_) => {
-                Err(Error::Protocol(ProtocolError::UnexpectedPacket))
+            return Err(Error::Protocol(ProtocolError::UnexpectedPacket));
+        }
+        let packet = {
+            let packet_reader = &mut self.packet_reader;
+            match packet_reader.received_packet() {
+                Ok(packet) => packet,
+                Err(err) => {
+                    warn!("Failed to decode inbound packet: {:?}", err);
+                    self.handle_disconnect();
+                    return Err(err.into());
+                }
             }
+        };
+        let ack = match packet {
+            ReceivedPacket::ConnAck(ack) => ack,
+            ReceivedPacket::Disconnect(_) => {
+                info!("Received broker DISCONNECT during CONNECT");
+                self.handle_disconnect();
+                return Err(Error::Disconnected);
+            }
+            _ => {
+                self.handle_disconnect();
+                return Err(Error::Protocol(ProtocolError::UnexpectedPacket));
+            }
+        };
+
+        let Self {
+            client_id,
+            session,
+            runtime,
+            ..
+        } = self;
+
+        if let Err(err) = ack.reason_code.as_result() {
+            warn!("Broker rejected CONNECT with reason {:?}", ack.reason_code);
+            runtime.reset_transport();
+            return Err(Error::Protocol(err));
+        }
+
+        let resumed = ack.session_present;
+        if !resumed {
+            debug!("Broker started a fresh session; resetting local session state");
+            session.reset();
+        }
+        let local_quota = session.outbound.max_inflight();
+        let mut send_quota = local_quota;
+        let mut max_send_quota = local_quota;
+        let mut max_qos = None;
+        let mut maximum_packet_size = None;
+        let mut keepalive_interval = runtime.keepalive_interval;
+        let mut assigned_client_id = None;
+
+        for property in ack.properties.into_iter() {
+            match match property {
+                Ok(property) => property,
+                Err(err) => {
+                    runtime.reset_transport();
+                    return Err(Error::Protocol(err));
+                }
+            } {
+                Property::MaximumPacketSize(size) => maximum_packet_size = Some(size),
+                Property::AssignedClientIdentifier(id) => {
+                    assigned_client_id = Some(match String::try_from(id.0) {
+                        Ok(client_id) => client_id,
+                        Err(_) => {
+                            runtime.reset_transport();
+                            return Err(Error::Protocol(ProtocolError::ProvidedClientIdTooLong));
+                        }
+                    });
+                }
+                Property::ServerKeepAlive(keepalive) => {
+                    keepalive_interval = Duration::from_secs(keepalive as u64);
+                }
+                Property::ReceiveMaximum(max) => {
+                    if max == 0 {
+                        runtime.reset_transport();
+                        return Err(Error::Protocol(ProtocolError::InvalidProperty));
+                    }
+                    send_quota = max.min(local_quota);
+                    max_send_quota = max.min(local_quota);
+                }
+                Property::MaximumQoS(max) => {
+                    max_qos = Some(match QoS::try_from(max) {
+                        Ok(qos) => qos,
+                        Err(_) => {
+                            runtime.reset_transport();
+                            return Err(Error::Protocol(ProtocolError::WrongQos));
+                        }
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        runtime.session_resumed = resumed;
+        runtime.keepalive_interval = keepalive_interval;
+        runtime.send_quota = send_quota;
+        runtime.max_send_quota = max_send_quota;
+        runtime.max_qos = max_qos;
+        runtime.maximum_packet_size = maximum_packet_size;
+        if let Some(assigned_client_id) = assigned_client_id {
+            *client_id = assigned_client_id;
+        }
+
+        debug!(
+            "Activated session state resumed={} send_quota={}/{} max_qos={:?} broker_max_packet_size={:?}",
+            resumed,
+            runtime.send_quota,
+            runtime.max_send_quota,
+            runtime.max_qos,
+            runtime.maximum_packet_size
+        );
+
+        session.register_connected();
+        runtime.note_outbound_activity(Instant::now());
+        runtime.ping_timeout = None;
+        if resumed {
+            info!("Connected and resumed existing broker session");
+            Ok(super::ConnectEvent::Reconnected)
+        } else {
+            info!("Connected with a fresh broker session");
+            Ok(super::ConnectEvent::Connected)
         }
     }
 
@@ -291,9 +381,6 @@ impl<'buf> Core<'buf> {
         topics: &[TopicFilter<'_>],
         properties: &[Property<'_>],
     ) -> Result<(), Error<C::Error>> {
-        if self.runtime.state != ConnectionState::Active {
-            return Err(Error::Disconnected);
-        }
         if topics.is_empty() {
             return Err(ProtocolError::NoTopic.into());
         }
@@ -331,9 +418,6 @@ impl<'buf> Core<'buf> {
         topics: &[&str],
         properties: &[Property<'_>],
     ) -> Result<(), Error<C::Error>> {
-        if self.runtime.state != ConnectionState::Active {
-            return Err(Error::Disconnected);
-        }
         if topics.is_empty() {
             return Err(ProtocolError::NoTopic.into());
         }
@@ -373,9 +457,6 @@ impl<'buf> Core<'buf> {
     where
         P: crate::publication::ToPayload,
     {
-        if self.runtime.state != ConnectionState::Active {
-            return Err(PubError::Session(Error::Disconnected));
-        }
         self.drive_outbound(connection)
             .await
             .map_err(PubError::Session)?;
@@ -470,12 +551,8 @@ impl<'buf> Core<'buf> {
         connection: &mut C,
     ) -> Result<(), Error<C::Error>> {
         info!("Graceful disconnect requested");
-        let result = if self.runtime.state == ConnectionState::Active {
-            let mut buffer = [0u8; 9];
-            write_packet(&mut buffer, connection, &DisconnectReq).await
-        } else {
-            Ok(())
-        };
+        let mut buffer = [0u8; 9];
+        let result = write_packet(&mut buffer, connection, &DisconnectReq).await;
         self.handle_disconnect();
         result
     }
@@ -485,18 +562,7 @@ impl<'buf> Core<'buf> {
         connection: &mut C,
         now: Instant,
     ) -> Result<super::Event<'_>, Error<C::Error>> {
-        if self.runtime.state != ConnectionState::Active {
-            return Err(Error::Disconnected);
-        }
-
-        if let Err(err) = self.maintain_step(connection, now).await {
-            self.handle_disconnect();
-            return Err(err);
-        }
-        if self.is_disconnected() {
-            return Err(Error::Disconnected);
-        }
-
+        self.maintain_step(connection, now).await?;
         self.read_step_event(connection, now).await
     }
 
@@ -505,22 +571,17 @@ impl<'buf> Core<'buf> {
         connection: &mut C,
         now: Instant,
     ) -> Result<super::Event<'_>, Error<C::Error>> {
-        let packet = self
-            .read_packet_mode(connection, now, ReadMode::Bounded)
-            .await?;
-        match packet {
-            None => Ok(super::Event::Idle),
-            Some(PacketOutcome::None) => Ok(super::Event::Idle),
-            Some(PacketOutcome::Connected(_)) => {
-                Err(Error::Protocol(ProtocolError::UnexpectedPacket))
-            }
-            Some(PacketOutcome::Inbound(inbound)) => Ok(super::Event::Inbound(inbound)),
+        if !self.read_packet_mode(connection, ReadMode::Bounded).await? {
+            return Ok(super::Event::Idle);
+        }
+        match self.dispatch_received_packet(now)? {
+            PacketOutcome::None => Ok(super::Event::Idle),
+            PacketOutcome::Inbound(inbound) => Ok(super::Event::Inbound(inbound)),
         }
     }
 
     fn should_queue_pingreq(&self, now: Instant) -> bool {
-        self.runtime.state == ConnectionState::Active
-            && self.runtime.ping_timeout.is_none()
+        self.runtime.ping_timeout.is_none()
             && self
                 .runtime
                 .next_ping
@@ -540,26 +601,11 @@ impl<'buf> Core<'buf> {
         Ok(())
     }
 
-    pub(super) async fn read_packet_blocking<C: Io>(
-        &mut self,
-        connection: &mut C,
-        now: Instant,
-    ) -> Result<PacketOutcome<'_>, Error<C::Error>> {
-        self.read_packet_mode(connection, now, ReadMode::Blocking)
-            .await?
-            .ok_or(Error::Protocol(ProtocolError::UnexpectedPacket))
-    }
-
     async fn read_packet_mode<C: Io>(
         &mut self,
         connection: &mut C,
-        now: Instant,
         mode: ReadMode,
-    ) -> Result<Option<PacketOutcome<'_>>, Error<C::Error>> {
-        if self.runtime.state == ConnectionState::Disconnected {
-            self.packet_reader.reset();
-        }
-
+    ) -> Result<bool, Error<C::Error>> {
         while !self.packet_reader.packet_available() {
             let buffer = match self.packet_reader.receive_buffer() {
                 Ok(buffer) => buffer,
@@ -574,7 +620,7 @@ impl<'buf> Core<'buf> {
             if matches!(mode, ReadMode::Bounded)
                 && !connection.read_ready().map_err(Error::Transport)?
             {
-                return Ok(None);
+                return Ok(false);
             }
 
             let count = match connection.read(buffer).await {
@@ -584,7 +630,7 @@ impl<'buf> Core<'buf> {
                     if matches!(kind, ErrorKind::TimedOut | ErrorKind::Interrupted) {
                         trace!("Read interrupted/timed out while waiting for packet");
                         return match mode {
-                            ReadMode::Bounded => Ok(None),
+                            ReadMode::Bounded => Ok(false),
                             ReadMode::Blocking => {
                                 self.handle_disconnect();
                                 Err(Error::Transport(err))
@@ -612,12 +658,12 @@ impl<'buf> Core<'buf> {
                     }
                 };
                 if !packet_ready {
-                    return Ok(None);
+                    return Ok(false);
                 }
             }
         }
 
-        self.dispatch_received_packet(now).map(Some)
+        Ok(self.packet_reader.packet_available())
     }
 
     fn dispatch_received_packet<E>(&mut self, now: Instant) -> Result<PacketOutcome<'_>, Error<E>> {
@@ -627,46 +673,34 @@ impl<'buf> Core<'buf> {
 
         let packet = {
             let packet_reader = &mut self.packet_reader;
-            packet_reader.received_packet()
-        };
-        let packet = match packet {
-            Ok(packet) => packet,
-            Err(err) => {
-                warn!("Failed to decode inbound packet: {:?}", err);
-                self.session.outbound.arm_replay();
-                self.runtime.disconnect();
-                return Err(err.into());
+            match packet_reader.received_packet() {
+                Ok(packet) => packet,
+                Err(err) => {
+                    warn!("Failed to decode inbound packet: {:?}", err);
+                    self.session.outbound.arm_replay();
+                    self.runtime.reset_transport();
+                    return Err(err.into());
+                }
             }
         };
         let (result, disconnect) = {
             let mut ctx = PacketContext {
-                client_id: &mut self.client_id,
                 session: &mut self.session,
                 runtime: &mut self.runtime,
             };
             let result = handle_packet(&mut ctx, packet, now);
-            let disconnect = Self::should_disconnect_after_packet(ctx.runtime.state, &result);
+            let disconnect = Self::should_disconnect_after_packet(&result);
             (result, disconnect)
         };
         if disconnect {
             warn!("Disconnecting session after packet handling error");
             self.session.outbound.arm_replay();
-            self.runtime.disconnect();
+            self.runtime.reset_transport();
         }
-        match result {
-            Ok(outcome) => {
-                if self.runtime.state == ConnectionState::Disconnected {
-                    Err(Error::Disconnected)
-                } else {
-                    Ok(outcome)
-                }
-            }
-            Err(err) => Err(Self::map_packet_error(err)),
-        }
+        result.map_err(Self::map_packet_error)
     }
 
     fn should_disconnect_after_packet(
-        state: ConnectionState,
         result: &Result<PacketOutcome<'_>, Error<core::convert::Infallible>>,
     ) -> bool {
         matches!(
@@ -686,8 +720,7 @@ impl<'buf> Core<'buf> {
             Err(Error::Protocol(ProtocolError::Failed(
                 crate::ReasonCode::PacketTooLarge
             )))
-        ) || (state != ConnectionState::Active
-            && matches!(result, Err(Error::Protocol(ProtocolError::Failed(_)))))
+        )
     }
 
     fn map_packet_error<E>(err: Error<core::convert::Infallible>) -> Error<E> {
@@ -876,7 +909,7 @@ impl<'buf> Core<'buf> {
             self.session.outbound.pending_release_len()
         );
         self.session.outbound.arm_replay();
-        self.runtime.disconnect();
+        self.runtime.reset_transport();
         self.packet_reader.reset();
     }
 
@@ -1001,7 +1034,6 @@ mod tests {
         let mut core = core();
         let mut connection = MockConnection::default();
         let now = Instant::now();
-        core.runtime.state = ConnectionState::Active;
         core.runtime.next_ping = Some(now);
 
         assert!(block_on(core.maintain_step(&mut connection, now)).unwrap());
@@ -1038,7 +1070,6 @@ mod tests {
         let mut core = core();
         let mut connection = MockConnection::default();
         let now = Instant::now();
-        core.runtime.state = ConnectionState::Active;
         core.runtime.next_ping = Some(now);
 
         assert!(block_on(core.maintain_step(&mut connection, now)).unwrap());
@@ -1060,7 +1091,6 @@ mod tests {
         let mut core = core();
         let mut connection = MockConnection::default();
         let now = Instant::now();
-        core.runtime.state = ConnectionState::Active;
         core.runtime.next_ping = Some(now);
 
         assert!(block_on(core.maintain_step(&mut connection, now)).unwrap());
@@ -1077,7 +1107,7 @@ mod tests {
             }
         }
         assert_eq!(core.runtime.ping_timeout, None);
-        assert_eq!(core.runtime.state, ConnectionState::Active);
+        assert!(core.runtime.next_ping.is_some());
     }
 
     #[test]
@@ -1086,7 +1116,6 @@ mod tests {
         let mut connection = MockConnection::default();
         let now = Instant::now();
         let deadline = now + Duration::from_secs(1);
-        core.runtime.state = ConnectionState::Active;
         core.runtime.next_ping = Some(deadline);
         connection.push_rx(&[0x30, 0x05, 0x00, 0x01, b'A', 0x00, 0x05]);
 
@@ -1105,7 +1134,6 @@ mod tests {
         let mut core = core();
         let mut connection = MockConnection::default();
         let now = Instant::now();
-        core.runtime.state = ConnectionState::Active;
         core.runtime.next_ping = Some(now);
 
         block_on(core.publish(&mut connection, crate::Publication::bytes("A", b"5"))).unwrap();
@@ -1119,14 +1147,13 @@ mod tests {
         let mut core = core();
         let mut connection = MockConnection::default();
         let now = Instant::now();
-        core.runtime.state = ConnectionState::Active;
         core.runtime.ping_timeout = Some(now);
 
         let result = block_on(core.maintain_step(&mut connection, now));
 
         assert!(matches!(result, Err(Error::Disconnected)));
-        assert_eq!(core.runtime.state, ConnectionState::Disconnected);
         assert_eq!(core.runtime.ping_timeout, None);
+        assert_eq!(core.runtime.next_ping, None);
     }
 
     #[test]
@@ -1137,7 +1164,6 @@ mod tests {
             ..Default::default()
         };
         let now = Instant::now();
-        core.runtime.state = ConnectionState::Active;
         core.runtime.next_ping = Some(now);
 
         let result = block_on(core.maintain_step(&mut connection, now));
@@ -1146,7 +1172,8 @@ mod tests {
             result,
             Err(Error::Transport(ErrorKind::ConnectionReset))
         ));
-        assert_eq!(core.runtime.state, ConnectionState::Disconnected);
+        assert_eq!(core.runtime.next_ping, None);
+        assert_eq!(core.runtime.ping_timeout, None);
     }
 
     #[test]
