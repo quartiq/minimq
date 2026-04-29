@@ -1,6 +1,4 @@
-mod core;
 mod outbound;
-mod protocol;
 mod session;
 
 pub use session::Session;
@@ -10,14 +8,18 @@ use crate::{
     publication::{OwnedResponseTarget, Publication, ResponseTarget},
     types::Properties,
 };
-use embedded_io_async::{ErrorType, Read, ReadReady, Write, WriteReady};
+use embedded_io_async::{ErrorType, Read, Write};
 
 /// Transport trait required by [`Session`](crate::Session).
-pub trait Io: Read + Write + ReadReady + WriteReady + ErrorType {}
+///
+/// Ordinary lack of inbound data must leave the read future pending. If `read()` returns
+/// `TimedOut` or `Interrupted`, [`Session::poll`](crate::Session::poll) treats that as transport
+/// failure and disconnects the session.
+pub trait Io: Read + Write + ErrorType {}
 
-impl<T> Io for T where T: Read + Write + ReadReady + WriteReady + ErrorType {}
+impl<T> Io for T where T: Read + Write + ErrorType {}
 
-/// Inbound MQTT `PUBLISH` delivered by [`Event::Inbound`].
+/// Inbound MQTT `PUBLISH` returned by [`Session::poll`](crate::Session::poll).
 #[derive(Debug)]
 pub struct InboundPublish<'a> {
     topic: &'a str,
@@ -104,15 +106,6 @@ impl<'a> InboundPublish<'a> {
             None => Ok(None),
         }
     }
-}
-
-/// Output of [`Session::poll`](crate::Session::poll).
-#[derive(Debug)]
-pub enum Event<'a> {
-    /// No inbound message was produced.
-    Idle,
-    /// An inbound publish was received.
-    Inbound(InboundPublish<'a>),
 }
 
 /// Output of [`Session::connect`](crate::Session::connect).

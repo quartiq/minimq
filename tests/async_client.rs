@@ -1,9 +1,10 @@
 mod support;
 
-use embedded_io_async::{ErrorKind, ErrorType, Read, ReadReady, Write, WriteReady};
+use embassy_time::{Duration, with_timeout};
+use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use minimq::{
-    Buffers, ConfigBuilder, ConnectEvent, Error, Event, ProtocolError, PubError, Publication, QoS,
-    Session,
+    Buffers, ConfigBuilder, ConnectEvent, Error, InboundPublish, ProtocolError, PubError,
+    Publication, QoS, Session,
 };
 use std::{cell::RefCell, collections::VecDeque, future::poll_fn, rc::Rc, task::Poll};
 use support::{block_on, poll_once};
@@ -14,7 +15,9 @@ const WAIT_STEPS: usize = 64;
 struct MockIo {
     rx: VecDeque<Vec<u8>>,
     tx: Vec<Vec<u8>>,
+    read_error: Option<ErrorKind>,
     write_error: Option<(usize, ErrorKind)>,
+    pending_reads: usize,
     pending_writes: usize,
     pending_flushes: usize,
 }
@@ -39,6 +42,14 @@ impl MockConnection {
         self.inner.borrow_mut().write_error = Some((successful_writes, err));
     }
 
+    fn fail_read(&mut self, err: ErrorKind) {
+        self.inner.borrow_mut().read_error = Some(err);
+    }
+
+    fn pend_reads(&mut self, count: usize) {
+        self.inner.borrow_mut().pending_reads = count;
+    }
+
     fn pend_writes(&mut self, count: usize) {
         self.inner.borrow_mut().pending_writes = count;
     }
@@ -58,23 +69,31 @@ impl ErrorType for MockConnection {
 
 impl Read for MockConnection {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        let Some(mut chunk) = self.inner.borrow_mut().rx.pop_front() else {
-            return Err(ErrorKind::TimedOut);
-        };
+        poll_fn(|cx| {
+            let mut inner = self.inner.borrow_mut();
+            if inner.pending_reads != 0 {
+                inner.pending_reads -= 1;
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
 
-        let len = buf.len().min(chunk.len());
-        buf[..len].copy_from_slice(&chunk[..len]);
-        if len < chunk.len() {
-            chunk.drain(..len);
-            self.inner.borrow_mut().rx.push_front(chunk);
-        }
-        Ok(len)
-    }
-}
+            if let Some(err) = inner.read_error.take() {
+                return Poll::Ready(Err(err));
+            }
 
-impl ReadReady for MockConnection {
-    fn read_ready(&mut self) -> Result<bool, Self::Error> {
-        Ok(!self.inner.borrow().rx.is_empty())
+            let Some(mut chunk) = inner.rx.pop_front() else {
+                return Poll::Pending;
+            };
+
+            let len = buf.len().min(chunk.len());
+            buf[..len].copy_from_slice(&chunk[..len]);
+            if len < chunk.len() {
+                chunk.drain(..len);
+                inner.rx.push_front(chunk);
+            }
+            Poll::Ready(Ok(len))
+        })
+        .await
     }
 }
 
@@ -112,17 +131,6 @@ impl Write for MockConnection {
             Poll::Ready(Ok(()))
         })
         .await
-    }
-}
-
-impl WriteReady for MockConnection {
-    fn write_ready(&mut self) -> Result<bool, Self::Error> {
-        let mut inner = self.inner.borrow_mut();
-        if inner.pending_writes != 0 {
-            inner.pending_writes -= 1;
-            return Ok(false);
-        }
-        Ok(true)
     }
 }
 
@@ -345,11 +353,21 @@ fn expect_reconnected(session: &mut Session<'static, MockConnection>, connector:
     ));
 }
 
+fn poll_now<'a>(
+    session: &'a mut Session<'static, MockConnection>,
+) -> Result<Option<InboundPublish<'a>>, Error<ErrorKind>> {
+    match block_on(with_timeout(Duration::from_millis(0), session.poll())) {
+        Ok(Ok(event)) => Ok(Some(event)),
+        Ok(Err(err)) => Err(err),
+        Err(_) => Ok(None),
+    }
+}
+
 fn expect_disconnected(session: &mut Session<'static, MockConnection>) {
     for _ in 0..WAIT_STEPS {
-        match block_on(session.poll()) {
+        match poll_now(session) {
             Err(Error::Disconnected) => return,
-            Ok(Event::Idle) => {}
+            Ok(None) => {}
             other => panic!("unexpected poll result while waiting for disconnect: {other:?}"),
         }
     }
@@ -360,13 +378,7 @@ fn with_inbound<T>(
     session: &mut Session<'static, MockConnection>,
     f: impl FnOnce(minimq::InboundPublish<'_>) -> T,
 ) -> T {
-    for _ in 0..WAIT_STEPS {
-        match block_on(session.poll()).unwrap() {
-            Event::Inbound(message) => return f(message),
-            Event::Idle => {}
-        }
-    }
-    panic!("timed out waiting for inbound publish");
+    f(block_on(session.poll()).unwrap())
 }
 
 fn expect_poll_error(
@@ -374,8 +386,8 @@ fn expect_poll_error(
     want: impl Fn(&Error<ErrorKind>) -> bool,
 ) {
     for _ in 0..WAIT_STEPS {
-        match block_on(session.poll()) {
-            Ok(Event::Idle) => {}
+        match poll_now(session) {
+            Ok(None) => {}
             Err(err) if want(&err) => return,
             other => panic!("unexpected poll result while waiting for error: {other:?}"),
         }
@@ -397,8 +409,8 @@ fn wait_for_tx_frame(
     }
 
     for _ in 0..WAIT_STEPS {
-        match block_on(session.poll()) {
-            Ok(Event::Idle) | Err(Error::Disconnected) => {}
+        match poll_now(session) {
+            Ok(None) | Err(Error::Disconnected) => {}
             other => panic!("unexpected poll result while waiting for tx frame: {other:?}"),
         }
         if inspect
@@ -489,7 +501,7 @@ fn publish_survives_cancellation_during_pending_write() {
     drop(future);
 
     assert_eq!(inspect.tx().len(), 1);
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(poll_now(&mut session).unwrap().is_none());
     block_on(session.publish(Publication::bytes("data", b"y").qos(QoS::AtLeastOnce))).unwrap();
 }
 
@@ -514,7 +526,7 @@ fn cancelled_publish_still_holds_receive_max_quota() {
         match block_on(session.publish(Publication::bytes("data", b"z").qos(QoS::AtLeastOnce))) {
             Ok(()) => return,
             Err(PubError::Session(Error::NotReady)) => {
-                assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+                assert!(poll_now(&mut session).unwrap().is_none());
             }
             other => panic!("unexpected publish result while waiting for quota: {other:?}"),
         }
@@ -538,8 +550,25 @@ fn subscribe_survives_cancellation_during_pending_flush() {
     drop(future);
 
     assert_eq!(inspect.tx().len(), 2);
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(poll_now(&mut session).unwrap().is_none());
     assert_eq!(inspect.tx().len(), 2);
+}
+
+#[test]
+fn poll_survives_cancellation_during_pending_read() {
+    let mut connection = MockConnection::default();
+    let mut inspect = connection.clone();
+    connection.push_rx(&connack());
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    inspect.pend_reads(1);
+    let mut future = Box::pin(session.poll());
+    assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
+    drop(future);
+
+    assert!(session.is_connected());
+    assert!(poll_now(&mut session).unwrap().is_none());
 }
 
 #[test]
@@ -553,13 +582,13 @@ fn qos2_pubrel_survives_cancellation_during_pending_write() {
     let mut session = connected_session(&connector);
 
     block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(poll_now(&mut session).unwrap().is_none());
 
     inspect.pend_writes(1);
     let mut sent_pubrel = false;
     for _ in 0..WAIT_STEPS {
-        match block_on(session.poll()).unwrap() {
-            Event::Idle => {
+        match poll_now(&mut session).unwrap() {
+            None => {
                 if inspect
                     .tx()
                     .iter()
@@ -569,7 +598,7 @@ fn qos2_pubrel_survives_cancellation_during_pending_write() {
                     break;
                 }
             }
-            Event::Inbound(_) => panic!("unexpected inbound event while waiting for PUBREL"),
+            Some(_) => panic!("unexpected inbound event while waiting for PUBREL"),
         }
     }
     assert!(sent_pubrel);
@@ -589,8 +618,8 @@ fn inflight_packets_are_not_replayed_during_normal_poll() {
     let tx_after_publish = connector.connections.borrow().front().is_none();
     assert!(tx_after_publish);
 
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(poll_now(&mut session).unwrap().is_none());
+    assert!(poll_now(&mut session).unwrap().is_none());
 }
 
 #[test]
@@ -649,6 +678,23 @@ fn failed_connack_disconnects_session_and_allows_reconnect() {
 }
 
 #[test]
+fn broker_disconnect_during_connect_disconnects_session_and_allows_reconnect() {
+    let mut first = MockConnection::default();
+    first.push_rx(&disconnect());
+    let mut second = MockConnection::default();
+    second.push_rx(&connack());
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config());
+
+    assert!(matches!(
+        block_on(session.connect(connector.connect().unwrap())),
+        Err(Error::Disconnected)
+    ));
+    assert!(!session.is_connected());
+    expect_connected(&mut session, &connector);
+}
+
+#[test]
 fn zero_receive_maximum_disconnects_session_and_allows_reconnect() {
     let mut first = MockConnection::default();
     first.push_rx(&connack_receive_max(0));
@@ -684,7 +730,8 @@ fn oversized_assigned_client_id_disconnects_session_and_allows_reconnect() {
 
 #[test]
 fn timed_out_connack_disconnects_session_and_allows_reconnect() {
-    let first = MockConnection::default();
+    let mut first = MockConnection::default();
+    first.fail_read(ErrorKind::TimedOut);
     let mut second = MockConnection::default();
     second.push_rx(&connack());
     let connector = MockConnector::with_connections([first, second]);
@@ -741,9 +788,9 @@ fn outbound_qos_acks_can_arrive_out_of_order() {
     for _ in 0..3 {
         block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
     }
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(poll_now(&mut session).unwrap().is_none());
+    assert!(poll_now(&mut session).unwrap().is_none());
+    assert!(poll_now(&mut session).unwrap().is_none());
 }
 
 #[test]
@@ -842,7 +889,7 @@ fn outbound_qos2_flow_allows_out_of_order_pubrec_and_pubcomp() {
     }
 
     for _ in 0..4 {
-        assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+        assert!(poll_now(&mut session).unwrap().is_none());
     }
 }
 
@@ -859,7 +906,7 @@ fn inbound_qos2_marks_pending_until_pubrel() {
         assert_eq!(message.topic(), "data");
     });
 
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(poll_now(&mut session).unwrap().is_none());
 }
 
 #[test]
@@ -1087,6 +1134,50 @@ fn poll_requires_connected_session() {
 }
 
 #[test]
+fn connect_retries_cleanly_after_cancellation_during_pending_write() {
+    let mut first = MockConnection::default();
+    first.pend_writes(1);
+    first.push_rx(&connack());
+    let second = {
+        let mut connection = MockConnection::default();
+        connection.push_rx(&connack());
+        connection
+    };
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config());
+
+    let mut future = Box::pin(session.connect(connector.connect().unwrap()));
+    assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
+    drop(future);
+
+    assert!(!session.is_connected());
+    assert!(matches!(block_on(session.poll()), Err(Error::Disconnected)));
+    expect_connected(&mut session, &connector);
+}
+
+#[test]
+fn connect_retries_cleanly_after_cancellation_during_pending_connack() {
+    let mut first = MockConnection::default();
+    first.pend_reads(1);
+    first.push_rx(&connack());
+    let second = {
+        let mut connection = MockConnection::default();
+        connection.push_rx(&connack());
+        connection
+    };
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = Session::new(config());
+
+    let mut future = Box::pin(session.connect(connector.connect().unwrap()));
+    assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
+    drop(future);
+
+    assert!(!session.is_connected());
+    assert!(matches!(block_on(session.poll()), Err(Error::Disconnected)));
+    expect_connected(&mut session, &connector);
+}
+
+#[test]
 fn disconnect_sends_disconnect_packet_and_drops_connection() {
     let mut connection = MockConnection::default();
     let inspect = connection.clone();
@@ -1096,6 +1187,25 @@ fn disconnect_sends_disconnect_packet_and_drops_connection() {
 
     block_on(session.disconnect()).unwrap();
 
+    assert!(!session.is_connected());
+    assert_eq!(inspect.tx().last().unwrap(), &disconnect_req());
+}
+
+#[test]
+fn disconnect_survives_cancellation_during_pending_write() {
+    let mut connection = MockConnection::default();
+    let mut inspect = connection.clone();
+    connection.push_rx(&connack());
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    inspect.pend_writes(1);
+    let mut future = Box::pin(session.disconnect());
+    assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
+    drop(future);
+
+    assert!(session.is_connected());
+    block_on(session.disconnect()).unwrap();
     assert!(!session.is_connected());
     assert_eq!(inspect.tx().last().unwrap(), &disconnect_req());
 }
@@ -1154,7 +1264,7 @@ fn qos1_publish_replays_across_multiple_resumed_reconnects() {
     expect_reconnected(&mut session, &connector);
     expect_disconnected(&mut session);
     expect_reconnected(&mut session, &connector);
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(poll_now(&mut session).unwrap().is_none());
 
     assert!(
         second_inspect
@@ -1193,12 +1303,17 @@ fn qos2_pubrel_replays_across_multiple_resumed_reconnects() {
     expect_connected(&mut session, &connector);
     block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::ExactlyOnce))).unwrap();
 
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
-    expect_disconnected(&mut session);
+    match poll_now(&mut session) {
+        Ok(None) | Err(Error::Disconnected) => {}
+        other => panic!("unexpected poll result before disconnect: {other:?}"),
+    }
+    if session.is_connected() {
+        expect_disconnected(&mut session);
+    }
     expect_reconnected(&mut session, &connector);
     expect_disconnected(&mut session);
     expect_reconnected(&mut session, &connector);
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(poll_now(&mut session).unwrap().is_none());
 
     assert!(
         second_inspect
@@ -1232,10 +1347,45 @@ fn fresh_session_after_reconnect_drops_stale_replay_state() {
 
     expect_disconnected(&mut session);
     expect_connected(&mut session, &connector);
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(poll_now(&mut session).unwrap().is_none());
 
     assert!(
         second_inspect
+            .tx()
+            .iter()
+            .all(|frame| frame.first() != Some(&0x3A))
+    );
+}
+
+#[test]
+fn fresh_session_failed_connack_still_drops_stale_replay_state() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.push_rx(&disconnect());
+
+    let mut second = MockConnection::default();
+    second.push_rx(&connack_receive_max(0));
+
+    let mut third = MockConnection::default();
+    let third_inspect = third.clone();
+    third.push_rx(&connack());
+
+    let connector = MockConnector::with_connections([first, second, third]);
+    let mut session = Session::new(config());
+
+    expect_connected(&mut session, &connector);
+    block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))).unwrap();
+
+    expect_disconnected(&mut session);
+    assert!(matches!(
+        block_on(session.connect(connector.connect().unwrap())),
+        Err(Error::Protocol(ProtocolError::InvalidProperty))
+    ));
+    expect_connected(&mut session, &connector);
+    assert!(poll_now(&mut session).unwrap().is_none());
+
+    assert!(
+        third_inspect
             .tx()
             .iter()
             .all(|frame| frame.first() != Some(&0x3A))
@@ -1261,8 +1411,8 @@ fn stale_puback_after_resumed_replay_is_ignored() {
 
     expect_disconnected(&mut session);
     expect_reconnected(&mut session, &connector);
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(poll_now(&mut session).unwrap().is_none());
+    assert!(poll_now(&mut session).unwrap().is_none());
 }
 
 #[test]
@@ -1368,7 +1518,7 @@ fn unsubscribe_replays_until_unsuback() {
     block_on(session.unsubscribe(&["data"], &[])).unwrap();
     expect_disconnected(&mut session);
     expect_reconnected(&mut session, &connector);
-    assert!(matches!(block_on(session.poll()).unwrap(), Event::Idle));
+    assert!(poll_now(&mut session).unwrap().is_none());
 
     assert_eq!(
         inspect.tx().last().unwrap(),

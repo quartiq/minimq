@@ -16,7 +16,7 @@ The main API is [`Session`].
 - [`ConfigBuilder`]: session configuration
 - [`Io`]: transport boundary for an established byte stream
 - [`Session`]: the client you drive
-- [`Event`]: output of [`Session::poll()`]
+- [`InboundPublish`]: output of [`Session::poll()`]
 
 ## Example
 
@@ -24,7 +24,7 @@ The main API is [`Session`].
 use core::net::SocketAddr;
 # use std::io;
 # struct MyIo;
-# use embedded_io_async::{ErrorType, Read, ReadReady, Write, WriteReady};
+# use embedded_io_async::{ErrorType, Read, Write};
 # impl ErrorType for MyIo {
 #     type Error = io::Error;
 # }
@@ -41,18 +41,8 @@ use core::net::SocketAddr;
 #         todo!()
 #     }
 # }
-# impl ReadReady for MyIo {
-#     fn read_ready(&mut self) -> Result<bool, Self::Error> {
-#         todo!()
-#     }
-# }
-# impl WriteReady for MyIo {
-#     fn write_ready(&mut self) -> Result<bool, Self::Error> {
-#         todo!()
-#     }
-# }
 # async fn open_io(_addr: SocketAddr) -> Result<MyIo, io::Error> { todo!() }
-use minimq::{Buffers, ConfigBuilder, ConnectEvent, Error, Event, Session, types::TopicFilter};
+use minimq::{Buffers, ConfigBuilder, ConnectEvent, Error, Session, types::TopicFilter};
 
 async fn run() {
     let rx = &mut [0u8; 256];
@@ -78,8 +68,7 @@ async fn run() {
 
         loop {
             match session.poll().await {
-                Ok(Event::Inbound(message)) => println!("topic={}", message.topic()),
-                Ok(Event::Idle) => {}
+                Ok(message) => println!("topic={}", message.topic()),
                 Err(Error::Disconnected) => break,
                 Err(err) => panic!("{err}"),
             }
@@ -90,12 +79,14 @@ async fn run() {
 # fn main() {}
 ```
 
-The attached transport must implement [`embedded_io_async::Read`], [`embedded_io_async::Write`],
-[`embedded_io_async::ReadReady`], and [`embedded_io_async::WriteReady`].
+The attached transport must implement [`embedded_io_async::Read`] and
+[`embedded_io_async::Write`].
+Ordinary lack of inbound data must keep the read future pending; if the transport returns
+`TimedOut` or `Interrupted`, [`Session::poll()`] treats that as transport failure and disconnects
+the session.
 
-For a TLS connectivity example that uses `embedded-tls` without those readiness traits, see
-`examples/tls_public_broker.rs`. That example is useful for transport integration, but its
-`poll()` loop is not bounded because `embedded-tls` does not expose read/write readiness.
+For a TLS connectivity example and for caller-side bounded/cooperative driving via external
+timeouts, see `examples/tls_public_broker.rs`.
 
 ## Session Model
 
@@ -103,20 +94,24 @@ You provide packet buffers plus an already-established transport, and a loop tha
 passes that transport into [`Session::connect()`] to establish or resume the broker session.
 
 [`Session::connect()`] takes ownership of the provided transport and performs the unbounded MQTT
-`CONNECT` / `CONNACK` handshake. Once
-connected, [`Session::poll()`] does bounded keepalive, retransmission, and inbound packet delivery
-on the established session. The session drops the transport again on graceful disconnect,
-connection failure, or transport/protocol loss.
+`CONNECT` / `CONNACK` handshake. Once connected, [`Session::poll()`] blocks until an inbound
+publish arrives or the session is lost, while still handling keepalive and retransmission
+internally. The session drops the transport again on graceful disconnect, connection failure, or
+transport/protocol loss.
 
 - [`ConnectEvent::Connected`] means the broker created a fresh session. Re-establish subscriptions
   here.
 - [`ConnectEvent::Reconnected`] means the broker resumed the existing MQTT session. Existing
   subscriptions and in-flight QoS state were kept.
-- [`Event::Inbound`] carries one inbound publish.
-- [`Event::Idle`] means no inbound publish was produced on that bounded poll step.
+- [`Session::poll()`] yields one inbound publish.
 
 If [`Session::poll()`] returns [`Error::Disconnected`], the caller decides when to call
 [`Session::connect()`] with a fresh transport again.
+Other transport/protocol errors already tear down the attached transport locally; callers should
+handle the error and reconnect rather than retrying `poll()` on the same session state.
+
+For bounded or cooperative polling, wrap the cancel-safe blocking [`Session::poll()`] future in an
+external timeout such as [`embassy_time::with_timeout()`] or [`embassy_time::with_deadline()`].
 
 ## Buffers
 

@@ -1,9 +1,10 @@
 use core::future::poll_fn;
 use core::pin::Pin;
 use core::task::Poll;
-use embedded_io_async::{ErrorType, Read, ReadReady, Write, WriteReady};
+use embassy_time::{Duration, with_timeout};
+use embedded_io_async::{ErrorType, Read, Write};
 use minimq::{
-    Buffers, ConfigBuilder, ConnectEvent, Error, Event, Publication, QoS, Session,
+    Buffers, ConfigBuilder, ConnectEvent, Error, Publication, QoS, Session,
     types::{SubscriptionOptions, TopicFilter},
 };
 use std::{
@@ -94,26 +95,6 @@ impl Write for TokioConnection {
     }
 }
 
-impl ReadReady for TokioConnection {
-    fn read_ready(&mut self) -> Result<bool, Self::Error> {
-        match self.0.try_io(tokio::io::Interest::READABLE, || Ok(())) {
-            Ok(()) => Ok(true),
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
-            Err(err) => Err(err),
-        }
-    }
-}
-
-impl WriteReady for TokioConnection {
-    fn write_ready(&mut self) -> Result<bool, Self::Error> {
-        match self.0.try_io(tokio::io::Interest::WRITABLE, || Ok(())) {
-            Ok(()) => Ok(true),
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
-            Err(err) => Err(err),
-        }
-    }
-}
-
 async fn connect_addr(addr: SocketAddr) -> std::io::Result<TokioConnection> {
     TcpStream::connect(addr).await.map(TokioConnection)
 }
@@ -131,21 +112,27 @@ async fn poll_until_ready(
     want_inbound: bool,
 ) -> Option<(String, Vec<u8>, QoS)> {
     for _ in 0..200 {
-        match session.poll().await {
-            Ok(Event::Idle) if !want_inbound => return None,
-            Ok(Event::Inbound(message)) if want_inbound => {
+        let result = if want_inbound {
+            Ok(session.poll().await)
+        } else {
+            with_timeout(Duration::from_millis(0), session.poll()).await
+        };
+        match result {
+            Ok(Ok(message)) if want_inbound => {
                 return Some((
                     message.topic().to_string(),
                     message.payload().to_vec(),
                     message.qos(),
                 ));
             }
-            Ok(_) => {}
-            Err(Error::Transport(err)) => match err.kind() {
+            Err(_) if !want_inbound => return None,
+            Ok(Err(Error::Transport(err))) => match err.kind() {
                 std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted => {}
                 _ => panic!("session poll failed: {err:?}"),
             },
-            Err(err) => panic!("session poll failed: {err:?}"),
+            Ok(Err(err)) => panic!("session poll failed: {err:?}"),
+            Ok(Ok(_)) => {}
+            Err(_) => {}
         }
     }
     panic!("timed out waiting for broker activity");
