@@ -143,6 +143,17 @@ fn pingresp_clears_keepalive_timeout() {
 }
 
 #[test]
+fn drive_returns_none_when_waiting_for_read() {
+    let mut session = session();
+    session.connection = Some(MockConnection::default());
+
+    let result = block_on(session.drive()).unwrap();
+
+    assert!(result.is_none());
+    assert!(session.connection.is_some());
+}
+
+#[test]
 fn inbound_publish_does_not_refresh_keepalive_deadline() {
     let mut session = session();
     session.connection = Some(MockConnection::default());

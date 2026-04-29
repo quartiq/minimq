@@ -24,12 +24,13 @@ use state::{RuntimeState, SessionData};
 /// used for outbound `publish`, `subscribe`, and `unsubscribe` operations.
 ///
 /// Cancel safety, assuming the transport's I/O futures are cancel-safe:
-/// [`poll`](Self::poll), [`disconnect`](Self::disconnect), [`subscribe`](Self::subscribe),
-/// [`unsubscribe`](Self::unsubscribe), and [`publish`](Self::publish) for QoS 1/2 preserve local
-/// session state across cancellation. Cancelling [`connect`](Self::connect) drops the supplied
-/// transport and leaves the session disconnected; the next `connect()` retries from clean
-/// transport-local state. QoS 0 [`publish`](Self::publish) is not cancel-safe because it bypasses
-/// retained outbound state and writes directly from temporary TX scratch space.
+/// [`drive`](Self::drive), [`poll`](Self::poll), [`disconnect`](Self::disconnect),
+/// [`subscribe`](Self::subscribe), [`unsubscribe`](Self::unsubscribe), and
+/// [`publish`](Self::publish) for QoS 1/2 preserve local session state across cancellation.
+/// Cancelling [`connect`](Self::connect) drops the supplied transport and leaves the session
+/// disconnected; the next `connect()` retries from clean transport-local state. QoS 0
+/// [`publish`](Self::publish) is not cancel-safe because it bypasses retained outbound state and
+/// writes directly from temporary TX scratch space.
 pub struct Session<'buf, IO> {
     connection: Option<IO>,
     client_id: String<64>,

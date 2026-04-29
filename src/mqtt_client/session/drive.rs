@@ -46,25 +46,57 @@ impl<'buf, IO> Session<'buf, IO>
 where
     IO: Io,
 {
+    async fn drive_packet(&mut self) -> Result<Option<usize>, Error<IO::Error>> {
+        if self.connection.is_none() {
+            return Err(Error::Disconnected);
+        }
+
+        loop {
+            if self.packet_reader.packet_available() {
+                match self.process_received_packet()? {
+                    Some(packet_length) => return Ok(Some(packet_length)),
+                    None => continue,
+                }
+            }
+
+            let now = Instant::now();
+            self.service(now).await?;
+
+            if self.packet_reader.packet_available() {
+                match self.process_received_packet()? {
+                    Some(packet_length) => return Ok(Some(packet_length)),
+                    None => continue,
+                }
+            }
+
+            if self.data.outbound.next_step().is_none() {
+                return Ok(None);
+            }
+        }
+    }
+
+    /// Advance local session state until an inbound publish is ready or the session would need to
+    /// wait for new transport input or a future deadline.
+    ///
+    /// Returns `Ok(None)` when no inbound publish is currently ready and the caller would need to
+    /// block for more progress. Cancel-safe if the underlying transport I/O futures are
+    /// cancel-safe.
+    pub async fn drive(&mut self) -> Result<Option<InboundPublish<'_>>, Error<IO::Error>> {
+        Ok(self
+            .drive_packet()
+            .await?
+            .map(|packet_length| self.decode_inbound_publish(packet_length)))
+    }
+
     /// Wait until an inbound publish arrives or the session disconnects.
     ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe. Ordinary no-data must
     /// be represented by the transport future staying pending; `TimedOut` and `Interrupted` are
     /// treated as transport failure and disconnect the session.
     pub async fn poll(&mut self) -> Result<InboundPublish<'_>, Error<IO::Error>> {
-        if self.connection.is_none() {
-            return Err(Error::Disconnected);
-        }
-
         loop {
-            let now = Instant::now();
-            self.service(now).await?;
-
-            if self.packet_reader.packet_available() {
-                match self.process_received_packet()? {
-                    Some(packet_length) => return Ok(self.decode_inbound_publish(packet_length)),
-                    None => continue,
-                }
+            if let Some(packet_length) = self.drive_packet().await? {
+                return Ok(self.decode_inbound_publish(packet_length));
             }
 
             let deadline = self.runtime.next_deadline();
@@ -76,11 +108,6 @@ where
                     Err(_) => continue,
                 },
                 None => read.await?,
-            }
-
-            match self.process_received_packet()? {
-                Some(packet_length) => return Ok(self.decode_inbound_publish(packet_length)),
-                None => continue,
             }
         }
     }
