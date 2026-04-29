@@ -1,6 +1,15 @@
-use super::state::PING_TIMEOUT_MS;
-use super::*;
+use embassy_time::{Duration, Instant, with_deadline};
 use embedded_io_async::Error as _;
+
+use crate::de::PacketReader;
+use crate::{Error, InboundPublish, debug, error, trace, warn};
+
+use super::super::outbound::{
+    ControlAction, OutboundStep, SendState, check_control_packet_size, serialize_control_packet,
+    serialize_pubrel,
+};
+use super::state::PING_TIMEOUT_MS;
+use super::{Io, Session};
 
 #[derive(Copy, Clone)]
 enum FlushedPacket {
@@ -42,18 +51,18 @@ where
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe. Ordinary no-data must
     /// be represented by the transport future staying pending; `TimedOut` and `Interrupted` are
     /// treated as transport failure and disconnect the session.
-    pub async fn poll(&mut self) -> Result<Event<'_>, Error<IO::Error>> {
+    pub async fn poll(&mut self) -> Result<InboundPublish<'_>, Error<IO::Error>> {
         if self.connection.is_none() {
             return Err(Error::Disconnected);
         }
 
         loop {
             let now = Instant::now();
-            self.maintain(now).await?;
+            self.service(now).await?;
 
             if self.packet_reader.packet_available() {
-                match self.handle_received_packet()? {
-                    Some(packet_length) => return Ok(self.inbound_event(packet_length)),
+                match self.process_received_packet()? {
+                    Some(packet_length) => return Ok(self.decode_inbound_publish(packet_length)),
                     None => continue,
                 }
             }
@@ -69,14 +78,14 @@ where
                 None => read.await?,
             }
 
-            match self.handle_received_packet()? {
-                Some(packet_length) => return Ok(self.inbound_event(packet_length)),
+            match self.process_received_packet()? {
+                Some(packet_length) => return Ok(self.decode_inbound_publish(packet_length)),
                 None => continue,
             }
         }
     }
 
-    pub(super) async fn maintain(&mut self, now: Instant) -> Result<(), Error<IO::Error>> {
+    pub(super) async fn service(&mut self, now: Instant) -> Result<(), Error<IO::Error>> {
         if self
             .runtime
             .ping_timeout
@@ -90,7 +99,7 @@ where
             self.handle_disconnect();
             return Err(Error::Disconnected);
         }
-        self.drive_one_outbound(now).await
+        self.service_outbound_once(now).await
     }
 
     fn should_queue_pingreq(&self, now: Instant) -> bool {
@@ -130,7 +139,7 @@ where
         Ok(())
     }
 
-    async fn drive_one_outbound(&mut self, now: Instant) -> Result<(), Error<IO::Error>> {
+    async fn service_outbound_once(&mut self, now: Instant) -> Result<(), Error<IO::Error>> {
         self.maybe_queue_pingreq(now)?;
         let Some(step) = self.data.outbound.next_step() else {
             return Ok(());
@@ -155,6 +164,33 @@ where
         step: OutboundStep,
         now: Instant,
     ) -> Result<(), Error<IO::Error>> {
+        macro_rules! write_or_disconnect {
+            ($res:expr, $write_failed:literal) => {
+                match $res {
+                    Ok(0) => {
+                        error!("transport write returned zero bytes for non-empty buffer");
+                        return Err(Error::WriteZero);
+                    }
+                    Ok(count) => count,
+                    Err(err) => {
+                        warn!($write_failed, err.kind());
+                        self.handle_disconnect();
+                        return Err(Error::Transport(err));
+                    }
+                }
+            };
+        }
+
+        macro_rules! flush_or_disconnect {
+            ($res:expr, $flush_failed:literal) => {
+                if let Err(err) = $res {
+                    warn!($flush_failed, err.kind());
+                    self.handle_disconnect();
+                    return Err(Error::Transport(err));
+                }
+            };
+        }
+
         let mut small_buf = [0u8; 9];
         match step {
             OutboundStep::Control(step) => match step.state {
@@ -176,19 +212,7 @@ where
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.write(&packet[written..]).await
                     };
-                    let count = match res {
-                        Ok(0) => {
-                            warn!("Control packet write returned WriteZero");
-                            self.handle_disconnect();
-                            return Err(Error::WriteZero);
-                        }
-                        Ok(count) => count,
-                        Err(err) => {
-                            warn!("Control packet write failed: {:?}", err.kind());
-                            self.handle_disconnect();
-                            return Err(Error::Transport(err));
-                        }
-                    };
+                    let count = write_or_disconnect!(res, "Control packet write failed: {:?}");
                     self.data.outbound.set_control_written(
                         step.action,
                         written + count,
@@ -198,26 +222,20 @@ where
                         return Ok(());
                     }
                     trace!("Flushing control packet {:?}", step.action);
-                    if let Err(err) = {
+                    let res = {
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.flush().await
-                    } {
-                        warn!("Control packet flush failed: {:?}", err.kind());
-                        self.handle_disconnect();
-                        return Err(Error::Transport(err));
-                    }
+                    };
+                    flush_or_disconnect!(res, "Control packet flush failed: {:?}");
                     self.complete_flush(FlushedPacket::Control(step.action), now);
                 }
                 SendState::Flush => {
                     trace!("Flushing control packet {:?}", step.action);
-                    if let Err(err) = {
+                    let res = {
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.flush().await
-                    } {
-                        warn!("Control packet flush failed: {:?}", err.kind());
-                        self.handle_disconnect();
-                        return Err(Error::Transport(err));
-                    }
+                    };
+                    flush_or_disconnect!(res, "Control packet flush failed: {:?}");
                     self.complete_flush(FlushedPacket::Control(step.action), now);
                 }
                 SendState::Sent => {}
@@ -242,19 +260,7 @@ where
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.write(&packet[written..]).await
                     };
-                    let count = match res {
-                        Ok(0) => {
-                            warn!("PUBREL write returned WriteZero");
-                            self.handle_disconnect();
-                            return Err(Error::WriteZero);
-                        }
-                        Ok(count) => count,
-                        Err(err) => {
-                            warn!("PUBREL write failed: {:?}", err.kind());
-                            self.handle_disconnect();
-                            return Err(Error::Transport(err));
-                        }
-                    };
+                    let count = write_or_disconnect!(res, "PUBREL write failed: {:?}");
                     self.data.outbound.set_release_written(
                         step.packet_id,
                         written + count,
@@ -264,26 +270,20 @@ where
                         return Ok(());
                     }
                     trace!("Flushing PUBREL packet packet_id={}", step.packet_id);
-                    if let Err(err) = {
+                    let res = {
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.flush().await
-                    } {
-                        warn!("PUBREL flush failed: {:?}", err.kind());
-                        self.handle_disconnect();
-                        return Err(Error::Transport(err));
-                    }
+                    };
+                    flush_or_disconnect!(res, "PUBREL flush failed: {:?}");
                     self.complete_flush(FlushedPacket::Release(step.packet_id), now);
                 }
                 SendState::Flush => {
                     trace!("Flushing PUBREL packet packet_id={}", step.packet_id);
-                    if let Err(err) = {
+                    let res = {
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.flush().await
-                    } {
-                        warn!("PUBREL flush failed: {:?}", err.kind());
-                        self.handle_disconnect();
-                        return Err(Error::Transport(err));
-                    }
+                    };
+                    flush_or_disconnect!(res, "PUBREL flush failed: {:?}");
                     self.complete_flush(FlushedPacket::Release(step.packet_id), now);
                 }
                 SendState::Sent => {}
@@ -307,19 +307,7 @@ where
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.write(&packet[written..]).await
                     };
-                    let count = match res {
-                        Ok(0) => {
-                            warn!("Retained packet write returned WriteZero");
-                            self.handle_disconnect();
-                            return Err(Error::WriteZero);
-                        }
-                        Ok(count) => count,
-                        Err(err) => {
-                            warn!("Retained packet write failed: {:?}", err.kind());
-                            self.handle_disconnect();
-                            return Err(Error::Transport(err));
-                        }
-                    };
+                    let count = write_or_disconnect!(res, "Retained packet write failed: {:?}");
                     self.data.outbound.set_retained_written(
                         step.packet_id,
                         written + count,
@@ -329,26 +317,20 @@ where
                         return Ok(());
                     }
                     debug!("Flushing retained packet packet_id={}", step.packet_id);
-                    if let Err(err) = {
+                    let res = {
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.flush().await
-                    } {
-                        warn!("Retained packet flush failed: {:?}", err.kind());
-                        self.handle_disconnect();
-                        return Err(Error::Transport(err));
-                    }
+                    };
+                    flush_or_disconnect!(res, "Retained packet flush failed: {:?}");
                     self.complete_flush(FlushedPacket::Retained(step.packet_id), now);
                 }
                 SendState::Flush => {
                     debug!("Flushing retained packet packet_id={}", step.packet_id);
-                    if let Err(err) = {
+                    let res = {
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.flush().await
-                    } {
-                        warn!("Retained packet flush failed: {:?}", err.kind());
-                        self.handle_disconnect();
-                        return Err(Error::Transport(err));
-                    }
+                    };
+                    flush_or_disconnect!(res, "Retained packet flush failed: {:?}");
                     self.complete_flush(FlushedPacket::Retained(step.packet_id), now);
                 }
                 SendState::Sent => {}
@@ -372,7 +354,7 @@ where
         self.packet_reader.reset();
     }
 
-    pub(super) async fn drive_outbound(&mut self) -> Result<(), Error<IO::Error>> {
+    pub(super) async fn flush_outbound(&mut self) -> Result<(), Error<IO::Error>> {
         loop {
             self.maybe_queue_pingreq(Instant::now())?;
             let Some(step) = self.data.outbound.next_step() else {

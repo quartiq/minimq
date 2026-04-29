@@ -1,6 +1,18 @@
-use super::drive::fill_packet_reader;
-use super::*;
+use core::convert::TryFrom;
+
+use embassy_time::{Duration, Instant};
 use embedded_io_async::Error as _;
+use heapless::String;
+
+use crate::de::received_packet::ReceivedPacket;
+use crate::packets::Connect;
+use crate::types::{Properties, Utf8String};
+use crate::{Error, Property, ProtocolError, QoS, debug, info, warn};
+
+use super::super::ConnectEvent;
+use super::super::outbound::write_packet;
+use super::drive::fill_packet_reader;
+use super::{Io, Session};
 
 impl<'buf, IO> Session<'buf, IO>
 where
@@ -180,7 +192,7 @@ where
             self.runtime.maximum_packet_size
         );
 
-        self.data.register_connected();
+        self.data.mark_session_present();
         self.runtime.note_outbound_activity(Instant::now());
         self.runtime.ping_timeout = None;
         if resumed {

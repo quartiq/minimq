@@ -1,7 +1,7 @@
 use crate::packets::Pub;
 use crate::packets::{PingReq, PubAck, PubComp, PubRec, PubRel};
 use crate::ser::MAX_FIXED_HEADER_SIZE;
-use crate::{Error, ProtocolError, PubError, ReasonCode, trace};
+use crate::{Error, ProtocolError, PubError, ReasonCode, error, trace};
 use heapless::Vec;
 
 use super::Io;
@@ -449,7 +449,7 @@ impl<'a> Outbound<'a> {
 }
 
 pub(super) fn serialize_control_packet<E>(
-    buffer: &mut [u8; CONTROL_PACKET_LEN],
+    buffer: &mut [u8],
     packet: ControlAction,
     maximum_packet_size: Option<u32>,
 ) -> Result<&[u8], Error<E>> {
@@ -462,10 +462,7 @@ pub(super) fn serialize_control_packet<E>(
     Ok(bytes)
 }
 
-fn encode_control_packet(
-    buffer: &mut [u8; CONTROL_PACKET_LEN],
-    packet: ControlAction,
-) -> Result<&[u8], ProtocolError> {
+fn encode_control_packet(buffer: &mut [u8], packet: ControlAction) -> Result<&[u8], ProtocolError> {
     match packet {
         ControlAction::PubAck { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
             buffer,
@@ -520,7 +517,7 @@ pub(super) fn check_pubrel_size(
 }
 
 pub(super) fn serialize_pubrel<E>(
-    buffer: &mut [u8; CONTROL_PACKET_LEN],
+    buffer: &mut [u8],
     packet_id: u16,
     reason: ReasonCode,
     maximum_packet_size: Option<u32>,
@@ -535,7 +532,7 @@ pub(super) fn serialize_pubrel<E>(
 }
 
 fn encode_pubrel(
-    buffer: &mut [u8; CONTROL_PACKET_LEN],
+    buffer: &mut [u8],
     packet_id: u16,
     reason: ReasonCode,
 ) -> Result<&[u8], ProtocolError> {
@@ -571,6 +568,7 @@ pub(super) async fn write_all<C: Io>(
     while !bytes.is_empty() {
         let written = connection.write(bytes).await.map_err(Error::Transport)?;
         if written == 0 {
+            error!("transport write returned zero bytes for non-empty buffer");
             return Err(Error::WriteZero);
         }
         bytes = &bytes[written..];

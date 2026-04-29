@@ -16,7 +16,7 @@ The main API is [`Session`].
 - [`ConfigBuilder`]: session configuration
 - [`Io`]: transport boundary for an established byte stream
 - [`Session`]: the client you drive
-- [`Event`]: output of [`Session::poll()`]
+- [`InboundPublish`]: output of [`Session::poll()`]
 
 ## Example
 
@@ -42,7 +42,7 @@ use core::net::SocketAddr;
 #     }
 # }
 # async fn open_io(_addr: SocketAddr) -> Result<MyIo, io::Error> { todo!() }
-use minimq::{Buffers, ConfigBuilder, ConnectEvent, Error, Event, Session, types::TopicFilter};
+use minimq::{Buffers, ConfigBuilder, ConnectEvent, Error, Session, types::TopicFilter};
 
 async fn run() {
     let rx = &mut [0u8; 256];
@@ -68,7 +68,7 @@ async fn run() {
 
         loop {
             match session.poll().await {
-                Ok(Event::Inbound(message)) => println!("topic={}", message.topic()),
+                Ok(message) => println!("topic={}", message.topic()),
                 Err(Error::Disconnected) => break,
                 Err(err) => panic!("{err}"),
             }
@@ -103,7 +103,7 @@ transport/protocol loss.
   here.
 - [`ConnectEvent::Reconnected`] means the broker resumed the existing MQTT session. Existing
   subscriptions and in-flight QoS state were kept.
-- [`Event::Inbound`] carries one inbound publish.
+- [`Session::poll()`] yields one inbound publish.
 
 If [`Session::poll()`] returns [`Error::Disconnected`], the caller decides when to call
 [`Session::connect()`] with a fresh transport again.

@@ -4,7 +4,7 @@ use core::task::Poll;
 use embassy_time::{Duration, with_timeout};
 use embedded_io_async::{ErrorType, Read, Write};
 use minimq::{
-    Buffers, ConfigBuilder, ConnectEvent, Error, Event, Publication, QoS, Session,
+    Buffers, ConfigBuilder, ConnectEvent, Error, Publication, QoS, Session,
     types::{SubscriptionOptions, TopicFilter},
 };
 use std::{
@@ -118,7 +118,7 @@ async fn poll_until_ready(
             with_timeout(Duration::from_millis(0), session.poll()).await
         };
         match result {
-            Ok(Ok(Event::Inbound(message))) if want_inbound => {
+            Ok(Ok(message)) if want_inbound => {
                 return Some((
                     message.topic().to_string(),
                     message.payload().to_vec(),
@@ -131,7 +131,7 @@ async fn poll_until_ready(
                 _ => panic!("session poll failed: {err:?}"),
             },
             Ok(Err(err)) => panic!("session poll failed: {err:?}"),
-            Ok(Ok(Event::Inbound(_))) => {}
+            Ok(Ok(_)) => {}
             Err(_) => {}
         }
     }

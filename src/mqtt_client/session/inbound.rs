@@ -1,4 +1,11 @@
-use super::*;
+use core::convert::Infallible;
+
+use crate::de::received_packet::ReceivedPacket;
+use crate::{Error, InboundPublish, ProtocolError, QoS, ReasonCode, debug, info, trace, warn};
+
+use super::super::outbound::{ControlAction, check_control_packet_size, check_pubrel_size};
+use super::state::{RuntimeState, SessionData};
+use super::{Io, Session};
 
 impl<'a> SessionData<'a> {
     pub(super) fn handle_packet(
@@ -194,7 +201,7 @@ impl<'buf, IO> Session<'buf, IO>
 where
     IO: Io,
 {
-    pub(super) fn handle_received_packet(&mut self) -> Result<Option<usize>, Error<IO::Error>> {
+    pub(super) fn process_received_packet(&mut self) -> Result<Option<usize>, Error<IO::Error>> {
         if !self.packet_reader.packet_available() {
             return Ok(None);
         }
@@ -241,19 +248,19 @@ where
         }
     }
 
-    pub(super) fn inbound_event(&self, packet_length: usize) -> Event<'_> {
+    pub(super) fn decode_inbound_publish(&self, packet_length: usize) -> InboundPublish<'_> {
         let ReceivedPacket::Publish(info) =
             ReceivedPacket::from_buffer(&self.packet_reader.buffer[..packet_length])
                 .expect("inbound packet must remain decodable")
         else {
             unreachable!("inbound event must be a PUBLISH");
         };
-        Event::Inbound(InboundPublish::new(
+        InboundPublish::new(
             info.topic.0,
             info.payload,
             info.properties,
             info.retain,
             info.qos,
-        ))
+        )
     }
 }

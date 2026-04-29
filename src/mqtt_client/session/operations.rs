@@ -1,5 +1,12 @@
-use super::*;
+use embassy_time::Instant;
 use embedded_io_async::Error as _;
+
+use crate::packets::{DisconnectReq, Pub, Subscribe, Unsubscribe};
+use crate::types::{Properties, TopicFilter};
+use crate::{Error, Property, ProtocolError, PubError, QoS, debug, info, warn};
+
+use super::super::outbound::write_packet;
+use super::{Io, Session};
 
 impl<'buf, IO> Session<'buf, IO>
 where
@@ -36,7 +43,7 @@ where
         if topics.is_empty() {
             return Err(ProtocolError::NoTopic.into());
         }
-        self.drive_outbound().await?;
+        self.flush_outbound().await?;
         self.require_retained_slot()?;
 
         let packet_id = self.data.next_packet_id();
@@ -61,7 +68,7 @@ where
             len,
             self.data.outbound.used()
         );
-        self.drive_outbound().await
+        self.flush_outbound().await
     }
 
     /// Send an `UNSUBSCRIBE`.
@@ -78,7 +85,7 @@ where
         if topics.is_empty() {
             return Err(ProtocolError::NoTopic.into());
         }
-        self.drive_outbound().await?;
+        self.flush_outbound().await?;
         self.require_retained_slot()?;
 
         let packet_id = self.data.next_packet_id();
@@ -103,7 +110,7 @@ where
             len,
             self.data.outbound.used()
         );
-        self.drive_outbound().await
+        self.flush_outbound().await
     }
 
     /// Send a `PUBLISH`.
@@ -124,7 +131,7 @@ where
         if self.connection.is_none() {
             return Err(PubError::Session(Error::Disconnected));
         }
-        self.drive_outbound().await.map_err(PubError::Session)?;
+        self.flush_outbound().await.map_err(PubError::Session)?;
 
         let mut publish: Pub<'_, P> = publication.into();
         if let Some(max_qos) = self.runtime.max_qos
@@ -166,7 +173,7 @@ where
                 self.runtime.max_send_quota,
                 self.data.outbound.used()
             );
-            self.drive_outbound().await.map_err(PubError::Session)?;
+            self.flush_outbound().await.map_err(PubError::Session)?;
             return Ok(());
         }
 
@@ -189,6 +196,9 @@ where
                 .ok_or(PubError::Session(Error::Disconnected))?;
             crate::mqtt_client::outbound::write_all(connection, packet).await
         } {
+            if matches!(err, Error::WriteZero) {
+                return Err(PubError::Session(err));
+            }
             warn!("QoS0 PUBLISH write failed");
             self.handle_disconnect();
             return Err(PubError::Session(err));

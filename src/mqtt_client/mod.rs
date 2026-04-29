@@ -19,7 +19,7 @@ pub trait Io: Read + Write + ErrorType {}
 
 impl<T> Io for T where T: Read + Write + ErrorType {}
 
-/// Inbound MQTT `PUBLISH` delivered by [`Event::Inbound`].
+/// Inbound MQTT `PUBLISH` returned by [`Session::poll`](crate::Session::poll).
 #[derive(Debug)]
 pub struct InboundPublish<'a> {
     topic: &'a str,
@@ -106,13 +106,6 @@ impl<'a> InboundPublish<'a> {
             None => Ok(None),
         }
     }
-}
-
-/// Output of [`Session::poll`](crate::Session::poll).
-#[derive(Debug)]
-pub enum Event<'a> {
-    /// An inbound publish was received.
-    Inbound(InboundPublish<'a>),
 }
 
 /// Output of [`Session::connect`](crate::Session::connect).

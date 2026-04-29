@@ -1,7 +1,8 @@
 use super::state::PING_TIMEOUT_MS;
-use super::*;
+use crate::ser::MAX_FIXED_HEADER_SIZE;
 use crate::{Buffers, ConfigBuilder, Publication, tests::block_on};
-use embassy_time::Duration;
+use crate::{ConnectEvent, Error, ProtocolError, Session};
+use embassy_time::{Duration, Instant};
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use std::collections::VecDeque;
 use std::vec::Vec;
@@ -70,7 +71,7 @@ fn maintain_sends_pingreq_when_due() {
     let now = Instant::now();
     session.runtime.next_ping = Some(now);
 
-    block_on(session.maintain(now)).unwrap();
+    block_on(session.service(now)).unwrap();
 
     let connection = session.connection.as_ref().unwrap();
     assert!(
@@ -110,8 +111,8 @@ fn maintain_does_not_send_second_pingreq_while_waiting_for_pingresp() {
     let now = Instant::now();
     session.runtime.next_ping = Some(now);
 
-    block_on(session.maintain(now)).unwrap();
-    block_on(session.maintain(now + Duration::from_millis(600))).unwrap();
+    block_on(session.service(now)).unwrap();
+    block_on(session.service(now + Duration::from_millis(600))).unwrap();
 
     let pingreqs = session
         .connection
@@ -131,11 +132,11 @@ fn pingresp_clears_keepalive_timeout() {
     let now = Instant::now();
     session.runtime.next_ping = Some(now);
 
-    block_on(session.maintain(now)).unwrap();
+    block_on(session.service(now)).unwrap();
     session.connection.as_mut().unwrap().push_rx(&[0xD0, 0x00]);
 
     block_on(session.read_packet()).unwrap();
-    let result = session.handle_received_packet().unwrap();
+    let result = session.process_received_packet().unwrap();
     assert!(result.is_none());
     assert_eq!(session.runtime.ping_timeout, None);
     assert!(session.runtime.next_ping.is_some());
@@ -155,7 +156,7 @@ fn inbound_publish_does_not_refresh_keepalive_deadline() {
         .push_rx(&[0x30, 0x05, 0x00, 0x01, b'A', 0x00, 0x05]);
 
     let result = block_on(session.poll()).unwrap();
-    assert!(matches!(result, Event::Inbound(_)), "{result:?}");
+    assert_eq!(result.topic(), "A", "{result:?}");
     assert_eq!(session.runtime.next_ping, Some(deadline));
 }
 
@@ -179,7 +180,7 @@ fn expired_ping_timeout_disconnects_session() {
     let now = Instant::now();
     session.runtime.ping_timeout = Some(now);
 
-    let result = block_on(session.maintain(now));
+    let result = block_on(session.service(now));
 
     assert!(matches!(result, Err(Error::Disconnected)));
     assert!(session.connection.is_none());
@@ -197,7 +198,7 @@ fn pingreq_write_error_disconnects_session() {
     let now = Instant::now();
     session.runtime.next_ping = Some(now);
 
-    let result = block_on(session.maintain(now));
+    let result = block_on(session.service(now));
 
     assert!(matches!(
         result,

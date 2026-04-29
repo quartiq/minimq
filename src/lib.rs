@@ -19,7 +19,7 @@ mod varint;
 mod will;
 
 pub use config::{Buffers, ConfigBuilder, SetupError};
-pub use mqtt_client::{ConnectEvent, Event, InboundPublish, Io, Session};
+pub use mqtt_client::{ConnectEvent, InboundPublish, Io, Session};
 pub use properties::Property;
 pub use publication::{OwnedResponseTarget, Publication};
 pub use reason_codes::ReasonCode;
@@ -34,7 +34,7 @@ pub use ser::Error as SerError;
 
 use num_enum::TryFromPrimitive;
 
-pub(crate) use log::{debug, info, trace, warn};
+pub(crate) use log::{debug, error, info, trace, warn};
 
 /// Session error type for a specific transport.
 pub type SessionError<IO> = Error<<IO as embedded_io_async::ErrorType>::Error>;

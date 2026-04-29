@@ -3,8 +3,8 @@ mod support;
 use embassy_time::{Duration, with_timeout};
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use minimq::{
-    Buffers, ConfigBuilder, ConnectEvent, Error, Event, ProtocolError, PubError, Publication, QoS,
-    Session,
+    Buffers, ConfigBuilder, ConnectEvent, Error, InboundPublish, ProtocolError, PubError,
+    Publication, QoS, Session,
 };
 use std::{cell::RefCell, collections::VecDeque, future::poll_fn, rc::Rc, task::Poll};
 use support::{block_on, poll_once};
@@ -355,7 +355,7 @@ fn expect_reconnected(session: &mut Session<'static, MockConnection>, connector:
 
 fn poll_now<'a>(
     session: &'a mut Session<'static, MockConnection>,
-) -> Result<Option<Event<'a>>, Error<ErrorKind>> {
+) -> Result<Option<InboundPublish<'a>>, Error<ErrorKind>> {
     match block_on(with_timeout(Duration::from_millis(0), session.poll())) {
         Ok(Ok(event)) => Ok(Some(event)),
         Ok(Err(err)) => Err(err),
@@ -378,8 +378,7 @@ fn with_inbound<T>(
     session: &mut Session<'static, MockConnection>,
     f: impl FnOnce(minimq::InboundPublish<'_>) -> T,
 ) -> T {
-    let Event::Inbound(message) = block_on(session.poll()).unwrap();
-    f(message)
+    f(block_on(session.poll()).unwrap())
 }
 
 fn expect_poll_error(
@@ -599,7 +598,7 @@ fn qos2_pubrel_survives_cancellation_during_pending_write() {
                     break;
                 }
             }
-            Some(Event::Inbound(_)) => panic!("unexpected inbound event while waiting for PUBREL"),
+            Some(_) => panic!("unexpected inbound event while waiting for PUBREL"),
         }
     }
     assert!(sent_pubrel);

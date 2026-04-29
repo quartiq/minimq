@@ -7,7 +7,7 @@ use embedded_io_adapters::tokio_1::FromTokio;
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 use minimq::{
-    ConfigBuilder, ConnectEvent, Event, Property, Publication, QoS, Session, types::TopicFilter,
+    ConfigBuilder, ConnectEvent, Property, Publication, QoS, Session, types::TopicFilter,
 };
 use std::error::Error as StdError;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -110,7 +110,7 @@ async fn flush(
 ) -> Result<(), minimq::SessionError<EmqxTlsConnection>> {
     while !session.is_publish_quiescent() {
         match tokio::time::timeout(Duration::from_millis(10), session.poll()).await {
-            Ok(Ok(Event::Inbound(_))) => {}
+            Ok(Ok(_)) => {}
             Ok(Err(err)) => return Err(err),
             Err(_) => {}
         }
@@ -128,7 +128,7 @@ async fn recv(
             .await
             .unwrap()?
         {
-            Event::Inbound(message) if message.topic() == topic && message.payload() == payload => {
+            message if message.topic() == topic && message.payload() == payload => {
                 println!(
                     "received topic={} payload={}",
                     message.topic(),
@@ -136,7 +136,7 @@ async fn recv(
                 );
                 return Ok(());
             }
-            Event::Inbound(_) => {}
+            _ => {}
         }
     }
 }

@@ -1,4 +1,11 @@
-use super::*;
+use core::num::NonZeroU16;
+
+use embassy_time::{Duration, Instant};
+use heapless::Vec;
+
+use crate::{Error, ProtocolError, QoS, ReasonCode};
+
+use super::super::outbound::Outbound;
 
 pub(super) const PING_TIMEOUT_MS: u64 = 5_000;
 const MAX_INBOUND_QOS2: usize = 8;
@@ -91,7 +98,7 @@ impl<'a> SessionData<'a> {
         }
     }
 
-    pub(super) fn register_connected(&mut self) {
+    pub(super) fn mark_session_present(&mut self) {
         self.session_present = true;
     }
 
