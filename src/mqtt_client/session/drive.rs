@@ -23,7 +23,7 @@ pub(super) async fn fill_packet_reader<'buf, C: Io>(
     connection: &mut C,
 ) -> Result<(), Error<C::Error>> {
     while !packet_reader.packet_available() {
-        let buffer = packet_reader.receive_buffer().map_err(Error::Protocol)?;
+        let buffer = packet_reader.receive_buffer()?;
         if buffer.is_empty() {
             break;
         }
@@ -140,12 +140,8 @@ where
 
     fn maybe_queue_pingreq(&mut self, now: Instant) -> Result<(), Error<IO::Error>> {
         if self.should_queue_pingreq(now) {
-            check_control_packet_size(self.runtime.maximum_packet_size, ControlAction::PingReq)
-                .map_err(Error::Protocol)?;
-            self.data
-                .outbound
-                .queue_control(ControlAction::PingReq)
-                .map_err(Error::Protocol)?;
+            check_control_packet_size(self.runtime.maximum_packet_size, ControlAction::PingReq)?;
+            self.data.outbound.queue_control(ControlAction::PingReq)?;
         }
         Ok(())
     }

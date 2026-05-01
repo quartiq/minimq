@@ -317,14 +317,14 @@ impl<'de> serde::de::Deserialize<'de> for BinaryData<'de> {
 
 /// Username/password authentication data used in `CONNECT`.
 #[derive(Debug, Copy, Clone)]
-pub struct Auth<'a> {
+pub(crate) struct Auth<'a> {
     user_name: &'a str,
     password: &'a [u8],
 }
 
 impl<'a> Auth<'a> {
     /// Construct MQTT username/password authentication data.
-    pub const fn new(user_name: &'a str, password: &'a [u8]) -> Self {
+    pub(crate) const fn new(user_name: &'a str, password: &'a [u8]) -> Self {
         Self {
             user_name,
             password,
@@ -332,12 +332,12 @@ impl<'a> Auth<'a> {
     }
 
     /// Return the MQTT username.
-    pub const fn user_name(&self) -> &'a str {
+    pub(crate) const fn user_name(&self) -> &'a str {
         self.user_name
     }
 
     /// Return the MQTT password bytes.
-    pub const fn password(&self) -> &'a [u8] {
+    pub(crate) const fn password(&self) -> &'a [u8] {
         self.password
     }
 }

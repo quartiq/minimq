@@ -5,8 +5,7 @@
 pub mod config;
 mod de;
 mod message_types;
-/// Long-lived MQTT client session types.
-pub mod mqtt_client;
+mod mqtt_client;
 mod packets;
 mod properties;
 /// Outbound publish builders and payload adapters.
@@ -29,8 +28,8 @@ pub use will::Will;
 #[doc(hidden)]
 pub mod fuzzing;
 
-pub use de::Error as DeError;
-pub use ser::Error as SerError;
+use de::Error as DeError;
+use ser::Error as SerError;
 
 use num_enum::TryFromPrimitive;
 
@@ -121,10 +120,10 @@ pub enum ProtocolError {
     Failed(ReasonCode),
     /// Packet encoding failed.
     #[error(transparent)]
-    Encode(SerError),
+    Encode(#[from] SerError),
     /// Packet decoding failed.
     #[error(transparent)]
-    Deserialization(DeError),
+    Deserialization(#[from] DeError),
 }
 
 /// Error returned from [`Session::publish`](crate::Session::publish).
@@ -147,15 +146,9 @@ impl<P, E> From<crate::ser::PubError<P>> for PubError<P, E> {
     }
 }
 
-impl From<crate::ser::Error> for ProtocolError {
-    fn from(err: crate::ser::Error) -> Self {
-        Self::Encode(err)
-    }
-}
-
-impl From<crate::de::Error> for ProtocolError {
-    fn from(err: crate::de::Error) -> Self {
-        Self::Deserialization(err)
+impl<P, E> From<ProtocolError> for PubError<P, E> {
+    fn from(err: ProtocolError) -> Self {
+        Self::Session(err.into())
     }
 }
 
@@ -192,6 +185,18 @@ impl<E> From<ProtocolError> for Error<E> {
             ProtocolError::NotConnected => Self::Disconnected,
             other => Self::Protocol(other),
         }
+    }
+}
+
+impl<E> From<crate::ser::Error> for Error<E> {
+    fn from(err: crate::ser::Error) -> Self {
+        ProtocolError::from(err).into()
+    }
+}
+
+impl<E> From<crate::de::Error> for Error<E> {
+    fn from(err: crate::de::Error) -> Self {
+        ProtocolError::from(err).into()
     }
 }
 

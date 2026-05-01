@@ -29,7 +29,7 @@
 use crate::varint::VarintBuffer;
 use crate::{
     message_types::{ControlPacket, MessageType},
-    packets::Pub,
+    packets::PublishHeader,
 };
 use bit_field::BitField;
 use serde::Serialize;
@@ -132,17 +132,17 @@ impl<'a> MqttSerializer<'a> {
 
     pub fn pub_to_buffer_meta<P: crate::publication::ToPayload>(
         buf: &'a mut [u8],
-        pub_packet: Pub<'_, P>,
+        header: &PublishHeader<'_>,
+        payload: P,
     ) -> Result<(usize, &'a [u8]), PubError<P::Error>> {
         let mut serializer = crate::ser::MqttSerializer::new(buf);
-        pub_packet
+        header
             .serialize(&mut serializer)
             .map_err(PubError::Encode)?;
 
         // Next, serialize the payload into the remaining buffer
-        let flags = pub_packet.fixed_header_flags();
-        let len = pub_packet
-            .payload
+        let flags = header.fixed_header_flags();
+        let len = payload
             .serialize(serializer.remainder())
             .map_err(PubError::Payload)?;
         serializer.commit(len).map_err(PubError::Encode)?;
@@ -156,9 +156,10 @@ impl<'a> MqttSerializer<'a> {
 
     pub fn pub_to_buffer<P: crate::publication::ToPayload>(
         buf: &'a mut [u8],
-        pub_packet: Pub<'_, P>,
+        header: &PublishHeader<'_>,
+        payload: P,
     ) -> Result<&'a [u8], PubError<P::Error>> {
-        let (_, packet) = Self::pub_to_buffer_meta(buf, pub_packet)?;
+        let (_, packet) = Self::pub_to_buffer_meta(buf, header, payload)?;
         Ok(packet)
     }
 
@@ -532,7 +533,11 @@ impl serde::ser::SerializeStructVariant for &mut MqttSerializer<'_> {
 #[cfg(test)]
 mod tests {
     use super::{Error, MqttSerializer};
-    use crate::{packets::PingReq, publication::Publication};
+    use crate::{
+        packets::{PingReq, PublishHeader},
+        publication::Publication,
+        types::Utf8String,
+    };
 
     #[test]
     fn control_packet_encode_rejects_buffers_smaller_than_fixed_header() {
@@ -547,8 +552,16 @@ mod tests {
     fn publish_encode_rejects_buffers_smaller_than_fixed_header() {
         for len in 0..super::MAX_FIXED_HEADER_SIZE {
             let mut buf = vec![0u8; len];
-            let publish = crate::packets::Pub::from(Publication::bytes("a", b"x"));
-            let result = MqttSerializer::pub_to_buffer(&mut buf, publish);
+            let publication = Publication::bytes("a", b"x");
+            let header = PublishHeader {
+                topic: Utf8String(publication.topic),
+                packet_id: None,
+                properties: publication.properties,
+                retain: publication.retain,
+                qos: publication.qos,
+                dup: false,
+            };
+            let result = MqttSerializer::pub_to_buffer(&mut buf, &header, publication.payload);
             assert!(matches!(
                 result,
                 Err(crate::ser::PubError::Encode(Error::InsufficientMemory))

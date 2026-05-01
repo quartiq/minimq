@@ -131,9 +131,15 @@ pub fn encode_packet(
                 publication = publication.correlate(BinaryData(b"id").0);
             }
 
-            let mut publish = crate::packets::Pub::from(publication);
-            publish.packet_id = (publish.qos > QoS::AtMostOnce).then_some(1);
-            let _ = MqttSerializer::pub_to_buffer(buf, publish);
+            let header = crate::packets::PublishHeader {
+                topic: crate::types::Utf8String(publication.topic),
+                packet_id: (publication.qos > QoS::AtMostOnce).then_some(1),
+                properties: publication.properties,
+                retain: publication.retain,
+                qos: publication.qos,
+                dup: false,
+            };
+            let _ = MqttSerializer::pub_to_buffer(buf, &header, publication.payload);
         }
         2 => {
             let topics = [TopicFilter::new(topic)];
