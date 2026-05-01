@@ -16,7 +16,7 @@ The main API is [`Session`].
 - [`ConfigBuilder`]: session configuration
 - [`Io`]: transport boundary for an established byte stream
 - [`Session`]: the client you drive
-- [`InboundPublish`]: output of [`Session::poll()`]
+- [`InboundPublish`]: output of [`Session::recv()`]
 
 ## Example
 
@@ -67,7 +67,7 @@ async fn run() {
         }
 
         loop {
-            match session.poll().await {
+            match session.recv().await {
                 Ok(message) => println!("topic={}", message.topic()),
                 Err(Error::Disconnected) => break,
                 Err(err) => panic!("{err}"),
@@ -85,8 +85,8 @@ Ordinary lack of inbound data must keep the read future pending; if the transpor
 `TimedOut` or `Interrupted`, [`Session::poll()`] treats that as transport failure and disconnects
 the session.
 
-For a TLS connectivity example and for caller-side bounded/cooperative driving via external
-timeouts, see `examples/tls_public_broker.rs`.
+For a TLS connectivity example and for caller-side cooperative driving via external timeouts, see
+`examples/tls_public_broker.rs`.
 
 ## Session Model
 
@@ -94,24 +94,35 @@ You provide packet buffers plus an already-established transport, and a loop tha
 passes that transport into [`Session::connect()`] to establish or resume the broker session.
 
 [`Session::connect()`] takes ownership of the provided transport and performs the unbounded MQTT
-`CONNECT` / `CONNACK` handshake. Once connected, [`Session::poll()`] blocks until an inbound
-publish arrives or the session is lost, while still handling keepalive and retransmission
-internally. The session drops the transport again on graceful disconnect, connection failure, or
+`CONNECT` / `CONNACK` handshake. Once connected:
+- [`Session::recv()`] blocks until the next inbound publish arrives or the session is lost.
+- [`Session::poll()`] blocks until any session progress happens and returns `Ok(None)` for
+  internal-only progress such as ACK handling, replay, or keepalive traffic.
+
+The session drops the transport again on graceful disconnect, connection failure, or
 transport/protocol loss.
 
 - [`ConnectEvent::Connected`] means the broker created a fresh session. Re-establish subscriptions
   here.
 - [`ConnectEvent::Reconnected`] means the broker resumed the existing MQTT session. Existing
   subscriptions and in-flight QoS state were kept.
-- [`Session::poll()`] yields one inbound publish.
+- [`Session::recv()`] yields one inbound publish.
 
-If [`Session::poll()`] returns [`Error::Disconnected`], the caller decides when to call
+If [`Session::recv()`] or [`Session::poll()`] returns [`Error::Disconnected`], the caller decides
+when to call
 [`Session::connect()`] with a fresh transport again.
 Other transport/protocol errors already tear down the attached transport locally; callers should
-handle the error and reconnect rather than retrying `poll()` on the same session state.
+handle the error and reconnect rather than retrying `recv()` or `poll()` on the same session
+state.
 
-For bounded or cooperative polling, wrap the cancel-safe blocking [`Session::poll()`] future in an
-external timeout such as [`embassy_time::with_timeout()`] or [`embassy_time::with_deadline()`].
+For cooperative driving:
+- use [`Session::drive()`] for immediate local progress without waiting for future inbound reads or
+  future session deadlines
+- wrap cancel-safe blocking [`Session::poll()`] or [`Session::recv()`] in an external timeout such
+  as [`embassy_time::with_timeout()`] or [`embassy_time::with_deadline()`]
+- if you need real wall-clock limits, enforce them in the transport's `read`, `write`, and
+  `flush` futures; using the same budget as minimq's internal MQTT round-trip timeout keeps
+  keepalive and transport liveness aligned
 
 ## Buffers
 

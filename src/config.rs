@@ -133,7 +133,7 @@ impl<'a> ConfigBuilder<'a> {
 
     /// Set the keepalive interval advertised in `CONNECT`.
     ///
-    /// `poll()` must still be driven often enough for the session to honor it.
+    /// `poll()` or `recv()` must still be driven often enough for the session to honor it.
     pub fn keepalive_interval(mut self, seconds: u16) -> Self {
         self.keepalive_interval = Duration::from_secs(seconds as u64);
         self

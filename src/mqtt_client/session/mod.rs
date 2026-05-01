@@ -10,7 +10,7 @@ mod tests;
 use crate::de::PacketReader;
 use crate::ser::MAX_FIXED_HEADER_SIZE;
 use crate::types::Auth;
-use crate::{ConfigBuilder, QoS, Will};
+use crate::{ConfigBuilder, Op, OpStatus, QoS, Will};
 use heapless::String;
 
 use super::Io;
@@ -19,12 +19,15 @@ use state::{RuntimeState, SessionData};
 
 /// One long-lived MQTT client session.
 ///
-/// Drive the session by calling [`poll`](Self::poll) regularly after
-/// [`connect`](Self::connect) has taken ownership of a live transport. The same session is also
-/// used for outbound `publish`, `subscribe`, and `unsubscribe` operations.
+/// Drive the session after [`connect`](Self::connect) has taken ownership of a live transport.
+/// Use [`recv`](Self::recv) when you want the next inbound publish, [`poll`](Self::poll) when you
+/// need to wait for any session progress, and [`drive`](Self::drive) for cooperative immediate
+/// progress. Real time bounds come from the transport: stalled reads, writes, or flushes must
+/// eventually error if the caller needs hard latency limits. The same session is also used for
+/// outbound `publish`, `subscribe`, and `unsubscribe` operations.
 ///
 /// Cancel safety, assuming the transport's I/O futures are cancel-safe:
-/// [`drive`](Self::drive), [`poll`](Self::poll), [`disconnect`](Self::disconnect),
+/// [`drive`](Self::drive), [`poll`](Self::poll), [`recv`](Self::recv), [`disconnect`](Self::disconnect),
 /// [`subscribe`](Self::subscribe), [`unsubscribe`](Self::unsubscribe), and
 /// [`publish`](Self::publish) for QoS 1/2 preserve local session state across cancellation.
 /// Cancelling [`connect`](Self::connect) drops the supplied transport and leaves the session
@@ -93,5 +96,28 @@ where
     /// pending release state.
     pub fn is_publish_quiescent(&self) -> bool {
         self.data.outbound.is_quiescent()
+    }
+
+    /// Return the local completion state of one previously accepted outbound operation.
+    pub fn status(&self, op: &Op) -> OpStatus {
+        if op.generation != self.data.generation() {
+            return OpStatus::Invalidated;
+        }
+
+        let pending = match op.kind {
+            super::OpKind::PublishAtLeastOnce
+            | super::OpKind::Subscribe
+            | super::OpKind::Unsubscribe => self.data.outbound.has_retained(op.packet_id),
+            super::OpKind::PublishExactlyOnce => {
+                self.data.outbound.has_retained(op.packet_id)
+                    || self.data.outbound.has_pending_release(op.packet_id)
+            }
+        };
+
+        if pending {
+            OpStatus::Pending
+        } else {
+            OpStatus::Complete
+        }
     }
 }

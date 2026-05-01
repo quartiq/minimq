@@ -357,7 +357,7 @@ fn poll_now<'a>(
     session: &'a mut Session<'static, MockConnection>,
 ) -> Result<Option<InboundPublish<'a>>, Error<ErrorKind>> {
     match block_on(with_timeout(Duration::from_millis(0), session.poll())) {
-        Ok(Ok(event)) => Ok(Some(event)),
+        Ok(Ok(event)) => Ok(event),
         Ok(Err(err)) => Err(err),
         Err(_) => Ok(None),
     }
@@ -378,7 +378,7 @@ fn with_inbound<T>(
     session: &mut Session<'static, MockConnection>,
     f: impl FnOnce(minimq::InboundPublish<'_>) -> T,
 ) -> T {
-    f(block_on(session.poll()).unwrap())
+    f(block_on(session.recv()).unwrap())
 }
 
 fn expect_poll_error(
@@ -429,7 +429,8 @@ fn fill_inflight_publish_slots(session: &mut Session<'static, MockConnection>) -
     let mut count = 0;
     loop {
         match block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))) {
-            Ok(()) => count += 1,
+            Ok(Some(_)) => count += 1,
+            Ok(None) => unreachable!("QoS1 publish must return an op handle"),
             Err(PubError::Session(Error::Protocol(ProtocolError::InflightMetadataExhausted))) => {
                 return count;
             }
@@ -524,7 +525,8 @@ fn cancelled_publish_still_holds_receive_max_quota() {
     assert!(matches!(result, Err(PubError::Session(Error::NotReady))));
     for _ in 0..WAIT_STEPS {
         match block_on(session.publish(Publication::bytes("data", b"z").qos(QoS::AtLeastOnce))) {
-            Ok(()) => return,
+            Ok(Some(_)) => return,
+            Ok(None) => unreachable!("QoS1 publish must return an op handle"),
             Err(PubError::Session(Error::NotReady)) => {
                 assert!(poll_now(&mut session).unwrap().is_none());
             }

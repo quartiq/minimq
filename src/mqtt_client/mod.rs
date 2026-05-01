@@ -19,7 +19,47 @@ pub trait Io: Read + Write + ErrorType {}
 
 impl<T> Io for T where T: Read + Write + ErrorType {}
 
-/// Inbound MQTT `PUBLISH` returned by [`Session::poll`](crate::Session::poll).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum OpKind {
+    PublishAtLeastOnce,
+    PublishExactlyOnce,
+    Subscribe,
+    Unsubscribe,
+}
+
+/// Handle for one outbound MQTT operation accepted into local session state.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct Op {
+    kind: OpKind,
+    packet_id: u16,
+    generation: u32,
+}
+
+impl Op {
+    pub(crate) fn new(kind: OpKind, packet_id: u16, generation: u32) -> Self {
+        Self {
+            kind,
+            packet_id,
+            generation,
+        }
+    }
+}
+
+/// Completion state of a previously accepted outbound operation.
+#[must_use = "inspect the returned status before deciding how to proceed"]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum OpStatus {
+    /// The operation is still present in local in-flight state.
+    Pending,
+    /// The operation is no longer pending in this session generation.
+    Complete,
+    /// The local session state that could complete this operation was discarded.
+    Invalidated,
+}
+
+/// Inbound MQTT `PUBLISH` surfaced by [`Session::recv`](crate::Session::recv) and by
+/// [`Session::drive`](crate::Session::drive) / [`Session::poll`](crate::Session::poll) when they
+/// return `Some(...)`.
 #[derive(Debug)]
 pub struct InboundPublish<'a> {
     topic: &'a str,

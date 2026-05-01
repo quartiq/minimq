@@ -205,6 +205,12 @@ impl<'a> Outbound<'a> {
         true
     }
 
+    pub(super) fn has_retained(&self, packet_id: u16) -> bool {
+        self.retained
+            .iter()
+            .any(|entry| entry.packet_id == packet_id)
+    }
+
     pub(super) fn queue_release(
         &mut self,
         packet_id: u16,

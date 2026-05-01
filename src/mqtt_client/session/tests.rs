@@ -1,4 +1,4 @@
-use super::state::PING_TIMEOUT_MS;
+use super::state::ROUND_TRIP_TIMEOUT_MS;
 use crate::ser::MAX_FIXED_HEADER_SIZE;
 use crate::{Buffers, ConfigBuilder, Publication, tests::block_on};
 use crate::{ConnectEvent, Error, ProtocolError, Session};
@@ -82,7 +82,7 @@ fn maintain_sends_pingreq_when_due() {
     );
     assert_eq!(
         session.runtime.ping_timeout,
-        Some(now + Duration::from_millis(PING_TIMEOUT_MS))
+        Some(now + Duration::from_millis(ROUND_TRIP_TIMEOUT_MS))
     );
     assert_eq!(
         session.runtime.next_ping,
@@ -154,6 +154,26 @@ fn drive_returns_none_when_waiting_for_read() {
 }
 
 #[test]
+fn poll_returns_none_after_internal_progress() {
+    let mut session = session();
+    session.connection = Some(MockConnection::default());
+    session.runtime.next_ping = Some(Instant::now());
+
+    let result = block_on(session.poll()).unwrap();
+
+    assert!(result.is_none());
+    assert!(
+        session
+            .connection
+            .as_ref()
+            .unwrap()
+            .tx
+            .iter()
+            .any(|frame| frame.as_slice() == [0xC0, 0x00])
+    );
+}
+
+#[test]
 fn inbound_publish_does_not_refresh_keepalive_deadline() {
     let mut session = session();
     session.connection = Some(MockConnection::default());
@@ -166,7 +186,9 @@ fn inbound_publish_does_not_refresh_keepalive_deadline() {
         .unwrap()
         .push_rx(&[0x30, 0x05, 0x00, 0x01, b'A', 0x00, 0x05]);
 
-    let result = block_on(session.poll()).unwrap();
+    let result = block_on(session.poll())
+        .unwrap()
+        .expect("expected inbound publish");
     assert_eq!(result.topic(), "A", "{result:?}");
     assert_eq!(session.runtime.next_ping, Some(deadline));
 }

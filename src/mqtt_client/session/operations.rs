@@ -3,7 +3,7 @@ use embedded_io_async::Error as _;
 
 use crate::packets::{DisconnectReq, PublishHeader, Subscribe, Unsubscribe};
 use crate::types::{Properties, TopicFilter};
-use crate::{Error, Property, ProtocolError, PubError, QoS, debug, info, warn};
+use crate::{Error, Op, Property, ProtocolError, PubError, QoS, debug, info, warn};
 
 use super::super::outbound::write_packet;
 use super::{Io, Session};
@@ -31,12 +31,14 @@ where
     /// Call this after [`connect`](Self::connect). A resumed [`ConnectEvent::Reconnected`]
     /// already kept broker-side subscriptions.
     ///
+    /// Returns an operation handle that can be checked with [`Session::status`](Self::status).
+    ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
     pub async fn subscribe(
         &mut self,
         topics: &[TopicFilter<'_>],
         properties: &[Property<'_>],
-    ) -> Result<(), Error<IO::Error>> {
+    ) -> Result<Op, Error<IO::Error>> {
         if self.connection.is_none() {
             return Err(Error::Disconnected);
         }
@@ -61,17 +63,24 @@ where
             len,
             self.data.outbound.used()
         );
-        self.flush_outbound().await
+        self.flush_outbound().await?;
+        Ok(Op::new(
+            super::super::OpKind::Subscribe,
+            packet_id,
+            self.data.generation(),
+        ))
     }
 
     /// Send an `UNSUBSCRIBE`.
+    ///
+    /// Returns an operation handle that can be checked with [`Session::status`](Self::status).
     ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
     pub async fn unsubscribe(
         &mut self,
         topics: &[&str],
         properties: &[Property<'_>],
-    ) -> Result<(), Error<IO::Error>> {
+    ) -> Result<Op, Error<IO::Error>> {
         if self.connection.is_none() {
             return Err(Error::Disconnected);
         }
@@ -96,21 +105,29 @@ where
             len,
             self.data.outbound.used()
         );
-        self.flush_outbound().await
+        self.flush_outbound().await?;
+        Ok(Op::new(
+            super::super::OpKind::Unsubscribe,
+            packet_id,
+            self.data.generation(),
+        ))
     }
 
     /// Send a `PUBLISH`.
     ///
     /// QoS 1 and 2 retain the encoded packet in the session TX buffer until broker ack and are
     /// cancel-safe if the underlying transport I/O futures are cancel-safe.
+    /// They return `Some(Op)` so the caller can check completion with
+    /// [`Session::status`](Self::status).
     ///
     /// QoS 0 bypasses retained outbound state, encodes into temporary TX scratch space, and writes
     /// directly to the transport. It therefore does not consume replay/in-flight slots and only
-    /// needs enough currently free TX space for that one encode, but it is not cancel-safe.
+    /// needs enough currently free TX space for that one encode, but it is not cancel-safe and
+    /// returns `None`.
     pub async fn publish<P>(
         &mut self,
         publication: crate::publication::Publication<'_, P>,
-    ) -> Result<(), PubError<P::Error, IO::Error>>
+    ) -> Result<Option<Op>, PubError<P::Error, IO::Error>>
     where
         P: crate::publication::ToPayload,
     {
@@ -162,7 +179,12 @@ where
                 self.data.outbound.used()
             );
             self.flush_outbound().await?;
-            return Ok(());
+            let kind = if qos == QoS::ExactlyOnce {
+                super::super::OpKind::PublishExactlyOnce
+            } else {
+                super::super::OpKind::PublishAtLeastOnce
+            };
+            return Ok(Some(Op::new(kind, packet_id, self.data.generation())));
         }
 
         let packet = crate::ser::MqttSerializer::pub_to_buffer(
@@ -188,7 +210,7 @@ where
         }
         self.runtime.note_outbound_activity(Instant::now());
 
-        Ok(())
+        Ok(None)
     }
 
     pub(super) fn require_retained_slot(&self) -> Result<(), Error<IO::Error>> {

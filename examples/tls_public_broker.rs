@@ -124,7 +124,7 @@ async fn recv(
     payload: &[u8],
 ) -> Result<(), minimq::SessionError<EmqxTlsConnection>> {
     loop {
-        match tokio::time::timeout(Duration::from_secs(10), session.poll())
+        match tokio::time::timeout(Duration::from_secs(10), session.recv())
             .await
             .unwrap()?
         {

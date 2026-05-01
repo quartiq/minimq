@@ -8,7 +8,7 @@ use super::super::outbound::{
     ControlAction, OutboundStep, SendState, check_control_packet_size, serialize_control_packet,
     serialize_pubrel,
 };
-use super::state::PING_TIMEOUT_MS;
+use super::state::ROUND_TRIP_TIMEOUT_MS;
 use super::{Io, Session};
 
 #[derive(Copy, Clone)]
@@ -16,6 +16,13 @@ enum FlushedPacket {
     Control(ControlAction),
     Release(u16),
     Retained(u16),
+}
+
+#[derive(Copy, Clone)]
+enum Progress {
+    Idle,
+    Advanced,
+    Inbound(usize),
 }
 
 pub(super) async fn fill_packet_reader<'buf, C: Io>(
@@ -46,31 +53,42 @@ impl<'buf, IO> Session<'buf, IO>
 where
     IO: Io,
 {
-    async fn drive_packet(&mut self) -> Result<Option<usize>, Error<IO::Error>> {
+    async fn drive_packet(&mut self) -> Result<Progress, Error<IO::Error>> {
         if self.connection.is_none() {
             return Err(Error::Disconnected);
         }
 
+        let mut advanced = false;
         loop {
             if self.packet_reader.packet_available() {
                 match self.process_received_packet()? {
-                    Some(packet_length) => return Ok(Some(packet_length)),
-                    None => continue,
+                    Some(packet_length) => return Ok(Progress::Inbound(packet_length)),
+                    None => {
+                        advanced = true;
+                        continue;
+                    }
                 }
             }
 
             let now = Instant::now();
-            self.service(now).await?;
+            advanced |= self.service(now).await?;
 
             if self.packet_reader.packet_available() {
                 match self.process_received_packet()? {
-                    Some(packet_length) => return Ok(Some(packet_length)),
-                    None => continue,
+                    Some(packet_length) => return Ok(Progress::Inbound(packet_length)),
+                    None => {
+                        advanced = true;
+                        continue;
+                    }
                 }
             }
 
             if self.data.outbound.next_step().is_none() {
-                return Ok(None);
+                return Ok(if advanced {
+                    Progress::Advanced
+                } else {
+                    Progress::Idle
+                });
             }
         }
     }
@@ -78,25 +96,43 @@ where
     /// Advance local session state until an inbound publish is ready or the session would need to
     /// wait for new transport input or a future deadline.
     ///
-    /// Returns `Ok(None)` when no inbound publish is currently ready and the caller would need to
-    /// block for more progress. Cancel-safe if the underlying transport I/O futures are
-    /// cancel-safe.
+    /// This is a cooperative progress step:
+    /// - it does not wait for future inbound reads
+    /// - it does not wait for future session deadlines
+    /// - it may still await transport write or flush progress already needed for the current step
+    ///
+    /// Returns `Ok(None)` when no inbound publish is currently ready and further progress would
+    /// require waiting. Wall-clock bounds depend on the transport: a stalled write or flush may
+    /// still keep this future pending until the transport errors or is cancelled. Cancel-safe if
+    /// the underlying transport I/O futures are cancel-safe.
     pub async fn drive(&mut self) -> Result<Option<InboundPublish<'_>>, Error<IO::Error>> {
-        Ok(self
-            .drive_packet()
-            .await?
-            .map(|packet_length| self.decode_inbound_publish(packet_length)))
+        Ok(match self.drive_packet().await? {
+            Progress::Inbound(packet_length) => Some(self.decode_inbound_publish(packet_length)),
+            Progress::Idle | Progress::Advanced => None,
+        })
     }
 
-    /// Wait until an inbound publish arrives or the session disconnects.
+    /// Wait until any session progress happens or the session disconnects.
+    ///
+    /// Returns:
+    /// - `Ok(Some(msg))` when that progress produced an inbound publish
+    /// - `Ok(None)` when progress happened only internally, such as ACK handling, replay, or
+    ///   keepalive traffic
+    ///
+    /// As with [`drive`](Self::drive), wall-clock bounds depend on the transport's read, write,
+    /// and flush behavior.
     ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe. Ordinary no-data must
     /// be represented by the transport future staying pending; `TimedOut` and `Interrupted` are
     /// treated as transport failure and disconnect the session.
-    pub async fn poll(&mut self) -> Result<InboundPublish<'_>, Error<IO::Error>> {
+    pub async fn poll(&mut self) -> Result<Option<InboundPublish<'_>>, Error<IO::Error>> {
         loop {
-            if let Some(packet_length) = self.drive_packet().await? {
-                return Ok(self.decode_inbound_publish(packet_length));
+            match self.drive_packet().await? {
+                Progress::Inbound(packet_length) => {
+                    return Ok(Some(self.decode_inbound_publish(packet_length)));
+                }
+                Progress::Advanced => return Ok(None),
+                Progress::Idle => {}
             }
 
             let deadline = self.runtime.next_deadline();
@@ -112,7 +148,34 @@ where
         }
     }
 
-    pub(super) async fn service(&mut self, now: Instant) -> Result<(), Error<IO::Error>> {
+    /// Wait until the next inbound publish arrives.
+    ///
+    /// This is a convenience wrapper over [`poll`](Self::poll) that skips internal-only
+    /// progress.
+    pub async fn recv(&mut self) -> Result<InboundPublish<'_>, Error<IO::Error>> {
+        loop {
+            match self.drive_packet().await? {
+                Progress::Inbound(packet_length) => {
+                    return Ok(self.decode_inbound_publish(packet_length));
+                }
+                Progress::Advanced => continue,
+                Progress::Idle => {}
+            }
+
+            let deadline = self.runtime.next_deadline();
+            let read = self.read_packet();
+            match deadline {
+                Some(deadline) => match with_deadline(deadline, read).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => return Err(err),
+                    Err(_) => continue,
+                },
+                None => read.await?,
+            }
+        }
+    }
+
+    pub(super) async fn service(&mut self, now: Instant) -> Result<bool, Error<IO::Error>> {
         if self
             .runtime
             .ping_timeout
@@ -162,17 +225,17 @@ where
         Ok(())
     }
 
-    async fn service_outbound_once(&mut self, now: Instant) -> Result<(), Error<IO::Error>> {
+    async fn service_outbound_once(&mut self, now: Instant) -> Result<bool, Error<IO::Error>> {
         self.maybe_queue_pingreq(now)?;
         let Some(step) = self.data.outbound.next_step() else {
-            return Ok(());
+            return Ok(false);
         };
         self.perform_outbound_step(step, now).await
     }
 
     fn complete_flush(&mut self, packet: FlushedPacket, now: Instant) {
         if matches!(packet, FlushedPacket::Control(ControlAction::PingReq)) {
-            self.runtime.ping_timeout = Some(now + Duration::from_millis(PING_TIMEOUT_MS));
+            self.runtime.ping_timeout = Some(now + Duration::from_millis(ROUND_TRIP_TIMEOUT_MS));
         }
         self.runtime.note_outbound_activity(now);
         match packet {
@@ -186,7 +249,7 @@ where
         &mut self,
         step: OutboundStep,
         now: Instant,
-    ) -> Result<(), Error<IO::Error>> {
+    ) -> Result<bool, Error<IO::Error>> {
         macro_rules! write_or_disconnect {
             ($res:expr, $write_failed:literal) => {
                 match $res {
@@ -242,7 +305,7 @@ where
                         packet.len(),
                     );
                     if written + count < packet.len() {
-                        return Ok(());
+                        return Ok(true);
                     }
                     trace!("Flushing control packet {:?}", step.action);
                     let res = {
@@ -251,6 +314,7 @@ where
                     };
                     flush_or_disconnect!(res, "Control packet flush failed: {:?}");
                     self.complete_flush(FlushedPacket::Control(step.action), now);
+                    Ok(true)
                 }
                 SendState::Flush => {
                     trace!("Flushing control packet {:?}", step.action);
@@ -260,8 +324,9 @@ where
                     };
                     flush_or_disconnect!(res, "Control packet flush failed: {:?}");
                     self.complete_flush(FlushedPacket::Control(step.action), now);
+                    Ok(true)
                 }
-                SendState::Sent => {}
+                SendState::Sent => Ok(false),
             },
             OutboundStep::Release(step) => match step.state {
                 SendState::Write { written } => {
@@ -290,7 +355,7 @@ where
                         packet.len(),
                     );
                     if written + count < packet.len() {
-                        return Ok(());
+                        return Ok(true);
                     }
                     trace!("Flushing PUBREL packet packet_id={}", step.packet_id);
                     let res = {
@@ -299,6 +364,7 @@ where
                     };
                     flush_or_disconnect!(res, "PUBREL flush failed: {:?}");
                     self.complete_flush(FlushedPacket::Release(step.packet_id), now);
+                    Ok(true)
                 }
                 SendState::Flush => {
                     trace!("Flushing PUBREL packet packet_id={}", step.packet_id);
@@ -308,8 +374,9 @@ where
                     };
                     flush_or_disconnect!(res, "PUBREL flush failed: {:?}");
                     self.complete_flush(FlushedPacket::Release(step.packet_id), now);
+                    Ok(true)
                 }
-                SendState::Sent => {}
+                SendState::Sent => Ok(false),
             },
             OutboundStep::Retained(step) => match step.state {
                 SendState::Write { written } => {
@@ -337,7 +404,7 @@ where
                         step.len,
                     );
                     if written + count < step.len {
-                        return Ok(());
+                        return Ok(true);
                     }
                     debug!("Flushing retained packet packet_id={}", step.packet_id);
                     let res = {
@@ -346,6 +413,7 @@ where
                     };
                     flush_or_disconnect!(res, "Retained packet flush failed: {:?}");
                     self.complete_flush(FlushedPacket::Retained(step.packet_id), now);
+                    Ok(true)
                 }
                 SendState::Flush => {
                     debug!("Flushing retained packet packet_id={}", step.packet_id);
@@ -355,11 +423,11 @@ where
                     };
                     flush_or_disconnect!(res, "Retained packet flush failed: {:?}");
                     self.complete_flush(FlushedPacket::Retained(step.packet_id), now);
+                    Ok(true)
                 }
-                SendState::Sent => {}
+                SendState::Sent => Ok(false),
             },
         }
-        Ok(())
     }
 
     pub(super) fn handle_disconnect(&mut self) {
