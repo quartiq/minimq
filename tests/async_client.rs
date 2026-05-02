@@ -3,8 +3,9 @@ mod support;
 use embassy_time::{Duration, with_timeout};
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use minimq::{
-    Buffers, ConfigBuilder, ConnectEvent, Error, InboundPublish, ProtocolError, PubError,
-    Publication, QoS, Session,
+    Buffers, ConfigBuilder, ConnectEvent, Error, InboundPublish, Property, ProtocolError,
+    PubError, Publication, QoS, ReasonCode, Session,
+    types::{BinaryData, Properties, TopicFilter},
 };
 use std::{cell::RefCell, collections::VecDeque, future::poll_fn, rc::Rc, task::Poll};
 use support::{block_on, poll_once};
@@ -376,7 +377,7 @@ fn expect_disconnected(session: &mut Session<'static, MockConnection>) {
 
 fn with_inbound<T>(
     session: &mut Session<'static, MockConnection>,
-    f: impl FnOnce(minimq::InboundPublish<'_>) -> T,
+    f: impl FnOnce(InboundPublish<'_>) -> T,
 ) -> T {
     f(block_on(session.recv()).unwrap())
 }
@@ -546,7 +547,7 @@ fn subscribe_survives_cancellation_during_pending_flush() {
     let mut session = connected_session(&connector);
 
     inspect.pend_flushes(1);
-    let topics = [minimq::types::TopicFilter::new("data")];
+    let topics = [TopicFilter::new("data")];
     let mut future = Box::pin(session.subscribe(&topics, &[]));
     assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
     drop(future);
@@ -671,9 +672,7 @@ fn failed_connack_disconnects_session_and_allows_reconnect() {
 
     assert!(matches!(
         block_on(session.connect(connector.connect().unwrap())),
-        Err(Error::Protocol(ProtocolError::Failed(
-            minimq::ReasonCode::NotAuthorized
-        )))
+        Err(Error::Protocol(ProtocolError::Failed(ReasonCode::NotAuthorized)))
     ));
     assert!(!session.is_connected());
     expect_connected(&mut session, &connector);
@@ -810,7 +809,7 @@ fn subscribe_is_replayed_after_disconnect_until_suback() {
     let mut session = Session::new(config());
 
     expect_connected(&mut session, &connector);
-    block_on(session.subscribe(&[minimq::types::TopicFilter::new("data")], &[])).unwrap();
+    block_on(session.subscribe(&[TopicFilter::new("data")], &[])).unwrap();
     expect_disconnected(&mut session);
     expect_reconnected(&mut session, &connector);
     wait_for_tx_frame(
@@ -839,7 +838,7 @@ fn subscribe_reports_inflight_metadata_exhaustion_before_send() {
 
     let capacity = fill_inflight_publish_slots(&mut session);
 
-    let result = block_on(session.subscribe(&[minimq::types::TopicFilter::new("data")], &[]));
+    let result = block_on(session.subscribe(&[TopicFilter::new("data")], &[]));
     assert!(matches!(
         result,
         Err(Error::Protocol(ProtocolError::InflightMetadataExhausted))
@@ -1079,7 +1078,7 @@ fn puback_failure_is_reported_and_clears_inflight() {
     expect_poll_error(&mut session, |err| {
         matches!(
             err,
-            Error::Protocol(ProtocolError::Failed(minimq::ReasonCode::NotAuthorized))
+            Error::Protocol(ProtocolError::Failed(ReasonCode::NotAuthorized))
         )
     });
     block_on(session.publish(Publication::bytes("data", b"y").qos(QoS::AtLeastOnce))).unwrap();
@@ -1097,7 +1096,7 @@ fn pubrec_failure_is_reported_and_clears_inflight() {
     expect_poll_error(&mut session, |err| {
         matches!(
             err,
-            Error::Protocol(ProtocolError::Failed(minimq::ReasonCode::QuotaExceeded))
+            Error::Protocol(ProtocolError::Failed(ReasonCode::QuotaExceeded))
         )
     });
     block_on(session.publish(Publication::bytes("data", b"y").qos(QoS::ExactlyOnce))).unwrap();
@@ -1117,7 +1116,7 @@ fn pubcomp_failure_is_reported_and_clears_release_state() {
         matches!(
             err,
             Error::Protocol(ProtocolError::Failed(
-                minimq::ReasonCode::ImplementationError
+                ReasonCode::ImplementationError
             ))
         )
     });
@@ -1459,7 +1458,7 @@ fn publish_rejects_packets_larger_than_broker_maximum() {
     assert!(matches!(
         result,
         Err(PubError::Session(Error::Protocol(ProtocolError::Failed(
-            minimq::ReasonCode::PacketTooLarge
+            ReasonCode::PacketTooLarge
         ))))
     ));
     assert_eq!(inspect.tx().len(), 1);
@@ -1480,7 +1479,7 @@ fn oversized_required_ack_disconnects_session() {
     expect_poll_error(&mut session, |err| {
         matches!(
             err,
-            Error::Protocol(ProtocolError::Failed(minimq::ReasonCode::PacketTooLarge))
+            Error::Protocol(ProtocolError::Failed(ReasonCode::PacketTooLarge))
         )
     });
     expect_connected(&mut session, &connector);
@@ -1542,7 +1541,7 @@ fn unsubscribe_rejects_packets_larger_than_broker_maximum() {
     assert!(matches!(
         result,
         Err(Error::Protocol(ProtocolError::Failed(
-            minimq::ReasonCode::PacketTooLarge
+            ReasonCode::PacketTooLarge
         )))
     ));
     assert_eq!(inspect.tx().len(), 1);
@@ -1556,11 +1555,11 @@ fn subscribe_rejects_packets_larger_than_broker_maximum() {
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    let result = block_on(session.subscribe(&[minimq::types::TopicFilter::new("data")], &[]));
+    let result = block_on(session.subscribe(&[TopicFilter::new("data")], &[]));
     assert!(matches!(
         result,
         Err(Error::Protocol(ProtocolError::Failed(
-            minimq::ReasonCode::PacketTooLarge
+            ReasonCode::PacketTooLarge
         )))
     ));
     assert_eq!(inspect.tx().len(), 1);
@@ -1589,12 +1588,12 @@ fn inbound_publish_exposes_response_helpers() {
         let follow_up = owned_via_message.publication("next");
 
         let response = match reply.properties_ref() {
-            minimq::types::Properties::CorrelatedSlice { correlation, .. } => correlation,
+            Properties::CorrelatedSlice { correlation, .. } => correlation,
             _ => panic!("reply should preserve correlation data"),
         };
         assert!(matches!(
             response,
-            minimq::Property::CorrelationData(minimq::types::BinaryData(b"abc"))
+            Property::CorrelationData(BinaryData(b"abc"))
         ));
         assert_eq!(owned_via_message.topic(), "reply/topic");
         let _ = follow_up;

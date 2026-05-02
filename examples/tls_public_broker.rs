@@ -7,7 +7,8 @@ use embedded_io_adapters::tokio_1::FromTokio;
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 use minimq::{
-    ConfigBuilder, ConnectEvent, Property, Publication, QoS, Session, types::TopicFilter,
+    ConfigBuilder, ConnectEvent, Property, Publication, QoS, Session, SessionError,
+    types::TopicFilter,
 };
 use std::error::Error as StdError;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -96,7 +97,7 @@ fn unique_id(label: &str) -> String {
 async fn connect(
     session: &mut Session<'_, EmqxTlsConnection>,
     io: EmqxTlsConnection,
-) -> Result<(), minimq::SessionError<EmqxTlsConnection>> {
+) -> Result<(), SessionError<EmqxTlsConnection>> {
     match tokio::time::timeout(Duration::from_secs(10), session.connect(io))
         .await
         .unwrap()?
@@ -107,7 +108,7 @@ async fn connect(
 
 async fn flush(
     session: &mut Session<'_, EmqxTlsConnection>,
-) -> Result<(), minimq::SessionError<EmqxTlsConnection>> {
+) -> Result<(), SessionError<EmqxTlsConnection>> {
     while !session.is_publish_quiescent() {
         match tokio::time::timeout(Duration::from_millis(10), session.poll()).await {
             Ok(Ok(_)) => {}
@@ -122,7 +123,7 @@ async fn recv(
     session: &mut Session<'_, EmqxTlsConnection>,
     topic: &str,
     payload: &[u8],
-) -> Result<(), minimq::SessionError<EmqxTlsConnection>> {
+) -> Result<(), SessionError<EmqxTlsConnection>> {
     loop {
         match tokio::time::timeout(Duration::from_secs(10), session.recv())
             .await
