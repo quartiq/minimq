@@ -121,13 +121,17 @@ impl<'a> InboundPublish<'a> {
         self.properties.correlation_data()
     }
 
-    /// Build a direct reply publication when the inbound message carries a response topic.
-    pub fn reply<P>(&'a self, payload: P) -> Option<Publication<'a, P>> {
+    fn response_target(&'a self) -> Option<ResponseTarget<'a>> {
         Some(ResponseTarget {
             topic: self.response_topic()?,
             correlation_data: self.correlation_data(),
         })
-        .map(|target| target.publication(payload))
+    }
+
+    /// Build a direct reply publication when the inbound message carries a response topic.
+    pub fn reply<P>(&'a self, payload: P) -> Option<Publication<'a, P>> {
+        self.response_target()
+            .map(|target| target.publication(payload))
     }
 
     /// Copy the response target into fixed-capacity owned storage.
@@ -136,15 +140,9 @@ impl<'a> InboundPublish<'a> {
     pub fn reply_owned<const TOPIC: usize, const CORRELATION: usize>(
         &'a self,
     ) -> Result<Option<OwnedResponseTarget<TOPIC, CORRELATION>>, ProtocolError> {
-        match self.response_topic() {
-            Some(topic) => ResponseTarget {
-                topic,
-                correlation_data: self.correlation_data(),
-            }
-            .to_owned()
-            .map(Some),
-            None => Ok(None),
-        }
+        self.response_target()
+            .map(ResponseTarget::to_owned)
+            .transpose()
     }
 }
 

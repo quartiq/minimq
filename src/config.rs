@@ -126,8 +126,9 @@ impl<'a> ConfigBuilder<'a> {
     ///
     /// The ID must fit in the internal fixed-capacity storage.
     pub fn client_id(mut self, id: &str) -> Result<Self, ProtocolError> {
-        self.client_id =
-            String::try_from(id).map_err(|_| ProtocolError::ProvidedClientIdTooLong)?;
+        self.client_id = id
+            .try_into()
+            .map_err(|_| ProtocolError::ProvidedClientIdTooLong)?;
         Ok(self)
     }
 
@@ -238,7 +239,7 @@ mod tests {
     fn will_does_not_consume_tx_buffer() {
         let mut rx = [0; 10];
         let mut tx = [0; 20];
-        let will = Will::new("topic", b"x", &[]).unwrap();
+        let will = Will::new("topic".try_into().unwrap(), b"x", &[]).unwrap();
         let (buffers, _, _, _, _, _, _) = ConfigBuilder::new(Buffers {
             rx: &mut rx,
             tx: &mut tx,

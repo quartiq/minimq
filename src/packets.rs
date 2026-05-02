@@ -496,7 +496,7 @@ mod tests {
         ];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let will = crate::will::Will::new("EFG", &[0xAB, 0xCD], &[])
+        let will = crate::will::Will::new("EFG".try_into().unwrap(), &[0xAB, 0xCD], &[])
             .unwrap()
             .qos(crate::QoS::AtMostOnce);
 

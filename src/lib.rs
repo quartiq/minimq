@@ -47,6 +47,12 @@ pub const MQTT_INSECURE_DEFAULT_PORT: u16 = 1883;
 /// Default port number for encrypted MQTT traffic.
 pub const MQTT_SECURE_DEFAULT_PORT: u16 = 8883;
 
+/// Fixed-capacity owned MQTT topic storage used by durable configuration.
+pub const TOPIC_CAPACITY: usize = 128;
+
+/// Fixed-capacity owned MQTT topic string.
+pub type TopicString = heapless::String<TOPIC_CAPACITY>;
+
 /// The quality-of-service for an MQTT message.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive, PartialOrd, Ord)]
 #[repr(u8)]

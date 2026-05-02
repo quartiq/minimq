@@ -1,8 +1,5 @@
-use core::convert::TryFrom;
-
 use embassy_time::{Duration, Instant};
 use embedded_io_async::Error as _;
-use heapless::String;
 
 use crate::de::received_packet::ReceivedPacket;
 use crate::packets::Connect;
@@ -141,7 +138,7 @@ where
             } {
                 Property::MaximumPacketSize(size) => maximum_packet_size = Some(size),
                 Property::AssignedClientIdentifier(id) => {
-                    assigned_client_id = Some(match String::try_from(id.0) {
+                    assigned_client_id = Some(match id.0.try_into() {
                         Ok(client_id) => client_id,
                         Err(_) => {
                             self.handle_disconnect();

@@ -32,7 +32,10 @@ impl<'a> ResponseTarget<'a> {
         self,
     ) -> Result<OwnedResponseTarget<TOPIC, CORRELATION>, ProtocolError> {
         Ok(OwnedResponseTarget {
-            topic: String::try_from(self.topic).map_err(|_| ProtocolError::BufferSize)?,
+            topic: self
+                .topic
+                .try_into()
+                .map_err(|_| ProtocolError::BufferSize)?,
             correlation_data: self
                 .correlation_data
                 .map(Vec::try_from)
