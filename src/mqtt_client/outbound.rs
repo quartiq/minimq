@@ -1,7 +1,7 @@
 use crate::packets::PublishHeader;
 use crate::packets::{PingReq, PubAck, PubComp, PubRec, PubRel};
 use crate::ser::MAX_FIXED_HEADER_SIZE;
-use crate::{Error, ProtocolError, PubError, ReasonCode, error, trace};
+use crate::{Error, ProtocolError, PubError, ReasonCode, ResourceError, error, trace};
 use heapless::Vec;
 
 use super::Io;
@@ -458,9 +458,7 @@ pub(super) fn serialize_control_packet<E>(
 ) -> Result<&[u8], Error<E>> {
     let bytes = encode_control_packet(buffer, packet)?;
     if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
-        return Err(Error::Protocol(ProtocolError::Failed(
-            ReasonCode::PacketTooLarge,
-        )));
+        return Err(Error::Resource(ResourceError::PacketTooLarge));
     }
     Ok(bytes)
 }
@@ -526,9 +524,7 @@ pub(super) fn serialize_pubrel<E>(
 ) -> Result<&[u8], Error<E>> {
     let bytes = encode_pubrel(buffer, packet_id, reason)?;
     if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
-        return Err(Error::Protocol(ProtocolError::Failed(
-            ReasonCode::PacketTooLarge,
-        )));
+        return Err(Error::Resource(ResourceError::PacketTooLarge));
     }
     Ok(bytes)
 }
@@ -634,8 +630,8 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(crate::PubError::Session(crate::Error::Protocol(
-                crate::ProtocolError::Encode(crate::SerError::InsufficientMemory)
+            Err(crate::PubError::Session(crate::Error::Resource(
+                crate::ResourceError::BufferTooSmall
             )))
         ));
     }

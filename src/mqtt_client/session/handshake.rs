@@ -4,7 +4,7 @@ use embedded_io_async::Error as _;
 use crate::de::received_packet::ReceivedPacket;
 use crate::packets::Connect;
 use crate::types::{Properties, Utf8String};
-use crate::{Error, Property, ProtocolError, QoS, debug, info, warn};
+use crate::{Error, PeerError, Property, QoS, debug, info, warn};
 
 use super::super::ConnectEvent;
 use super::super::outbound::write_packet;
@@ -104,14 +104,14 @@ where
             }
             _ => {
                 self.handle_disconnect();
-                return Err(Error::Protocol(ProtocolError::UnexpectedPacket));
+                return Err(Error::Peer(PeerError::InvalidPacket));
             }
         };
 
         if let Err(err) = ack.reason_code.as_result() {
             warn!("Broker rejected CONNECT with reason {:?}", ack.reason_code);
             self.handle_disconnect();
-            return Err(Error::Protocol(err));
+            return Err(Error::Peer(err));
         }
 
         let resumed = ack.session_present;
@@ -133,7 +133,7 @@ where
                 Ok(property) => property,
                 Err(err) => {
                     self.handle_disconnect();
-                    return Err(Error::Protocol(err));
+                    return Err(Error::Peer(err));
                 }
             } {
                 Property::MaximumPacketSize(size) => maximum_packet_size = Some(size),
@@ -142,7 +142,7 @@ where
                         Ok(client_id) => client_id,
                         Err(_) => {
                             self.handle_disconnect();
-                            return Err(Error::Protocol(ProtocolError::ProvidedClientIdTooLong));
+                            return Err(Error::Peer(PeerError::InvalidPacket));
                         }
                     });
                 }
@@ -152,7 +152,7 @@ where
                 Property::ReceiveMaximum(max) => {
                     if max == 0 {
                         self.handle_disconnect();
-                        return Err(Error::Protocol(ProtocolError::InvalidProperty));
+                        return Err(Error::Peer(PeerError::InvalidPacket));
                     }
                     send_quota = max.min(local_quota);
                     max_send_quota = max.min(local_quota);
@@ -162,7 +162,7 @@ where
                         Ok(qos) => qos,
                         Err(_) => {
                             self.handle_disconnect();
-                            return Err(Error::Protocol(ProtocolError::WrongQos));
+                            return Err(Error::Peer(PeerError::InvalidPacket));
                         }
                     });
                 }

@@ -1,6 +1,6 @@
 //! MQTT-specific data types used by the public API.
 use crate::{
-    ProtocolError, QoS, de::deserializer::MqttDeserializer, properties::Property, varint::Varint,
+    PeerError, QoS, de::deserializer::MqttDeserializer, properties::Property, varint::Varint,
 };
 use bit_field::BitField;
 use serde::ser::SerializeStruct;
@@ -127,7 +127,7 @@ impl<'a> PropertiesIter<'a> {
 }
 
 impl<'a> core::iter::Iterator for PropertiesIter<'a> {
-    type Item = Result<Property<'a>, ProtocolError>;
+    type Item = Result<Property<'a>, PeerError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.inner {
@@ -137,8 +137,8 @@ impl<'a> core::iter::Iterator for PropertiesIter<'a> {
                 }
 
                 let mut deserializer = MqttDeserializer::new(&props[*index..]);
-                let property = Property::deserialize(&mut deserializer)
-                    .map_err(ProtocolError::Deserialization);
+                let property =
+                    Property::deserialize(&mut deserializer).map_err(|_| PeerError::InvalidPacket);
                 *index += deserializer.deserialized_bytes();
                 Some(property)
             }
@@ -167,7 +167,7 @@ impl<'a> core::iter::Iterator for PropertiesIter<'a> {
 }
 
 impl<'a> core::iter::IntoIterator for &'a Properties<'a> {
-    type Item = Result<Property<'a>, ProtocolError>;
+    type Item = Result<Property<'a>, PeerError>;
     type IntoIter = PropertiesIter<'a>;
 
     fn into_iter(self) -> PropertiesIter<'a> {

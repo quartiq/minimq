@@ -1,4 +1,4 @@
-use crate::{ProtocolError, Will, types::Auth};
+use crate::{ConfigError, Will, types::Auth};
 use embassy_time::Duration;
 use heapless::String;
 
@@ -55,22 +55,14 @@ impl<'a> Buffers<'a> {
     /// assert_eq!(buffers.rx().len(), 4);
     /// assert_eq!(buffers.tx().len(), 12);
     /// ```
-    pub fn split(buffer: &'a mut [u8], rx_size: usize) -> Result<Self, SetupError> {
+    pub fn split(buffer: &'a mut [u8], rx_size: usize) -> Result<Self, ConfigError> {
         if rx_size > buffer.len() {
-            return Err(SetupError::BufferSplit);
+            return Err(ConfigError::BufferSplit);
         }
 
         let (rx, tx) = buffer.split_at_mut(rx_size);
         Ok(Self::new(rx, tx))
     }
-}
-
-/// Setup errors detected before a session is created.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum SetupError {
-    /// The requested RX split does not fit in the provided backing buffer.
-    #[error("buffer split exceeds backing storage")]
-    BufferSplit,
 }
 
 /// Builder for session setup.
@@ -106,16 +98,16 @@ impl<'a> ConfigBuilder<'a> {
     }
 
     /// Construct a session configuration by splitting one backing buffer into RX and TX regions.
-    pub fn from_buffer(buffer: &'a mut [u8], rx_size: usize) -> Result<Self, SetupError> {
+    pub fn from_buffer(buffer: &'a mut [u8], rx_size: usize) -> Result<Self, ConfigError> {
         Ok(Self::new(Buffers::split(buffer, rx_size)?))
     }
 
     /// Attach MQTT username/password authentication.
     ///
-    /// Calling this more than once returns [`ProtocolError::AuthAlreadySpecified`].
-    pub fn auth(mut self, user_name: &'a str, password: &'a [u8]) -> Result<Self, ProtocolError> {
+    /// Calling this more than once returns [`ConfigError::DuplicateConfig`].
+    pub fn auth(mut self, user_name: &'a str, password: &'a [u8]) -> Result<Self, ConfigError> {
         if self.auth.is_some() {
-            return Err(ProtocolError::AuthAlreadySpecified);
+            return Err(ConfigError::DuplicateConfig);
         }
 
         self.auth.replace(Auth::new(user_name, password));
@@ -125,10 +117,8 @@ impl<'a> ConfigBuilder<'a> {
     /// Set the MQTT client identifier.
     ///
     /// The ID must fit in the internal fixed-capacity storage.
-    pub fn client_id(mut self, id: &str) -> Result<Self, ProtocolError> {
-        self.client_id = id
-            .try_into()
-            .map_err(|_| ProtocolError::ProvidedClientIdTooLong)?;
+    pub fn client_id(mut self, id: &str) -> Result<Self, ConfigError> {
+        self.client_id = id.try_into().map_err(|_| ConfigError::ClientIdTooLong)?;
         Ok(self)
     }
 
@@ -167,9 +157,9 @@ impl<'a> ConfigBuilder<'a> {
     }
 
     /// Attach an MQTT will message.
-    pub fn will(mut self, will: Will<'a>) -> Result<Self, ProtocolError> {
+    pub fn will(mut self, will: Will<'a>) -> Result<Self, ConfigError> {
         if self.will.is_some() {
-            return Err(ProtocolError::WillAlreadySpecified);
+            return Err(ConfigError::DuplicateConfig);
         }
         self.will = Some(will);
         Ok(self)
@@ -215,7 +205,7 @@ mod tests {
         let mut buffer = [0; 30];
         assert!(matches!(
             Buffers::split(&mut buffer, 31),
-            Err(SetupError::BufferSplit)
+            Err(ConfigError::BufferSplit)
         ));
     }
 

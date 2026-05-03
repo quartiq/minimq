@@ -3,7 +3,7 @@ use core::num::NonZeroU16;
 use embassy_time::{Duration, Instant};
 use heapless::Vec;
 
-use crate::{Error, ProtocolError, QoS, ReasonCode};
+use crate::{Error, QoS, ResourceError};
 
 use super::super::outbound::Outbound;
 
@@ -58,9 +58,7 @@ impl RuntimeState {
             .maximum_packet_size
             .is_some_and(|max| len > max as usize)
         {
-            return Err(Error::Protocol(ProtocolError::Failed(
-                ReasonCode::PacketTooLarge,
-            )));
+            return Err(Error::Resource(ResourceError::PacketTooLarge));
         }
         Ok(())
     }

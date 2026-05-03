@@ -1,7 +1,10 @@
 use core::convert::Infallible;
 
 use crate::de::received_packet::ReceivedPacket;
-use crate::{Error, InboundPublish, ProtocolError, QoS, ReasonCode, debug, info, trace, warn};
+use crate::{
+    Error, InboundPublish, PeerError, ProtocolError, QoS, ReasonCode, ResourceError, debug, info,
+    trace, warn,
+};
 
 use super::super::outbound::{ControlAction, check_control_packet_size, check_pubrel_size};
 use super::state::{RuntimeState, SessionData};
@@ -222,26 +225,19 @@ where
                 self.handle_disconnect();
                 Err(Error::Disconnected)
             }
-            Err(Error::Protocol(err))
-                if matches!(
-                    err,
-                    ProtocolError::MalformedPacket
-                        | ProtocolError::UnexpectedPacket
-                        | ProtocolError::InvalidProperty
-                        | ProtocolError::ProvidedClientIdTooLong
-                        | ProtocolError::WrongQos
-                        | ProtocolError::UnsupportedPacket
-                        | ProtocolError::BadIdentifier
-                        | ProtocolError::Deserialization(_)
-                        | ProtocolError::Failed(ReasonCode::PacketTooLarge)
-                ) =>
-            {
+            Err(Error::Peer(PeerError::InvalidPacket)) => {
                 warn!("Disconnecting session after packet handling error");
                 self.handle_disconnect();
-                Err(Error::Protocol(err))
+                Err(Error::Peer(PeerError::InvalidPacket))
             }
-            Err(Error::Protocol(err)) => Err(Error::Protocol(err)),
-            Err(Error::NotReady | Error::WriteZero) => {
+            Err(Error::Resource(ResourceError::PacketTooLarge)) => {
+                warn!("Disconnecting session after packet handling error");
+                self.handle_disconnect();
+                Err(Error::Resource(ResourceError::PacketTooLarge))
+            }
+            Err(Error::Peer(err)) => Err(Error::Peer(err)),
+            Err(Error::Resource(err)) => Err(Error::Resource(err)),
+            Err(Error::InvalidRequest | Error::NotReady | Error::WriteZero) => {
                 unreachable!("packet handler returned local I/O state")
             }
             Err(Error::Transport(never)) => match never {},

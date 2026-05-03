@@ -3,8 +3,8 @@ mod support;
 use embassy_time::{Duration, with_timeout};
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use minimq::{
-    Buffers, ConfigBuilder, ConnectEvent, Error, InboundPublish, Property, ProtocolError,
-    PubError, Publication, QoS, ReasonCode, Session,
+    Buffers, ConfigBuilder, ConnectEvent, Error, InboundPublish, PeerError, Property, PubError,
+    Publication, QoS, ReasonCode, ResourceError, Session,
     types::{BinaryData, Properties, TopicFilter},
 };
 use std::{cell::RefCell, collections::VecDeque, future::poll_fn, rc::Rc, task::Poll};
@@ -432,7 +432,7 @@ fn fill_inflight_publish_slots(session: &mut Session<'static, MockConnection>) -
         match block_on(session.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce))) {
             Ok(Some(_)) => count += 1,
             Ok(None) => unreachable!("QoS1 publish must return an op handle"),
-            Err(PubError::Session(Error::Protocol(ProtocolError::InflightMetadataExhausted))) => {
+            Err(PubError::Session(Error::Resource(ResourceError::InflightExhausted))) => {
                 return count;
             }
             other => panic!("unexpected publish result while filling inflight slots: {other:?}"),
@@ -672,7 +672,7 @@ fn failed_connack_disconnects_session_and_allows_reconnect() {
 
     assert!(matches!(
         block_on(session.connect(connector.connect().unwrap())),
-        Err(Error::Protocol(ProtocolError::Failed(ReasonCode::NotAuthorized)))
+        Err(Error::Peer(PeerError::Rejected(ReasonCode::NotAuthorized)))
     ));
     assert!(!session.is_connected());
     expect_connected(&mut session, &connector);
@@ -706,7 +706,7 @@ fn zero_receive_maximum_disconnects_session_and_allows_reconnect() {
 
     assert!(matches!(
         block_on(session.connect(connector.connect().unwrap())),
-        Err(Error::Protocol(ProtocolError::InvalidProperty))
+        Err(Error::Peer(PeerError::InvalidPacket))
     ));
     assert!(!session.is_connected());
     expect_connected(&mut session, &connector);
@@ -723,7 +723,7 @@ fn oversized_assigned_client_id_disconnects_session_and_allows_reconnect() {
 
     assert!(matches!(
         block_on(session.connect(connector.connect().unwrap())),
-        Err(Error::Protocol(ProtocolError::ProvidedClientIdTooLong))
+        Err(Error::Peer(PeerError::InvalidPacket))
     ));
     assert!(!session.is_connected());
     expect_connected(&mut session, &connector);
@@ -759,7 +759,7 @@ fn malformed_inbound_packet_disconnects_session_and_allows_reconnect() {
 
     expect_connected(&mut session, &connector);
     expect_poll_error(&mut session, |err| {
-        matches!(err, Error::Protocol(ProtocolError::MalformedPacket))
+        matches!(err, Error::Peer(PeerError::InvalidPacket))
     });
     assert!(!session.is_connected());
     expect_connected(&mut session, &connector);
@@ -841,7 +841,7 @@ fn subscribe_reports_inflight_metadata_exhaustion_before_send() {
     let result = block_on(session.subscribe(&[TopicFilter::new("data")], &[]));
     assert!(matches!(
         result,
-        Err(Error::Protocol(ProtocolError::InflightMetadataExhausted))
+        Err(Error::Resource(ResourceError::InflightExhausted))
     ));
     assert_eq!(inspect.tx().len(), capacity + 1);
 }
@@ -854,10 +854,7 @@ fn subscribe_rejects_empty_topic_list() {
     let mut session = connected_session(&connector);
 
     let result = block_on(session.subscribe(&[], &[]));
-    assert!(matches!(
-        result,
-        Err(Error::Protocol(ProtocolError::NoTopic))
-    ));
+    assert!(matches!(result, Err(Error::InvalidRequest)));
 }
 
 #[test]
@@ -868,10 +865,7 @@ fn unsubscribe_rejects_empty_topic_list() {
     let mut session = connected_session(&connector);
 
     let result = block_on(session.unsubscribe(&[], &[]));
-    assert!(matches!(
-        result,
-        Err(Error::Protocol(ProtocolError::NoTopic))
-    ));
+    assert!(matches!(result, Err(Error::InvalidRequest)));
 }
 
 #[test]
@@ -1078,7 +1072,7 @@ fn puback_failure_is_reported_and_clears_inflight() {
     expect_poll_error(&mut session, |err| {
         matches!(
             err,
-            Error::Protocol(ProtocolError::Failed(ReasonCode::NotAuthorized))
+            Error::Peer(PeerError::Rejected(ReasonCode::NotAuthorized))
         )
     });
     block_on(session.publish(Publication::bytes("data", b"y").qos(QoS::AtLeastOnce))).unwrap();
@@ -1096,7 +1090,7 @@ fn pubrec_failure_is_reported_and_clears_inflight() {
     expect_poll_error(&mut session, |err| {
         matches!(
             err,
-            Error::Protocol(ProtocolError::Failed(ReasonCode::QuotaExceeded))
+            Error::Peer(PeerError::Rejected(ReasonCode::QuotaExceeded))
         )
     });
     block_on(session.publish(Publication::bytes("data", b"y").qos(QoS::ExactlyOnce))).unwrap();
@@ -1115,9 +1109,7 @@ fn pubcomp_failure_is_reported_and_clears_release_state() {
     expect_poll_error(&mut session, |err| {
         matches!(
             err,
-            Error::Protocol(ProtocolError::Failed(
-                ReasonCode::ImplementationError
-            ))
+            Error::Peer(PeerError::Rejected(ReasonCode::ImplementationError))
         )
     });
     block_on(session.publish(Publication::bytes("data", b"y").qos(QoS::ExactlyOnce))).unwrap();
@@ -1380,7 +1372,7 @@ fn fresh_session_failed_connack_still_drops_stale_replay_state() {
     expect_disconnected(&mut session);
     assert!(matches!(
         block_on(session.connect(connector.connect().unwrap())),
-        Err(Error::Protocol(ProtocolError::InvalidProperty))
+        Err(Error::Peer(PeerError::InvalidPacket))
     ));
     expect_connected(&mut session, &connector);
     assert!(poll_now(&mut session).unwrap().is_none());
@@ -1457,9 +1449,9 @@ fn publish_rejects_packets_larger_than_broker_maximum() {
     let result = block_on(session.publish(Publication::bytes("data", b"x")));
     assert!(matches!(
         result,
-        Err(PubError::Session(Error::Protocol(ProtocolError::Failed(
-            ReasonCode::PacketTooLarge
-        ))))
+        Err(PubError::Session(Error::Resource(
+            ResourceError::PacketTooLarge
+        )))
     ));
     assert_eq!(inspect.tx().len(), 1);
 }
@@ -1477,10 +1469,7 @@ fn oversized_required_ack_disconnects_session() {
     let mut session = connected_session(&connector);
 
     expect_poll_error(&mut session, |err| {
-        matches!(
-            err,
-            Error::Protocol(ProtocolError::Failed(ReasonCode::PacketTooLarge))
-        )
+        matches!(err, Error::Resource(ResourceError::PacketTooLarge))
     });
     expect_connected(&mut session, &connector);
 }
@@ -1540,9 +1529,7 @@ fn unsubscribe_rejects_packets_larger_than_broker_maximum() {
     let result = block_on(session.unsubscribe(&["data"], &[]));
     assert!(matches!(
         result,
-        Err(Error::Protocol(ProtocolError::Failed(
-            ReasonCode::PacketTooLarge
-        )))
+        Err(Error::Resource(ResourceError::PacketTooLarge))
     ));
     assert_eq!(inspect.tx().len(), 1);
 }
@@ -1558,9 +1545,7 @@ fn subscribe_rejects_packets_larger_than_broker_maximum() {
     let result = block_on(session.subscribe(&[TopicFilter::new("data")], &[]));
     assert!(matches!(
         result,
-        Err(Error::Protocol(ProtocolError::Failed(
-            ReasonCode::PacketTooLarge
-        )))
+        Err(Error::Resource(ResourceError::PacketTooLarge))
     ));
     assert_eq!(inspect.tx().len(), 1);
 }

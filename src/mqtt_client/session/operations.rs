@@ -3,7 +3,7 @@ use embedded_io_async::Error as _;
 
 use crate::packets::{DisconnectReq, PublishHeader, Subscribe, Unsubscribe};
 use crate::types::{Properties, TopicFilter};
-use crate::{Error, Op, Property, ProtocolError, PubError, QoS, debug, info, warn};
+use crate::{Error, Op, Property, PubError, QoS, ResourceError, debug, info, warn};
 
 use super::super::outbound::write_packet;
 use super::{Io, Session};
@@ -43,7 +43,7 @@ where
             return Err(Error::Disconnected);
         }
         if topics.is_empty() {
-            return Err(ProtocolError::NoTopic.into());
+            return Err(Error::InvalidRequest);
         }
         self.flush_outbound().await?;
         self.require_retained_slot()?;
@@ -85,7 +85,7 @@ where
             return Err(Error::Disconnected);
         }
         if topics.is_empty() {
-            return Err(ProtocolError::NoTopic.into());
+            return Err(Error::InvalidRequest);
         }
         self.flush_outbound().await?;
         self.require_retained_slot()?;
@@ -215,7 +215,7 @@ where
 
     pub(super) fn require_retained_slot(&self) -> Result<(), Error<IO::Error>> {
         if self.data.outbound.retained_full() {
-            return Err(ProtocolError::InflightMetadataExhausted.into());
+            return Err(Error::Resource(ResourceError::InflightExhausted));
         }
         Ok(())
     }

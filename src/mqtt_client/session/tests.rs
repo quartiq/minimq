@@ -1,7 +1,7 @@
 use super::state::ROUND_TRIP_TIMEOUT_MS;
 use crate::ser::MAX_FIXED_HEADER_SIZE;
 use crate::{Buffers, ConfigBuilder, Publication, tests::block_on};
-use crate::{ConnectEvent, Error, ProtocolError, Session};
+use crate::{ConnectEvent, Error, ResourceError, Session};
 use embassy_time::{Duration, Instant};
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use std::collections::VecDeque;
@@ -277,9 +277,7 @@ fn connect_returns_insufficient_memory_when_tx_is_too_small() {
 
     assert!(matches!(
         result,
-        Err(Error::Protocol(ProtocolError::Encode(
-            crate::SerError::InsufficientMemory
-        )))
+        Err(Error::Resource(ResourceError::BufferTooSmall))
     ));
 }
 

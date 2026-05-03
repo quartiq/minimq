@@ -1,10 +1,10 @@
 use crate::{
-    ProtocolError, QoS, Retain, TopicString,
+    ConfigError, QoS, Retain, TopicString,
     properties::{Property, PropertyIdentifier},
     types::{BinaryData, Properties, Utf8String},
 };
 
-fn validate_will_properties(properties: &[Property<'_>]) -> Result<(), ProtocolError> {
+fn validate_will_properties(properties: &[Property<'_>]) -> Result<(), ConfigError> {
     for property in properties {
         match property.into() {
             PropertyIdentifier::WillDelayInterval
@@ -14,7 +14,7 @@ fn validate_will_properties(properties: &[Property<'_>]) -> Result<(), ProtocolE
             | PropertyIdentifier::ResponseTopic
             | PropertyIdentifier::CorrelationData
             | PropertyIdentifier::UserProperty => {}
-            _ => return Err(ProtocolError::InvalidProperty),
+            _ => return Err(ConfigError::InvalidConfig),
         }
     }
     Ok(())
@@ -38,7 +38,7 @@ impl<'a> Will<'a> {
         topic: TopicString,
         data: &'a [u8],
         properties: &'a [Property<'a>],
-    ) -> Result<Self, ProtocolError> {
+    ) -> Result<Self, ConfigError> {
         validate_will_properties(properties)?;
 
         Ok(Self {

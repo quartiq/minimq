@@ -21,7 +21,6 @@ The main API is [`Session`].
 ## Example
 
 ```no_run
-use core::net::SocketAddr;
 # use std::io;
 # struct MyIo;
 # use embedded_io_async::{ErrorType, Read, Write};
@@ -42,6 +41,7 @@ use core::net::SocketAddr;
 #     }
 # }
 # async fn open_io(_addr: SocketAddr) -> Result<MyIo, io::Error> { todo!() }
+use core::net::SocketAddr;
 use minimq::{Buffers, ConfigBuilder, ConnectEvent, Error, Session, types::TopicFilter};
 
 async fn run() {

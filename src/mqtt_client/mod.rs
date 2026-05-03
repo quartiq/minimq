@@ -4,7 +4,7 @@ mod session;
 pub use session::Session;
 
 use crate::{
-    ProtocolError, QoS, Retain,
+    QoS, ResourceError, Retain,
     publication::{OwnedResponseTarget, Publication, ResponseTarget},
     types::Properties,
 };
@@ -139,7 +139,7 @@ impl<'a> InboundPublish<'a> {
     /// Use this when the reply has to outlive the borrowed inbound packet.
     pub fn reply_owned<const TOPIC: usize, const CORRELATION: usize>(
         &'a self,
-    ) -> Result<Option<OwnedResponseTarget<TOPIC, CORRELATION>>, ProtocolError> {
+    ) -> Result<Option<OwnedResponseTarget<TOPIC, CORRELATION>>, ResourceError> {
         self.response_target()
             .map(ResponseTarget::to_owned)
             .transpose()
