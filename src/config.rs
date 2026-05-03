@@ -82,17 +82,18 @@ pub struct ConfigBuilder<'a> {
 impl<'a> ConfigBuilder<'a> {
     /// Construct a session configuration from explicit packet buffers.
     ///
-    /// The default session expiry is `u32::MAX`, which requests a long-lived persistent session.
-    /// Call [`session_expiry_interval`](Self::session_expiry_interval) to choose a shorter-lived
-    /// session or `0` for a clean session that expires on disconnect.
+    /// The default session expiry is `0`, which requests a clean session that expires on
+    /// disconnect.
+    /// Call [`session_expiry_interval`](Self::session_expiry_interval) to choose a long-lived
+    /// session.
     pub fn new(buffers: Buffers<'a>) -> Self {
         Self {
             buffers,
             will: None,
             client_id: String::new(),
             auth: None,
-            keepalive_interval: Duration::from_secs(59),
-            session_expiry_interval: u32::MAX,
+            keepalive_interval: Duration::from_secs(60),
+            session_expiry_interval: 0,
             downgrade_qos: false,
         }
     }
@@ -132,7 +133,7 @@ impl<'a> ConfigBuilder<'a> {
 
     /// Set the MQTT v5 session expiry interval, in seconds.
     ///
-    /// The default is `u32::MAX`, which requests a long-lived persistent session.
+    /// The default is `0`, which requests a clean session that expires on disconnect.
     pub fn session_expiry_interval(mut self, seconds: u32) -> Self {
         self.session_expiry_interval = seconds;
         self

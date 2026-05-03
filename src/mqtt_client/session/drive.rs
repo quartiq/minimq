@@ -126,12 +126,22 @@ where
     /// be represented by the transport future staying pending; `TimedOut` and `Interrupted` are
     /// treated as transport failure and disconnect the session.
     pub async fn poll(&mut self) -> Result<Option<InboundPublish<'_>>, Error<IO::Error>> {
+        match self.wait_for_progress().await? {
+            Progress::Inbound(packet_length) => {
+                Ok(Some(self.decode_inbound_publish(packet_length)))
+            }
+            Progress::Advanced => Ok(None),
+            Progress::Idle => unreachable!("wait_for_progress only returns after session progress"),
+        }
+    }
+
+    async fn wait_for_progress(&mut self) -> Result<Progress, Error<IO::Error>> {
         loop {
             match self.drive_packet().await? {
                 Progress::Inbound(packet_length) => {
-                    return Ok(Some(self.decode_inbound_publish(packet_length)));
+                    return Ok(Progress::Inbound(packet_length));
                 }
-                Progress::Advanced => return Ok(None),
+                Progress::Advanced => return Ok(Progress::Advanced),
                 Progress::Idle => {}
             }
 
@@ -154,23 +164,14 @@ where
     /// progress.
     pub async fn recv(&mut self) -> Result<InboundPublish<'_>, Error<IO::Error>> {
         loop {
-            match self.drive_packet().await? {
+            match self.wait_for_progress().await? {
                 Progress::Inbound(packet_length) => {
                     return Ok(self.decode_inbound_publish(packet_length));
                 }
-                Progress::Advanced => continue,
-                Progress::Idle => {}
-            }
-
-            let deadline = self.runtime.next_deadline();
-            let read = self.read_packet();
-            match deadline {
-                Some(deadline) => match with_deadline(deadline, read).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) => return Err(err),
-                    Err(_) => continue,
-                },
-                None => read.await?,
+                Progress::Advanced => {}
+                Progress::Idle => {
+                    unreachable!("wait_for_progress only returns after session progress")
+                }
             }
         }
     }

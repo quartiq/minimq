@@ -47,11 +47,9 @@ async fn run() -> Result<(), Box<dyn StdError>> {
     let payload_str = format!("hello over tls {}", unique_id("msg"));
     let payload = payload_str.as_bytes();
 
-    let mut sub_storage = [0u8; 4096];
+    let mut sub_storage = [0u8; 2048];
     let mut subscriber = Session::new(
-        ConfigBuilder::from_buffer(&mut sub_storage, 1024)?
-            .client_id(&unique_id("sub"))?
-            .auth(USERNAME, PASSWORD.as_bytes())?,
+        ConfigBuilder::from_buffer(&mut sub_storage, 1024)?.auth(USERNAME, PASSWORD.as_bytes())?,
     );
     subscriber
         .connect(connect_tls(BROKER_HOST, BROKER_PORT).await?)
@@ -63,11 +61,9 @@ async fn run() -> Result<(), Box<dyn StdError>> {
         subscriber.poll().await?;
     }
 
-    let mut pub_storage = [0u8; 4096];
+    let mut pub_storage = [0u8; 2048];
     let mut publisher = Session::new(
-        ConfigBuilder::from_buffer(&mut pub_storage, 1024)?
-            .client_id(&unique_id("pub"))?
-            .auth(USERNAME, PASSWORD.as_bytes())?,
+        ConfigBuilder::from_buffer(&mut pub_storage, 1024)?.auth(USERNAME, PASSWORD.as_bytes())?,
     );
     publisher
         .connect(connect_tls(BROKER_HOST, BROKER_PORT).await?)
