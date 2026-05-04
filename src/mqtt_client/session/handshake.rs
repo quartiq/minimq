@@ -48,12 +48,12 @@ where
         let clean_start = !self.data.session_present;
         let auth = self.auth;
         debug!(
-            "Sending CONNECT: client_id={} clean_start={} keepalive_s={} session_expiry={} receive_max={} rx_max_packet_size={}",
+            "Sending CONNECT: client_id={=str} clean_start={=bool} keepalive_s={=u16} session_expiry={=u32} receive_max={=u16} rx_max_packet_size={=usize}",
             client_id,
             clean_start,
             keepalive,
             self.session_expiry_interval,
-            self.data.pending_server_packet_ids.capacity(),
+            self.data.pending_server_packet_ids.capacity() as u16,
             self.packet_reader.buffer.len()
         );
 
@@ -79,7 +79,7 @@ where
 
         if let Err(err) = fill_packet_reader(&mut self.packet_reader, connection).await {
             match &err {
-                Error::Transport(err) => warn!("Transport read failed: {:?}", err.kind()),
+                Error::Transport(err) => warn!("Transport read failed: {}", err.kind()),
                 Error::Disconnected => warn!("Transport returned EOF during CONNECT"),
                 _ => {}
             }
@@ -90,7 +90,7 @@ where
         let packet = match self.packet_reader.received_packet() {
             Ok(packet) => packet,
             Err(err) => {
-                warn!("Failed to decode inbound packet: {:?}", err);
+                warn!("Failed to decode inbound packet: {}", err);
                 self.handle_disconnect();
                 return Err(err.into());
             }
@@ -109,7 +109,7 @@ where
         };
 
         if let Err(err) = ack.reason_code.as_result() {
-            warn!("Broker rejected CONNECT with reason {:?}", ack.reason_code);
+            warn!("Broker rejected CONNECT with reason {}", ack.reason_code);
             self.handle_disconnect();
             return Err(Error::Peer(err));
         }
@@ -181,7 +181,7 @@ where
         }
 
         debug!(
-            "Activated session state resumed={} send_quota={}/{} max_qos={:?} broker_max_packet_size={:?}",
+            "Activated session state resumed={=bool} send_quota={=u16}/{=u16} max_qos={=?} broker_max_packet_size={=?}",
             resumed,
             self.runtime.send_quota,
             self.runtime.max_send_quota,

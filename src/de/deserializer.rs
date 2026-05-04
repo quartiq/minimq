@@ -39,7 +39,7 @@ use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 use crate::varint::read_mqtt_u32_varint;
 
 /// Errors returned while decoding MQTT packets.
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(defmt::Format, Debug, Copy, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Error {
     /// A custom deserialization error occurred.
@@ -62,7 +62,7 @@ impl serde::ser::StdError for Error {}
 
 impl serde::de::Error for Error {
     fn custom<T: core::fmt::Display>(_msg: T) -> Self {
-        crate::trace!("Deserialization error: {}", _msg);
+        crate::trace!("Deserialization error");
         Error::Custom
     }
 }
@@ -440,7 +440,7 @@ impl<'de> serde::de::EnumAccess<'de> for &'_ mut MqttDeserializer<'de> {
 
     fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self), Error> {
         let varint = self.read_varint()?;
-        crate::trace!("Read Varint: {:#X}", varint);
+        crate::trace!("Read Varint: {=u32:#X}", varint);
         let v = DeserializeSeed::deserialize(seed, varint.into_deserializer())?;
         Ok((v, self))
     }

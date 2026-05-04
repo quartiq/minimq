@@ -58,7 +58,7 @@ where
         self.runtime.require_packet_size(len)?;
         self.data.outbound.retain_packet(packet_id, offset, len)?;
         debug!(
-            "Enqueued SUBSCRIBE packet_id={} len={} tx_used={}",
+            "Enqueued SUBSCRIBE packet_id={=u16} len={=usize} tx_used={=usize}",
             packet_id,
             len,
             self.data.outbound.used()
@@ -100,7 +100,7 @@ where
         self.runtime.require_packet_size(len)?;
         self.data.outbound.retain_packet(packet_id, offset, len)?;
         debug!(
-            "Enqueued UNSUBSCRIBE packet_id={} len={} tx_used={}",
+            "Enqueued UNSUBSCRIBE packet_id={=u16} len={=usize} tx_used={=usize}",
             packet_id,
             len,
             self.data.outbound.used()
@@ -170,7 +170,7 @@ where
             self.data.outbound.retain_packet(packet_id, offset, len)?;
             self.runtime.send_quota = self.runtime.send_quota.saturating_sub(1);
             debug!(
-                "Enqueued PUBLISH packet_id={} qos={:?} len={} send_quota={}/{} tx_used={}",
+                "Enqueued PUBLISH packet_id={=u16} qos={} len={=usize} send_quota={=u16}/{=u16} tx_used={=usize}",
                 packet_id,
                 qos,
                 len,
@@ -193,7 +193,7 @@ where
             payload,
         )?;
         self.runtime.require_packet_size(packet.len())?;
-        debug!("Sending QoS0 PUBLISH len={}", packet.len());
+        debug!("Sending QoS0 PUBLISH len={=usize}", packet.len());
         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
         if let Err(err) = crate::mqtt_client::outbound::write_all(connection, packet).await {
             if matches!(err, Error::WriteZero) {
@@ -204,7 +204,7 @@ where
             return Err(err.into());
         }
         if let Err(err) = connection.flush().await {
-            warn!("QoS0 PUBLISH flush failed: {:?}", err.kind());
+            warn!("QoS0 PUBLISH flush failed: {}", err.kind());
             self.handle_disconnect();
             return Err(Error::Transport(err).into());
         }

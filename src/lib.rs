@@ -33,7 +33,7 @@ use ser::Error as SerError;
 
 use num_enum::TryFromPrimitive;
 
-pub(crate) use log::{debug, error, info, trace, warn};
+pub(crate) use defmt::{debug, error, info, trace, warn};
 
 /// Session error type for a specific transport.
 pub type SessionError<IO> = Error<<IO as embedded_io_async::ErrorType>::Error>;
@@ -54,7 +54,7 @@ pub const TOPIC_CAPACITY: usize = 128;
 pub type TopicString = heapless::String<TOPIC_CAPACITY>;
 
 /// The quality-of-service for an MQTT message.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive, PartialOrd, Ord)]
+#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum QoS {
     /// Deliver at most once. No acknowledgment or retry.
@@ -66,7 +66,7 @@ pub enum QoS {
 }
 
 /// The retained status for an MQTT message.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive)]
+#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u8)]
 pub enum Retain {
     /// Do not retain the message on the broker.
@@ -76,7 +76,7 @@ pub enum Retain {
 }
 
 /// Configuration errors detected before a session is created.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ConfigError {
     /// The requested RX split does not fit in the provided backing buffer.
@@ -94,7 +94,7 @@ pub enum ConfigError {
 }
 
 /// Failures caused by broker behavior or invalid inbound MQTT data.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum PeerError {
     /// The broker explicitly rejected the operation with an MQTT reason code.
@@ -106,7 +106,7 @@ pub enum PeerError {
 }
 
 /// Local capacity and sizing failures.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ResourceError {
     /// Local fixed-capacity storage or packet scratch space was too small.
@@ -219,7 +219,7 @@ impl<E> From<ResourceError> for Error<E> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[derive(defmt::Format, Debug, Clone, PartialEq, thiserror::Error)]
 pub(crate) enum ProtocolError {
     /// The broker sent a packet that is invalid in the current protocol state.
     #[error("received an unexpected MQTT packet")]

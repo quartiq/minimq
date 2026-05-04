@@ -22,18 +22,18 @@ fuzzing = []
 
 [dependencies]
 bit_field = "0.10.0"
+defmt = "1.0.1"
 num_enum = { version = "0.7", default-features = false }
-heapless = { version = "0.9.1" }
-log = { version = "0.4", default-features = false }
-embedded-io-async = "0.7"
-embassy-time = "0.5.1"
+heapless = { version = "0.9.1", features = ["defmt"] }
+embedded-io-async = { version = "0.7", features = ["defmt"] }
+embassy-time = { version = "0.5.1", features = ["defmt"] }
 serde = { version = "1", features = ["derive"], default-features = false }
 thiserror = { version = "2", default-features = false }
 
 [dev-dependencies]
+defmt2log = { path = "../stabilizer/defmt2log" }
 embassy-futures = "0.1.2"
 embedded-nal-async = "0.9"
-log = "0.4"
 env_logger = "0.11"
 embassy-time = { version = "0.5.1", features = ["std", "generic-queue-8"] }
 std-embedded-nal-async = "0.4"

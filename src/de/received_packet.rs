@@ -44,7 +44,10 @@ impl<'a> ReceivedPacket<'a> {
     }
 
     pub fn from_buffer(buf: &'a [u8]) -> Result<Self, ProtocolError> {
-        trace!("Parsing received packet buffer of {} bytes", buf.len());
+        trace!(
+            "Parsing received packet buffer of {=usize} bytes",
+            buf.len()
+        );
         let mut deserializer = MqttDeserializer::new(buf);
         let mut packet = ReceivedPacket::deserialize(&mut deserializer)?;
 
@@ -64,7 +67,7 @@ impl<'a> ReceivedPacket<'a> {
                 }
                 _ => {
                     warn!(
-                        "Unexpected trailing payload of {} bytes for non-payload packet",
+                        "Unexpected trailing payload of {=usize} bytes for non-payload packet",
                         remaining_payload.len()
                     );
                     return Err(ProtocolError::MalformedPacket);
@@ -72,7 +75,7 @@ impl<'a> ReceivedPacket<'a> {
             }
         }
 
-        trace!("Parsed inbound packet kind={}", packet.kind());
+        trace!("Parsed inbound packet kind={=str}", packet.kind());
         Ok(packet)
     }
 }
@@ -98,7 +101,7 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
             .map_err(|_| A::Error::custom("Invalid MQTT control packet type"))?;
         let flags = fixed_header.get_bits(0..=3);
         trace!(
-            "Received fixed header: type={:?} flags={:#b} remaining_len={:?}",
+            "Received fixed header: type={} flags={=u8:#b} remaining_len={}",
             packet_type, flags, _length
         );
 
@@ -117,7 +120,7 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
         };
         if !valid_flags {
             warn!(
-                "Rejecting packet {:?} due to invalid flags {:#b}",
+                "Rejecting packet {} due to invalid flags {=u8:#b}",
                 packet_type, flags
             );
             return Err(A::Error::custom("Invalid MQTT control packet flags"));
@@ -184,7 +187,7 @@ mod test {
 
     #[test]
     fn deserialize_good_connack() {
-        env_logger::init();
+        crate::tests::init_host_logging();
         let serialized_connack: [u8; 5] = [
             0x20, 0x03, // Remaining length = 3 bytes
             0x00, // Connect acknowledge flags - bit 0 clear.

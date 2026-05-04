@@ -11,7 +11,7 @@ pub(super) const MAX_RETAINED: usize = 8;
 pub(super) const MAX_PENDING_CONTROL: usize = 8;
 pub(super) const MAX_PENDING_RELEASE: usize = 8;
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(defmt::Format, Debug, Copy, Clone, PartialEq)]
 pub(super) enum ControlAction {
     PubAck { packet_id: u16, reason: ReasonCode },
     PubRec { packet_id: u16, reason: ReasonCode },
@@ -403,7 +403,7 @@ impl<'a> Outbound<'a> {
         }
 
         trace!(
-            "Arming outbound replay control={} retained={} pending_release={} tx_used={} tx_capacity={}",
+            "Arming outbound replay control={=usize} retained={=usize} pending_release={=usize} tx_used={=usize} tx_capacity={=usize}",
             self.pending_control.len(),
             self.retained.len(),
             self.pending_release.len(),
@@ -440,7 +440,7 @@ impl<'a> Outbound<'a> {
         self.used = cursor;
         if moved != 0 || previous_used != self.used {
             trace!(
-                "Compacted outbound buffer moved={} tx_used={} -> {} retained={} pending_release={}",
+                "Compacted outbound buffer moved={=usize} tx_used={=usize} -> {=usize} retained={=usize} pending_release={=usize}",
                 moved,
                 previous_used,
                 self.used,

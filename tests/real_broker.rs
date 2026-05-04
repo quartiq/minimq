@@ -1,3 +1,5 @@
+mod support;
+
 use core::future::poll_fn;
 use core::pin::Pin;
 use core::task::Poll;
@@ -11,6 +13,7 @@ use std::{
     net::SocketAddr,
     time::{SystemTime, UNIX_EPOCH},
 };
+use support::init_host_logging;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpStream, lookup_host},
@@ -174,6 +177,7 @@ async fn assert_roundtrip(
 
 #[tokio::test]
 async fn real_broker_qos1_roundtrip_over_tcp() {
+    init_host_logging();
     let Some(addr) = socket_broker() else {
         eprintln!("skipping real broker test; set {BROKER_ADDR_ENV}=host:port");
         return;
@@ -196,6 +200,7 @@ async fn real_broker_qos1_roundtrip_over_tcp() {
 
 #[tokio::test]
 async fn real_broker_qos1_roundtrip_over_dns() {
+    init_host_logging();
     let Some(host) = hostname_broker() else {
         eprintln!("skipping hostname broker test; set {BROKER_HOST_ENV}=hostname");
         return;

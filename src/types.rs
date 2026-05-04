@@ -243,7 +243,7 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Properties<'a> {
 }
 
 /// MQTT binary data field.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(defmt::Format, Copy, Clone, Debug, PartialEq)]
 pub struct BinaryData<'a>(pub &'a [u8]);
 
 impl serde::Serialize for BinaryData<'_> {
@@ -343,7 +343,7 @@ impl<'a> Auth<'a> {
 }
 
 /// MQTT UTF-8 string field.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(defmt::Format, Copy, Clone, Debug, PartialEq)]
 pub struct Utf8String<'a>(pub &'a str);
 
 impl serde::Serialize for Utf8String<'_> {
