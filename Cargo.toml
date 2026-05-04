@@ -31,7 +31,7 @@ serde = { version = "1", features = ["derive"], default-features = false }
 thiserror = { version = "2", default-features = false }
 
 [dev-dependencies]
-defmt2log = { path = "../stabilizer/defmt2log" }
+defmt2log = "0.1.0"
 embassy-futures = "0.1.2"
 embedded-nal-async = "0.9"
 env_logger = "0.11"
