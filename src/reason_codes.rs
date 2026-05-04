@@ -1,8 +1,8 @@
-use crate::ProtocolError;
+use crate::PeerError;
 use num_enum::{FromPrimitive, IntoPrimitive};
 
 /// MQTTv5-defined codes that may be returned in response to control packets.
-#[derive(PartialEq, PartialOrd, Copy, Clone, Debug, FromPrimitive, IntoPrimitive)]
+#[derive(PartialEq, Eq, PartialOrd, Copy, Clone, Debug, FromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum ReasonCode {
     /// Success.
@@ -127,12 +127,12 @@ impl From<&ReasonCode> for u8 {
 }
 
 impl ReasonCode {
-    /// Convert the reason code to `Ok(())` for success codes or a protocol error otherwise.
-    pub fn as_result(&self) -> Result<(), ProtocolError> {
+    /// Convert the reason code to `Ok(())` for success codes or a peer rejection otherwise.
+    pub fn as_result(&self) -> Result<(), PeerError> {
         if self.success() {
             return Ok(());
         }
-        Err(ProtocolError::Failed(*self))
+        Err(PeerError::Rejected(*self))
     }
 
     /// Return `true` for MQTT success codes.

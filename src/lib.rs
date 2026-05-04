@@ -5,8 +5,7 @@
 pub mod config;
 mod de;
 mod message_types;
-/// Long-lived MQTT client session types.
-pub mod mqtt_client;
+mod mqtt_client;
 mod packets;
 mod properties;
 /// Outbound publish builders and payload adapters.
@@ -18,8 +17,8 @@ pub mod types;
 mod varint;
 mod will;
 
-pub use config::{Buffers, ConfigBuilder, SetupError};
-pub use mqtt_client::{ConnectEvent, InboundPublish, Io, Session};
+pub use config::{Buffers, ConfigBuilder};
+pub use mqtt_client::{ConnectEvent, InboundPublish, Io, Op, OpStatus, Session};
 pub use properties::Property;
 pub use publication::{OwnedResponseTarget, Publication};
 pub use reason_codes::ReasonCode;
@@ -29,8 +28,8 @@ pub use will::Will;
 #[doc(hidden)]
 pub mod fuzzing;
 
-pub use de::Error as DeError;
-pub use ser::Error as SerError;
+use de::Error as DeError;
+use ser::Error as SerError;
 
 use num_enum::TryFromPrimitive;
 
@@ -47,6 +46,12 @@ pub const MQTT_INSECURE_DEFAULT_PORT: u16 = 1883;
 
 /// Default port number for encrypted MQTT traffic.
 pub const MQTT_SECURE_DEFAULT_PORT: u16 = 8883;
+
+/// Fixed-capacity owned MQTT topic storage used by durable configuration.
+pub const TOPIC_CAPACITY: usize = 128;
+
+/// Fixed-capacity owned MQTT topic string.
+pub type TopicString = heapless::String<TOPIC_CAPACITY>;
 
 /// The quality-of-service for an MQTT message.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive, PartialOrd, Ord)]
@@ -70,67 +75,55 @@ pub enum Retain {
     Retained = 1,
 }
 
-/// Errors that are specific to the MQTT protocol implementation.
+/// Configuration errors detected before a session is created.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
-pub enum ProtocolError {
+pub enum ConfigError {
+    /// The requested RX split does not fit in the provided backing buffer.
+    #[error("buffer split exceeds backing storage")]
+    BufferSplit,
     /// The configured client identifier exceeds the internal fixed-capacity storage.
     #[error("provided client ID is too long")]
-    ProvidedClientIdTooLong,
-    /// The broker sent a packet that is invalid in the current protocol state.
-    #[error("received an unexpected MQTT packet")]
-    UnexpectedPacket,
-    /// A property was not valid for that packet type or operation.
-    #[error("received an invalid MQTT property")]
-    InvalidProperty,
-    /// The broker sent malformed bytes.
-    #[error("received a malformed MQTT packet")]
-    MalformedPacket,
-    /// Fixed-capacity storage was too small for the requested value.
+    ClientIdTooLong,
+    /// One configuration setting was specified more than once.
+    #[error("configuration was specified more than once")]
+    DuplicateConfig,
+    /// The provided configuration is not valid for MQTT.
+    #[error("invalid MQTT configuration")]
+    InvalidConfig,
+}
+
+/// Failures caused by broker behavior or invalid inbound MQTT data.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum PeerError {
+    /// The broker explicitly rejected the operation with an MQTT reason code.
+    #[error("broker returned failure reason {0:?}")]
+    Rejected(ReasonCode),
+    /// The broker sent an invalid MQTT packet or protocol state transition.
+    #[error("received an invalid MQTT packet")]
+    InvalidPacket,
+}
+
+/// Local capacity and sizing failures.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ResourceError {
+    /// Local fixed-capacity storage or packet scratch space was too small.
     #[error("buffer is too small")]
-    BufferSize,
-    /// The requested RX/TX split exceeds the provided backing buffer.
-    #[error("invalid buffer split")]
-    BufferSplit,
-    /// The broker referred to an unknown packet identifier.
-    #[error("unknown packet identifier")]
-    BadIdentifier,
-    /// A QoS value was outside the MQTT-defined range.
-    #[error("invalid QoS value")]
-    WrongQos,
-    /// `minimq` does not implement that MQTT packet or feature.
-    #[error("unsupported MQTT packet")]
-    UnsupportedPacket,
-    /// An operation that requires at least one topic was called with none.
-    #[error("at least one topic is required")]
-    NoTopic,
-    /// Authentication was configured more than once.
-    #[error("authentication was already specified")]
-    AuthAlreadySpecified,
-    /// A will was configured more than once.
-    #[error("will message was already specified")]
-    WillAlreadySpecified,
-    /// The operation requires an active MQTT connection.
-    #[error("not connected")]
-    NotConnected,
+    BufferTooSmall,
+    /// The requested or required packet exceeds the negotiated packet size limit.
+    #[error("packet is too large")]
+    PacketTooLarge,
     /// Internal tracking space for in-flight packet metadata was exhausted.
     #[error("in-flight metadata capacity exhausted")]
-    InflightMetadataExhausted,
-    /// The broker rejected the operation with an MQTT reason code.
-    #[error("broker returned failure reason {0:?}")]
-    Failed(ReasonCode),
-    /// Packet encoding failed.
-    #[error(transparent)]
-    Encode(SerError),
-    /// Packet decoding failed.
-    #[error(transparent)]
-    Deserialization(DeError),
+    InflightExhausted,
 }
 
 /// Error returned from [`Session::publish`](crate::Session::publish).
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum PubError<P, E> {
-    /// Session setup, transport, or protocol failure.
+    /// Session, transport, peer, or local resource failure.
     #[error(transparent)]
     Session(#[from] Error<E>),
     /// Payload serialization failed before the packet was sent.
@@ -142,26 +135,14 @@ impl<P, E> From<crate::ser::PubError<P>> for PubError<P, E> {
     fn from(e: crate::ser::PubError<P>) -> Self {
         match e {
             crate::ser::PubError::Payload(e) => Self::Payload(e),
-            crate::ser::PubError::Encode(e) => Self::Session(ProtocolError::from(e).into()),
+            crate::ser::PubError::Encode(e) => Self::Session(Error::from(e)),
         }
     }
 }
 
-impl From<crate::ser::Error> for ProtocolError {
-    fn from(err: crate::ser::Error) -> Self {
-        Self::Encode(err)
-    }
-}
-
-impl From<crate::de::Error> for ProtocolError {
-    fn from(err: crate::de::Error) -> Self {
-        Self::Deserialization(err)
-    }
-}
-
-impl From<ReasonCode> for ProtocolError {
-    fn from(code: ReasonCode) -> Self {
-        Self::Failed(code)
+impl<P, E> From<ProtocolError> for PubError<P, E> {
+    fn from(err: ProtocolError) -> Self {
+        Self::Session(err.into())
     }
 }
 
@@ -175,9 +156,15 @@ pub enum Error<E> {
     /// The session is currently disconnected.
     #[error("session is disconnected")]
     Disconnected,
-    /// MQTT protocol-level failure.
+    /// The requested operation arguments are not valid.
+    #[error("invalid request")]
+    InvalidRequest,
+    /// The broker rejected the operation or sent invalid MQTT data.
     #[error(transparent)]
-    Protocol(ProtocolError),
+    Peer(PeerError),
+    /// Local buffers or in-flight state were insufficient for the requested operation.
+    #[error(transparent)]
+    Resource(ResourceError),
     /// Transport-layer failure during connect or I/O.
     #[error("transport error: {0:?}")]
     Transport(E),
@@ -189,9 +176,74 @@ pub enum Error<E> {
 impl<E> From<ProtocolError> for Error<E> {
     fn from(p: ProtocolError) -> Self {
         match p {
-            ProtocolError::NotConnected => Self::Disconnected,
-            other => Self::Protocol(other),
+            ProtocolError::UnexpectedPacket
+            | ProtocolError::MalformedPacket
+            | ProtocolError::Deserialization(_) => Self::Peer(PeerError::InvalidPacket),
+            ProtocolError::InflightMetadataExhausted => {
+                Self::Resource(ResourceError::InflightExhausted)
+            }
+            ProtocolError::Failed(code) => match code {
+                ReasonCode::PacketTooLarge => Self::Resource(ResourceError::PacketTooLarge),
+                code => Self::Peer(PeerError::Rejected(code)),
+            },
+            ProtocolError::Encode(err) => Self::from(err),
         }
+    }
+}
+
+impl<E> From<crate::ser::Error> for Error<E> {
+    fn from(err: crate::ser::Error) -> Self {
+        match err {
+            crate::ser::Error::InsufficientMemory => Self::Resource(ResourceError::BufferTooSmall),
+            crate::ser::Error::Custom => Self::InvalidRequest,
+        }
+    }
+}
+
+impl<E> From<crate::de::Error> for Error<E> {
+    fn from(err: crate::de::Error) -> Self {
+        let _ = err;
+        Self::Peer(PeerError::InvalidPacket)
+    }
+}
+
+impl<E> From<PeerError> for Error<E> {
+    fn from(err: PeerError) -> Self {
+        Self::Peer(err)
+    }
+}
+
+impl<E> From<ResourceError> for Error<E> {
+    fn from(err: ResourceError) -> Self {
+        Self::Resource(err)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub(crate) enum ProtocolError {
+    /// The broker sent a packet that is invalid in the current protocol state.
+    #[error("received an unexpected MQTT packet")]
+    UnexpectedPacket,
+    /// The broker sent malformed bytes.
+    #[error("received a malformed MQTT packet")]
+    MalformedPacket,
+    /// Internal tracking space for in-flight packet metadata was exhausted.
+    #[error("in-flight metadata capacity exhausted")]
+    InflightMetadataExhausted,
+    /// The broker rejected the operation with an MQTT reason code.
+    #[error("broker returned failure reason {0:?}")]
+    Failed(ReasonCode),
+    /// Packet encoding failed.
+    #[error(transparent)]
+    Encode(#[from] SerError),
+    /// Packet decoding failed.
+    #[error(transparent)]
+    Deserialization(#[from] DeError),
+}
+
+impl From<ReasonCode> for ProtocolError {
+    fn from(code: ReasonCode) -> Self {
+        Self::Failed(code)
     }
 }
 

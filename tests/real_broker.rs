@@ -118,13 +118,14 @@ async fn poll_until_ready(
             with_timeout(Duration::from_millis(0), session.poll()).await
         };
         match result {
-            Ok(Ok(message)) if want_inbound => {
+            Ok(Ok(Some(message))) if want_inbound => {
                 return Some((
                     message.topic().to_string(),
                     message.payload().to_vec(),
                     message.qos(),
                 ));
             }
+            Ok(Ok(None)) => {}
             Err(_) if !want_inbound => return None,
             Ok(Err(Error::Transport(err))) => match err.kind() {
                 std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted => {}

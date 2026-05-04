@@ -4,7 +4,7 @@ mod session;
 pub use session::Session;
 
 use crate::{
-    ProtocolError, QoS, Retain,
+    QoS, ResourceError, Retain,
     publication::{OwnedResponseTarget, Publication, ResponseTarget},
     types::Properties,
 };
@@ -19,7 +19,47 @@ pub trait Io: Read + Write + ErrorType {}
 
 impl<T> Io for T where T: Read + Write + ErrorType {}
 
-/// Inbound MQTT `PUBLISH` returned by [`Session::poll`](crate::Session::poll).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum OpKind {
+    PublishAtLeastOnce,
+    PublishExactlyOnce,
+    Subscribe,
+    Unsubscribe,
+}
+
+/// Handle for one outbound MQTT operation accepted into local session state.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct Op {
+    kind: OpKind,
+    packet_id: u16,
+    generation: u32,
+}
+
+impl Op {
+    pub(crate) fn new(kind: OpKind, packet_id: u16, generation: u32) -> Self {
+        Self {
+            kind,
+            packet_id,
+            generation,
+        }
+    }
+}
+
+/// Completion state of a previously accepted outbound operation.
+#[must_use = "inspect the returned status before deciding how to proceed"]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum OpStatus {
+    /// The operation is still present in local in-flight state.
+    Pending,
+    /// The operation is no longer pending in this session generation.
+    Complete,
+    /// The local session state that could complete this operation was discarded.
+    Invalidated,
+}
+
+/// Inbound MQTT `PUBLISH` surfaced by [`Session::recv`](crate::Session::recv) and by
+/// [`Session::drive`](crate::Session::drive) / [`Session::poll`](crate::Session::poll) when they
+/// return `Some(...)`.
 #[derive(Debug)]
 pub struct InboundPublish<'a> {
     topic: &'a str,
@@ -81,13 +121,17 @@ impl<'a> InboundPublish<'a> {
         self.properties.correlation_data()
     }
 
-    /// Build a direct reply publication when the inbound message carries a response topic.
-    pub fn reply<P>(&'a self, payload: P) -> Option<Publication<'a, P>> {
+    fn response_target(&'a self) -> Option<ResponseTarget<'a>> {
         Some(ResponseTarget {
             topic: self.response_topic()?,
             correlation_data: self.correlation_data(),
         })
-        .map(|target| target.publication(payload))
+    }
+
+    /// Build a direct reply publication when the inbound message carries a response topic.
+    pub fn reply<P>(&'a self, payload: P) -> Option<Publication<'a, P>> {
+        self.response_target()
+            .map(|target| target.publication(payload))
     }
 
     /// Copy the response target into fixed-capacity owned storage.
@@ -95,16 +139,10 @@ impl<'a> InboundPublish<'a> {
     /// Use this when the reply has to outlive the borrowed inbound packet.
     pub fn reply_owned<const TOPIC: usize, const CORRELATION: usize>(
         &'a self,
-    ) -> Result<Option<OwnedResponseTarget<TOPIC, CORRELATION>>, ProtocolError> {
-        match self.response_topic() {
-            Some(topic) => ResponseTarget {
-                topic,
-                correlation_data: self.correlation_data(),
-            }
-            .to_owned()
-            .map(Some),
-            None => Ok(None),
-        }
+    ) -> Result<Option<OwnedResponseTarget<TOPIC, CORRELATION>>, ResourceError> {
+        self.response_target()
+            .map(ResponseTarget::to_owned)
+            .transpose()
     }
 }
 

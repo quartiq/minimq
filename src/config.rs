@@ -1,4 +1,4 @@
-use crate::{ProtocolError, Will, types::Auth};
+use crate::{ConfigError, Will, types::Auth};
 use embassy_time::Duration;
 use heapless::String;
 
@@ -55,22 +55,14 @@ impl<'a> Buffers<'a> {
     /// assert_eq!(buffers.rx().len(), 4);
     /// assert_eq!(buffers.tx().len(), 12);
     /// ```
-    pub fn split(buffer: &'a mut [u8], rx_size: usize) -> Result<Self, SetupError> {
+    pub fn split(buffer: &'a mut [u8], rx_size: usize) -> Result<Self, ConfigError> {
         if rx_size > buffer.len() {
-            return Err(SetupError::BufferSplit);
+            return Err(ConfigError::BufferSplit);
         }
 
         let (rx, tx) = buffer.split_at_mut(rx_size);
         Ok(Self::new(rx, tx))
     }
-}
-
-/// Setup errors detected before a session is created.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum SetupError {
-    /// The requested RX split does not fit in the provided backing buffer.
-    #[error("buffer split exceeds backing storage")]
-    BufferSplit,
 }
 
 /// Builder for session setup.
@@ -90,32 +82,33 @@ pub struct ConfigBuilder<'a> {
 impl<'a> ConfigBuilder<'a> {
     /// Construct a session configuration from explicit packet buffers.
     ///
-    /// The default session expiry is `u32::MAX`, which requests a long-lived persistent session.
-    /// Call [`session_expiry_interval`](Self::session_expiry_interval) to choose a shorter-lived
-    /// session or `0` for a clean session that expires on disconnect.
+    /// The default session expiry is `0`, which requests a clean session that expires on
+    /// disconnect.
+    /// Call [`session_expiry_interval`](Self::session_expiry_interval) to choose a long-lived
+    /// session.
     pub fn new(buffers: Buffers<'a>) -> Self {
         Self {
             buffers,
             will: None,
             client_id: String::new(),
             auth: None,
-            keepalive_interval: Duration::from_secs(59),
-            session_expiry_interval: u32::MAX,
+            keepalive_interval: Duration::from_secs(60),
+            session_expiry_interval: 0,
             downgrade_qos: false,
         }
     }
 
     /// Construct a session configuration by splitting one backing buffer into RX and TX regions.
-    pub fn from_buffer(buffer: &'a mut [u8], rx_size: usize) -> Result<Self, SetupError> {
+    pub fn from_buffer(buffer: &'a mut [u8], rx_size: usize) -> Result<Self, ConfigError> {
         Ok(Self::new(Buffers::split(buffer, rx_size)?))
     }
 
     /// Attach MQTT username/password authentication.
     ///
-    /// Calling this more than once returns [`ProtocolError::AuthAlreadySpecified`].
-    pub fn auth(mut self, user_name: &'a str, password: &'a [u8]) -> Result<Self, ProtocolError> {
+    /// Calling this more than once returns [`ConfigError::DuplicateConfig`].
+    pub fn auth(mut self, user_name: &'a str, password: &'a [u8]) -> Result<Self, ConfigError> {
         if self.auth.is_some() {
-            return Err(ProtocolError::AuthAlreadySpecified);
+            return Err(ConfigError::DuplicateConfig);
         }
 
         self.auth.replace(Auth::new(user_name, password));
@@ -125,15 +118,14 @@ impl<'a> ConfigBuilder<'a> {
     /// Set the MQTT client identifier.
     ///
     /// The ID must fit in the internal fixed-capacity storage.
-    pub fn client_id(mut self, id: &str) -> Result<Self, ProtocolError> {
-        self.client_id =
-            String::try_from(id).map_err(|_| ProtocolError::ProvidedClientIdTooLong)?;
+    pub fn client_id(mut self, id: &str) -> Result<Self, ConfigError> {
+        self.client_id = id.try_into().map_err(|_| ConfigError::ClientIdTooLong)?;
         Ok(self)
     }
 
     /// Set the keepalive interval advertised in `CONNECT`.
     ///
-    /// `poll()` must still be driven often enough for the session to honor it.
+    /// `poll()` or `recv()` must still be driven often enough for the session to honor it.
     pub fn keepalive_interval(mut self, seconds: u16) -> Self {
         self.keepalive_interval = Duration::from_secs(seconds as u64);
         self
@@ -141,7 +133,7 @@ impl<'a> ConfigBuilder<'a> {
 
     /// Set the MQTT v5 session expiry interval, in seconds.
     ///
-    /// The default is `u32::MAX`, which requests a long-lived persistent session.
+    /// The default is `0`, which requests a clean session that expires on disconnect.
     pub fn session_expiry_interval(mut self, seconds: u32) -> Self {
         self.session_expiry_interval = seconds;
         self
@@ -166,9 +158,9 @@ impl<'a> ConfigBuilder<'a> {
     }
 
     /// Attach an MQTT will message.
-    pub fn will(mut self, will: Will<'a>) -> Result<Self, ProtocolError> {
+    pub fn will(mut self, will: Will<'a>) -> Result<Self, ConfigError> {
         if self.will.is_some() {
-            return Err(ProtocolError::WillAlreadySpecified);
+            return Err(ConfigError::DuplicateConfig);
         }
         self.will = Some(will);
         Ok(self)
@@ -214,7 +206,7 @@ mod tests {
         let mut buffer = [0; 30];
         assert!(matches!(
             Buffers::split(&mut buffer, 31),
-            Err(SetupError::BufferSplit)
+            Err(ConfigError::BufferSplit)
         ));
     }
 
@@ -238,7 +230,7 @@ mod tests {
     fn will_does_not_consume_tx_buffer() {
         let mut rx = [0; 10];
         let mut tx = [0; 20];
-        let will = Will::new("topic", b"x", &[]).unwrap();
+        let will = Will::new("topic".try_into().unwrap(), b"x", &[]).unwrap();
         let (buffers, _, _, _, _, _, _) = ConfigBuilder::new(Buffers {
             rx: &mut rx,
             tx: &mut tx,

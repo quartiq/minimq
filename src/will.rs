@@ -1,11 +1,10 @@
 use crate::{
-    ProtocolError, QoS, Retain,
+    ConfigError, QoS, Retain, TopicString,
     properties::{Property, PropertyIdentifier},
     types::{BinaryData, Properties, Utf8String},
 };
-use heapless::String;
 
-fn validate_will_properties(properties: &[Property<'_>]) -> Result<(), ProtocolError> {
+fn validate_will_properties(properties: &[Property<'_>]) -> Result<(), ConfigError> {
     for property in properties {
         match property.into() {
             PropertyIdentifier::WillDelayInterval
@@ -15,31 +14,16 @@ fn validate_will_properties(properties: &[Property<'_>]) -> Result<(), ProtocolE
             | PropertyIdentifier::ResponseTopic
             | PropertyIdentifier::CorrelationData
             | PropertyIdentifier::UserProperty => {}
-            _ => return Err(ProtocolError::InvalidProperty),
+            _ => return Err(ConfigError::InvalidConfig),
         }
     }
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq)]
-enum Topic<'a> {
-    Borrowed(&'a str),
-    Owned(String<128>),
-}
-
-impl Topic<'_> {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Borrowed(topic) => topic,
-            Self::Owned(topic) => topic.as_str(),
-        }
-    }
-}
-
 /// MQTT will message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Will<'a> {
-    topic: Topic<'a>,
+    topic: TopicString,
     data: &'a [u8],
     qos: QoS,
     retained: Retain,
@@ -47,34 +31,18 @@ pub struct Will<'a> {
 }
 
 impl<'a> Will<'a> {
-    /// Construct a will that borrows its topic.
+    /// Construct a will from owned fixed-capacity topic storage.
     ///
     /// Only MQTT v5 properties valid on will messages are accepted.
     pub fn new(
-        topic: &'a str,
+        topic: TopicString,
         data: &'a [u8],
         properties: &'a [Property<'a>],
-    ) -> Result<Self, ProtocolError> {
+    ) -> Result<Self, ConfigError> {
         validate_will_properties(properties)?;
 
         Ok(Self {
-            topic: Topic::Borrowed(topic),
-            data,
-            properties,
-            qos: QoS::AtMostOnce,
-            retained: Retain::NotRetained,
-        })
-    }
-
-    /// Construct a will that owns its fixed-capacity topic.
-    pub fn owned(
-        topic: &str,
-        data: &'a [u8],
-        properties: &'a [Property<'a>],
-    ) -> Result<Self, ProtocolError> {
-        validate_will_properties(properties)?;
-        Ok(Self {
-            topic: Topic::Owned(String::try_from(topic).map_err(|_| ProtocolError::BufferSize)?),
+            topic,
             data,
             properties,
             qos: QoS::AtMostOnce,

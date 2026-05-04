@@ -1,7 +1,7 @@
-use crate::packets::Pub;
+use crate::packets::PublishHeader;
 use crate::packets::{PingReq, PubAck, PubComp, PubRec, PubRel};
 use crate::ser::MAX_FIXED_HEADER_SIZE;
-use crate::{Error, ProtocolError, PubError, ReasonCode, error, trace};
+use crate::{Error, ProtocolError, PubError, ReasonCode, ResourceError, error, trace};
 use heapless::Vec;
 
 use super::Io;
@@ -205,6 +205,12 @@ impl<'a> Outbound<'a> {
         true
     }
 
+    pub(super) fn has_retained(&self, packet_id: u16) -> bool {
+        self.retained
+            .iter()
+            .any(|entry| entry.packet_id == packet_id)
+    }
+
     pub(super) fn queue_release(
         &mut self,
         packet_id: u16,
@@ -245,18 +251,16 @@ impl<'a> Outbound<'a> {
 
     pub(super) fn encode_publish<P: crate::publication::ToPayload, E>(
         &mut self,
-        packet: Pub<'_, P>,
+        header: &PublishHeader<'_>,
+        payload: P,
     ) -> Result<(usize, usize), PubError<P::Error, E>> {
         self.compact();
         let start = self.used;
-        let (offset, packet) =
-            crate::ser::MqttSerializer::pub_to_buffer_meta(&mut self.buf[start..], packet)
-                .map_err(|err| match err {
-                    crate::ser::PubError::Encode(err) => {
-                        PubError::Session(Error::Protocol(err.into()))
-                    }
-                    crate::ser::PubError::Payload(err) => PubError::Payload(err),
-                })?;
+        let (offset, packet) = crate::ser::MqttSerializer::pub_to_buffer_meta(
+            &mut self.buf[start..],
+            header,
+            payload,
+        )?;
         Ok((start + offset, packet.len()))
     }
 
@@ -267,8 +271,7 @@ impl<'a> Outbound<'a> {
         self.compact();
         let start = self.used;
         let (offset, packet) =
-            crate::ser::MqttSerializer::to_buffer_meta(&mut self.buf[start..], packet)
-                .map_err(ProtocolError::from)?;
+            crate::ser::MqttSerializer::to_buffer_meta(&mut self.buf[start..], packet)?;
         Ok((start + offset, packet.len()))
     }
 
@@ -453,17 +456,15 @@ pub(super) fn serialize_control_packet<E>(
     packet: ControlAction,
     maximum_packet_size: Option<u32>,
 ) -> Result<&[u8], Error<E>> {
-    let bytes = encode_control_packet(buffer, packet).map_err(Error::Protocol)?;
+    let bytes = encode_control_packet(buffer, packet)?;
     if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
-        return Err(Error::Protocol(ProtocolError::Failed(
-            ReasonCode::PacketTooLarge,
-        )));
+        return Err(Error::Resource(ResourceError::PacketTooLarge));
     }
     Ok(bytes)
 }
 
 fn encode_control_packet(buffer: &mut [u8], packet: ControlAction) -> Result<&[u8], ProtocolError> {
-    match packet {
+    Ok(match packet {
         ControlAction::PubAck { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
             buffer,
             &PubAck {
@@ -486,8 +487,7 @@ fn encode_control_packet(buffer: &mut [u8], packet: ControlAction) -> Result<&[u
             },
         ),
         ControlAction::PingReq => crate::ser::MqttSerializer::to_buffer(buffer, &PingReq),
-    }
-    .map_err(ProtocolError::from)
+    }?)
 }
 
 fn require_packet_size(maximum_packet_size: Option<u32>, len: usize) -> Result<(), ProtocolError> {
@@ -522,11 +522,9 @@ pub(super) fn serialize_pubrel<E>(
     reason: ReasonCode,
     maximum_packet_size: Option<u32>,
 ) -> Result<&[u8], Error<E>> {
-    let bytes = encode_pubrel(buffer, packet_id, reason).map_err(Error::Protocol)?;
+    let bytes = encode_pubrel(buffer, packet_id, reason)?;
     if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
-        return Err(Error::Protocol(ProtocolError::Failed(
-            ReasonCode::PacketTooLarge,
-        )));
+        return Err(Error::Resource(ResourceError::PacketTooLarge));
     }
     Ok(bytes)
 }
@@ -536,14 +534,13 @@ fn encode_pubrel(
     packet_id: u16,
     reason: ReasonCode,
 ) -> Result<&[u8], ProtocolError> {
-    crate::ser::MqttSerializer::to_buffer(
+    Ok(crate::ser::MqttSerializer::to_buffer(
         buffer,
         &PubRel {
             packet_id,
             reason: reason.into(),
         },
-    )
-    .map_err(ProtocolError::from)
+    )?)
 }
 
 pub(super) async fn write_packet<C: Io, T>(
@@ -554,8 +551,7 @@ pub(super) async fn write_packet<C: Io, T>(
 where
     T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
 {
-    let bytes = crate::ser::MqttSerializer::to_buffer(buffer, packet)
-        .map_err(|err| Error::Protocol(err.into()))?;
+    let bytes = crate::ser::MqttSerializer::to_buffer(buffer, packet)?;
     write_all(connection, bytes).await?;
     connection.flush().await.map_err(Error::Transport)?;
     Ok(())
@@ -621,13 +617,21 @@ mod tests {
 
         outbound.retain_packet(7, 0, 5).unwrap();
 
-        let result = outbound
-            .encode_publish::<_, ()>(crate::packets::Pub::from(Publication::bytes("a", b"x")));
+        let publication = Publication::bytes("a", b"x");
+        let header = crate::packets::PublishHeader {
+            topic: crate::types::Utf8String(publication.topic),
+            packet_id: None,
+            properties: publication.properties,
+            retain: publication.retain,
+            qos: publication.qos,
+            dup: false,
+        };
+        let result = outbound.encode_publish::<_, ()>(&header, publication.payload);
 
         assert!(matches!(
             result,
-            Err(crate::PubError::Session(crate::Error::Protocol(
-                crate::ProtocolError::Encode(crate::SerError::InsufficientMemory)
+            Err(crate::PubError::Session(crate::Error::Resource(
+                crate::ResourceError::BufferTooSmall
             )))
         ));
     }

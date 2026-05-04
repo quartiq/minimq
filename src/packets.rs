@@ -1,6 +1,5 @@
 use crate::{
     QoS, Retain,
-    publication::Publication,
     reason_codes::ReasonCode,
     types::{Auth, BinaryData, Properties, TopicFilter, Utf8String},
     will::Will,
@@ -67,18 +66,26 @@ pub struct ConnAck<'a> {
     pub properties: Properties<'a>,
 }
 
-#[derive(Serialize)]
-pub struct Pub<'a, P> {
+#[derive(Debug, Serialize)]
+pub struct PublishHeader<'a> {
     pub topic: Utf8String<'a>,
     pub packet_id: Option<u16>,
     pub properties: Properties<'a>,
-    #[serde(skip)]
-    pub payload: P,
     #[serde(skip)]
     pub retain: Retain,
     #[serde(skip)]
     pub qos: QoS,
     #[serde(skip)]
+    pub dup: bool,
+}
+
+pub struct Pub<'a, P> {
+    pub topic: Utf8String<'a>,
+    pub packet_id: Option<u16>,
+    pub properties: Properties<'a>,
+    pub payload: P,
+    pub retain: Retain,
+    pub qos: QoS,
     pub dup: bool,
 }
 
@@ -93,20 +100,6 @@ impl<P> core::fmt::Debug for Pub<'_, P> {
             .field("dup", &self.dup)
             .field("payload", &"<deferred>")
             .finish()
-    }
-}
-
-impl<'a, P> From<Publication<'a, P>> for Pub<'a, P> {
-    fn from(publication: Publication<'a, P>) -> Self {
-        Self {
-            topic: Utf8String(publication.topic),
-            properties: publication.properties,
-            packet_id: None,
-            payload: publication.payload,
-            retain: publication.retain,
-            qos: publication.qos,
-            dup: false,
-        }
     }
 }
 
@@ -296,18 +289,18 @@ mod tests {
             0xAB, 0xCD, // Payload
         ];
 
-        let publish = crate::packets::Pub {
+        let header = crate::packets::PublishHeader {
             qos: crate::QoS::AtMostOnce,
             packet_id: None,
             dup: false,
             properties: crate::types::Properties::Slice(&[]),
             retain: crate::Retain::NotRetained,
             topic: crate::types::Utf8String("ABC"),
-            payload: &[0xAB, 0xCD][..],
         };
+        let payload = &[0xAB, 0xCD][..];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::pub_to_buffer(&mut buffer, publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &header, payload).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -323,18 +316,18 @@ mod tests {
             0xAB, 0xCD, // Payload
         ];
 
-        let publish = crate::packets::Pub {
+        let header = crate::packets::PublishHeader {
             qos: crate::QoS::AtLeastOnce,
             topic: crate::types::Utf8String("ABC"),
             packet_id: Some(0xBEEF),
             dup: false,
             properties: crate::types::Properties::Slice(&[]),
             retain: crate::Retain::NotRetained,
-            payload: &[0xAB, 0xCD][..],
         };
+        let payload = &[0xAB, 0xCD][..];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::pub_to_buffer(&mut buffer, publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &header, payload).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -397,7 +390,7 @@ mod tests {
             0xAB, 0xCD, // Payload
         ];
 
-        let publish = crate::packets::Pub {
+        let header = crate::packets::PublishHeader {
             qos: crate::QoS::AtMostOnce,
             topic: crate::types::Utf8String("ABC"),
             packet_id: None,
@@ -406,11 +399,11 @@ mod tests {
                 crate::properties::Property::ResponseTopic(crate::types::Utf8String("A")),
             ]),
             retain: crate::Retain::NotRetained,
-            payload: &[0xAB, 0xCD][..],
         };
+        let payload = &[0xAB, 0xCD][..];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::pub_to_buffer(&mut buffer, publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &header, payload).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -426,7 +419,7 @@ mod tests {
             0xAB, 0xCD, // Payload
         ];
 
-        let publish = crate::packets::Pub {
+        let header = crate::packets::PublishHeader {
             qos: crate::QoS::AtMostOnce,
             topic: crate::types::Utf8String("ABC"),
             packet_id: None,
@@ -438,11 +431,11 @@ mod tests {
                 ),
             ]),
             retain: crate::Retain::NotRetained,
-            payload: &[0xAB, 0xCD][..],
         };
+        let payload = &[0xAB, 0xCD][..];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::pub_to_buffer(&mut buffer, publish).unwrap();
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &header, payload).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -503,7 +496,7 @@ mod tests {
         ];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let will = crate::will::Will::new("EFG", &[0xAB, 0xCD], &[])
+        let will = crate::will::Will::new("EFG".try_into().unwrap(), &[0xAB, 0xCD], &[])
             .unwrap()
             .qos(crate::QoS::AtMostOnce);
 

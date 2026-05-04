@@ -1,6 +1,6 @@
 use crate::properties::Property;
 use crate::types::Properties;
-use crate::{ProtocolError, QoS, Retain};
+use crate::{QoS, ResourceError, Retain};
 use heapless::{String, Vec};
 
 /// Trait for values that can serialize themselves into a publish payload buffer.
@@ -30,14 +30,17 @@ impl<'a> ResponseTarget<'a> {
 
     pub(crate) fn to_owned<const TOPIC: usize, const CORRELATION: usize>(
         self,
-    ) -> Result<OwnedResponseTarget<TOPIC, CORRELATION>, ProtocolError> {
+    ) -> Result<OwnedResponseTarget<TOPIC, CORRELATION>, ResourceError> {
         Ok(OwnedResponseTarget {
-            topic: String::try_from(self.topic).map_err(|_| ProtocolError::BufferSize)?,
+            topic: self
+                .topic
+                .try_into()
+                .map_err(|_| ResourceError::BufferTooSmall)?,
             correlation_data: self
                 .correlation_data
                 .map(Vec::try_from)
                 .transpose()
-                .map_err(|_| ProtocolError::BufferSize)?,
+                .map_err(|_| ResourceError::BufferTooSmall)?,
         })
     }
 }

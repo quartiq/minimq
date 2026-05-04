@@ -1,8 +1,8 @@
 use crate::{
     Retain,
     packets::{
-        ConnAck, Connect, Disconnect, DisconnectReq, PingReq, PingResp, Pub, PubAck, PubComp,
-        PubRec, PubRel, SubAck, Subscribe, UnsubAck, Unsubscribe,
+        ConnAck, Connect, Disconnect, DisconnectReq, PingReq, PingResp, PubAck, PubComp, PubRec,
+        PubRel, PublishHeader, SubAck, Subscribe, UnsubAck, Unsubscribe,
     },
 };
 use bit_field::BitField;
@@ -43,7 +43,7 @@ impl ControlPacket for ConnAck<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::ConnAck;
 }
 
-impl<P> Pub<'_, P> {
+impl PublishHeader<'_> {
     pub fn fixed_header_flags(&self) -> u8 {
         *0u8.set_bits(1..=2, self.qos as u8)
             .set_bit(0, self.retain == Retain::Retained)

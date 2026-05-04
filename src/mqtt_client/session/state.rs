@@ -3,11 +3,16 @@ use core::num::NonZeroU16;
 use embassy_time::{Duration, Instant};
 use heapless::Vec;
 
-use crate::{Error, ProtocolError, QoS, ReasonCode};
+use crate::{Error, QoS, ResourceError};
 
 use super::super::outbound::Outbound;
 
-pub(super) const PING_TIMEOUT_MS: u64 = 5_000;
+/// Upper bound for one MQTT keepalive round trip.
+///
+/// This single constant drives both:
+/// - how early `minimq` sends a `PINGREQ` before keepalive expiry
+/// - how long it waits for the matching `PINGRESP`
+pub(super) const ROUND_TRIP_TIMEOUT_MS: u64 = 5_000;
 const MAX_INBOUND_QOS2: usize = 8;
 
 #[derive(Debug)]
@@ -53,9 +58,7 @@ impl RuntimeState {
             .maximum_packet_size
             .is_some_and(|max| len > max as usize)
         {
-            return Err(Error::Protocol(ProtocolError::Failed(
-                ReasonCode::PacketTooLarge,
-            )));
+            return Err(Error::Resource(ResourceError::PacketTooLarge));
         }
         Ok(())
     }
@@ -66,7 +69,7 @@ impl RuntimeState {
             return None;
         }
 
-        let lead_ms = PING_TIMEOUT_MS.min(keepalive_ms / 2);
+        let lead_ms = ROUND_TRIP_TIMEOUT_MS.min(keepalive_ms / 2);
         Some(Duration::from_millis(keepalive_ms - lead_ms))
     }
 
@@ -83,6 +86,7 @@ impl RuntimeState {
 #[derive(Debug)]
 pub(super) struct SessionData<'a> {
     packet_id: NonZeroU16,
+    generation: u32,
     pub(super) outbound: Outbound<'a>,
     pub(super) pending_server_packet_ids: Vec<u16, MAX_INBOUND_QOS2>,
     pub(super) session_present: bool,
@@ -92,6 +96,7 @@ impl<'a> SessionData<'a> {
     pub(super) fn new(outbound: &'a mut [u8]) -> Self {
         Self {
             packet_id: NonZeroU16::new(1).unwrap(),
+            generation: 0,
             outbound: Outbound::new(outbound),
             pending_server_packet_ids: Vec::new(),
             session_present: false,
@@ -104,9 +109,14 @@ impl<'a> SessionData<'a> {
 
     pub(super) fn reset(&mut self) {
         self.session_present = false;
+        self.generation = self.generation.wrapping_add(1);
         self.packet_id = NonZeroU16::new(1).unwrap();
         self.outbound.clear();
         self.pending_server_packet_ids.clear();
+    }
+
+    pub(super) fn generation(&self) -> u32 {
+        self.generation
     }
 
     pub(super) fn next_packet_id(&mut self) -> u16 {

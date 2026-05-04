@@ -1,9 +1,9 @@
 use embassy_time::Instant;
 use embedded_io_async::Error as _;
 
-use crate::packets::{DisconnectReq, Pub, Subscribe, Unsubscribe};
+use crate::packets::{DisconnectReq, PublishHeader, Subscribe, Unsubscribe};
 use crate::types::{Properties, TopicFilter};
-use crate::{Error, Property, ProtocolError, PubError, QoS, debug, info, warn};
+use crate::{Error, Op, Property, PubError, QoS, ResourceError, debug, info, warn};
 
 use super::super::outbound::write_packet;
 use super::{Io, Session};
@@ -31,138 +31,143 @@ where
     /// Call this after [`connect`](Self::connect). A resumed [`ConnectEvent::Reconnected`]
     /// already kept broker-side subscriptions.
     ///
+    /// Returns an operation handle that can be checked with [`Session::status`](Self::status).
+    ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
     pub async fn subscribe(
         &mut self,
         topics: &[TopicFilter<'_>],
         properties: &[Property<'_>],
-    ) -> Result<(), Error<IO::Error>> {
+    ) -> Result<Op, Error<IO::Error>> {
         if self.connection.is_none() {
             return Err(Error::Disconnected);
         }
         if topics.is_empty() {
-            return Err(ProtocolError::NoTopic.into());
+            return Err(Error::InvalidRequest);
         }
         self.flush_outbound().await?;
         self.require_retained_slot()?;
 
         let packet_id = self.data.next_packet_id();
-        let (offset, len) = self
-            .data
-            .outbound
-            .encode_packet(&Subscribe {
-                packet_id,
-                dup: false,
-                properties: Properties::Slice(properties),
-                topics,
-            })
-            .map_err(Error::Protocol)?;
+        let (offset, len) = self.data.outbound.encode_packet(&Subscribe {
+            packet_id,
+            dup: false,
+            properties: Properties::Slice(properties),
+            topics,
+        })?;
         self.runtime.require_packet_size(len)?;
-        self.data
-            .outbound
-            .retain_packet(packet_id, offset, len)
-            .map_err(Error::Protocol)?;
+        self.data.outbound.retain_packet(packet_id, offset, len)?;
         debug!(
             "Enqueued SUBSCRIBE packet_id={} len={} tx_used={}",
             packet_id,
             len,
             self.data.outbound.used()
         );
-        self.flush_outbound().await
+        self.flush_outbound().await?;
+        Ok(Op::new(
+            super::super::OpKind::Subscribe,
+            packet_id,
+            self.data.generation(),
+        ))
     }
 
     /// Send an `UNSUBSCRIBE`.
+    ///
+    /// Returns an operation handle that can be checked with [`Session::status`](Self::status).
     ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
     pub async fn unsubscribe(
         &mut self,
         topics: &[&str],
         properties: &[Property<'_>],
-    ) -> Result<(), Error<IO::Error>> {
+    ) -> Result<Op, Error<IO::Error>> {
         if self.connection.is_none() {
             return Err(Error::Disconnected);
         }
         if topics.is_empty() {
-            return Err(ProtocolError::NoTopic.into());
+            return Err(Error::InvalidRequest);
         }
         self.flush_outbound().await?;
         self.require_retained_slot()?;
 
         let packet_id = self.data.next_packet_id();
-        let (offset, len) = self
-            .data
-            .outbound
-            .encode_packet(&Unsubscribe {
-                packet_id,
-                dup: false,
-                properties: Properties::Slice(properties),
-                topics,
-            })
-            .map_err(Error::Protocol)?;
+        let (offset, len) = self.data.outbound.encode_packet(&Unsubscribe {
+            packet_id,
+            dup: false,
+            properties: Properties::Slice(properties),
+            topics,
+        })?;
         self.runtime.require_packet_size(len)?;
-        self.data
-            .outbound
-            .retain_packet(packet_id, offset, len)
-            .map_err(Error::Protocol)?;
+        self.data.outbound.retain_packet(packet_id, offset, len)?;
         debug!(
             "Enqueued UNSUBSCRIBE packet_id={} len={} tx_used={}",
             packet_id,
             len,
             self.data.outbound.used()
         );
-        self.flush_outbound().await
+        self.flush_outbound().await?;
+        Ok(Op::new(
+            super::super::OpKind::Unsubscribe,
+            packet_id,
+            self.data.generation(),
+        ))
     }
 
     /// Send a `PUBLISH`.
     ///
     /// QoS 1 and 2 retain the encoded packet in the session TX buffer until broker ack and are
     /// cancel-safe if the underlying transport I/O futures are cancel-safe.
+    /// They return `Some(Op)` so the caller can check completion with
+    /// [`Session::status`](Self::status).
     ///
     /// QoS 0 bypasses retained outbound state, encodes into temporary TX scratch space, and writes
     /// directly to the transport. It therefore does not consume replay/in-flight slots and only
-    /// needs enough currently free TX space for that one encode, but it is not cancel-safe.
+    /// needs enough currently free TX space for that one encode, but it is not cancel-safe and
+    /// returns `None`.
     pub async fn publish<P>(
         &mut self,
         publication: crate::publication::Publication<'_, P>,
-    ) -> Result<(), PubError<P::Error, IO::Error>>
+    ) -> Result<Option<Op>, PubError<P::Error, IO::Error>>
     where
         P: crate::publication::ToPayload,
     {
         if self.connection.is_none() {
-            return Err(PubError::Session(Error::Disconnected));
+            return Err(Error::Disconnected.into());
         }
-        self.flush_outbound().await.map_err(PubError::Session)?;
+        self.flush_outbound().await?;
 
-        let mut publish: Pub<'_, P> = publication.into();
-        if let Some(max_qos) = self.runtime.max_qos
-            && self.downgrade_qos
-            && publish.qos > max_qos
-        {
-            publish.qos = max_qos;
-        }
-
-        publish.packet_id = (publish.qos > QoS::AtMostOnce).then(|| self.data.next_packet_id());
-        publish.dup = false;
-
-        let packet_id = publish.packet_id;
-        let qos = publish.qos;
+        let crate::publication::Publication {
+            topic,
+            properties,
+            qos,
+            payload,
+            retain,
+        } = publication;
+        let qos = match self.runtime.max_qos {
+            Some(max_qos) if self.downgrade_qos && qos > max_qos => max_qos,
+            _ => qos,
+        };
+        let packet_id = (qos > QoS::AtMostOnce).then(|| self.data.next_packet_id());
+        let header = PublishHeader {
+            topic: crate::types::Utf8String(topic),
+            packet_id,
+            properties,
+            retain,
+            qos,
+            dup: false,
+        };
         if packet_id.is_some() {
-            self.require_retained_slot().map_err(PubError::Session)?;
+            self.require_retained_slot()?;
         }
 
         if !self.can_publish(qos) {
-            return Err(PubError::Session(Error::NotReady));
+            return Err(Error::NotReady.into());
         }
 
         if let Some(packet_id) = packet_id {
-            let (offset, len) = self.data.outbound.encode_publish(publish)?;
-            self.runtime
-                .require_packet_size(len)
-                .map_err(PubError::Session)?;
-            self.data
-                .outbound
-                .retain_packet(packet_id, offset, len)
-                .map_err(|err| PubError::Session(Error::Protocol(err)))?;
+            let (offset, len) = self.data.outbound.encode_publish(&header, payload)?;
+            self.runtime.require_packet_size(len)?;
+            self.data.outbound.retain_packet(packet_id, offset, len)?;
             self.runtime.send_quota = self.runtime.send_quota.saturating_sub(1);
             debug!(
                 "Enqueued PUBLISH packet_id={} qos={:?} len={} send_quota={}/{} tx_used={}",
@@ -173,55 +178,44 @@ where
                 self.runtime.max_send_quota,
                 self.data.outbound.used()
             );
-            self.flush_outbound().await.map_err(PubError::Session)?;
-            return Ok(());
+            self.flush_outbound().await?;
+            let kind = if qos == QoS::ExactlyOnce {
+                super::super::OpKind::PublishExactlyOnce
+            } else {
+                super::super::OpKind::PublishAtLeastOnce
+            };
+            return Ok(Some(Op::new(kind, packet_id, self.data.generation())));
         }
 
-        let packet =
-            crate::ser::MqttSerializer::pub_to_buffer(self.data.outbound.scratch_space(), publish)
-                .map_err(|err| match err {
-                    crate::ser::PubError::Encode(err) => {
-                        PubError::Session(Error::Protocol(err.into()))
-                    }
-                    crate::ser::PubError::Payload(err) => PubError::Payload(err),
-                })?;
-        self.runtime
-            .require_packet_size(packet.len())
-            .map_err(PubError::Session)?;
+        let packet = crate::ser::MqttSerializer::pub_to_buffer(
+            self.data.outbound.scratch_space(),
+            &header,
+            payload,
+        )?;
+        self.runtime.require_packet_size(packet.len())?;
         debug!("Sending QoS0 PUBLISH len={}", packet.len());
-        if let Err(err) = {
-            let connection = self
-                .connection
-                .as_mut()
-                .ok_or(PubError::Session(Error::Disconnected))?;
-            crate::mqtt_client::outbound::write_all(connection, packet).await
-        } {
+        let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
+        if let Err(err) = crate::mqtt_client::outbound::write_all(connection, packet).await {
             if matches!(err, Error::WriteZero) {
-                return Err(PubError::Session(err));
+                return Err(err.into());
             }
             warn!("QoS0 PUBLISH write failed");
             self.handle_disconnect();
-            return Err(PubError::Session(err));
+            return Err(err.into());
         }
-        if let Err(err) = {
-            let connection = self
-                .connection
-                .as_mut()
-                .ok_or(PubError::Session(Error::Disconnected))?;
-            connection.flush().await
-        } {
+        if let Err(err) = connection.flush().await {
             warn!("QoS0 PUBLISH flush failed: {:?}", err.kind());
             self.handle_disconnect();
-            return Err(PubError::Session(Error::Transport(err)));
+            return Err(Error::Transport(err).into());
         }
         self.runtime.note_outbound_activity(Instant::now());
 
-        Ok(())
+        Ok(None)
     }
 
     pub(super) fn require_retained_slot(&self) -> Result<(), Error<IO::Error>> {
         if self.data.outbound.retained_full() {
-            return Err(ProtocolError::InflightMetadataExhausted.into());
+            return Err(Error::Resource(ResourceError::InflightExhausted));
         }
         Ok(())
     }
