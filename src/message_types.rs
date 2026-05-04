@@ -8,7 +8,7 @@ use crate::{
 use bit_field::BitField;
 use num_enum::TryFromPrimitive;
 
-#[derive(Copy, Clone, Debug, TryFromPrimitive)]
+#[derive(defmt::Format, Copy, Clone, Debug, TryFromPrimitive)]
 #[repr(u8)]
 pub enum MessageType {
     Connect = 1,

@@ -7,7 +7,7 @@ use core::convert::TryFrom;
 use num_enum::TryFromPrimitive;
 use serde::ser::SerializeSeq;
 
-#[derive(Debug, Copy, Clone, PartialEq, TryFromPrimitive)]
+#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, TryFromPrimitive)]
 #[repr(u32)]
 pub(crate) enum PropertyIdentifier {
     Invalid = u32::MAX,
@@ -70,7 +70,7 @@ impl<'de> serde::de::Deserialize<'de> for PropertyIdentifier {
 }
 
 /// All of the possible properties that MQTT version 5 supports.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(defmt::Format, Debug, Clone, PartialEq)]
 pub enum Property<'a> {
     /// Payload format indicator.
     PayloadFormatIndicator(u8),
@@ -166,7 +166,7 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
         use serde::de::{Error, VariantAccess};
 
         let (field, variant) = data.variant::<PropertyIdentifier>()?;
-        crate::trace!("Deserializing property field {:?}", field);
+        crate::trace!("Deserializing property field {}", field);
 
         let property = match field {
             PropertyIdentifier::ResponseTopic => {
@@ -265,7 +265,7 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Property<'a> {
                 _data: core::marker::PhantomData,
             },
         )?;
-        crate::trace!("Deserialized property {:?}", prop);
+        crate::trace!("Deserialized property {}", prop);
         Ok(prop)
     }
 }

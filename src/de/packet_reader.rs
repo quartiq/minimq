@@ -31,13 +31,13 @@ impl<'a> PacketReader<'a> {
 
         if end <= self.buffer.len() {
             trace!(
-                "PacketReader receive window: read_bytes={}, target_end={}, packet_length={:?}",
+                "PacketReader receive window: read_bytes={=usize}, target_end={=usize}, packet_length={=?}",
                 self.read_bytes, end, self.packet_length
             );
             Ok(&mut self.buffer[self.read_bytes..end])
         } else {
             warn!(
-                "PacketReader target packet length {} exceeds buffer length {}",
+                "PacketReader target packet length {=usize} exceeds buffer length {=usize}",
                 end,
                 self.buffer.len()
             );
@@ -48,7 +48,7 @@ impl<'a> PacketReader<'a> {
     pub fn commit(&mut self, count: usize) {
         self.read_bytes += count;
         trace!(
-            "PacketReader committed {} bytes, total {}",
+            "PacketReader committed {=usize} bytes, total {=usize}",
             count, self.read_bytes
         );
     }
@@ -71,7 +71,7 @@ impl<'a> PacketReader<'a> {
                 let header_size_bytes = 1 + length_size_bytes;
                 self.packet_length = Some(header_size_bytes + packet_length);
                 trace!(
-                    "PacketReader fixed header resolved packet_length={} (header={} payload={})",
+                    "PacketReader fixed header resolved packet_length={=usize} (header={=usize} payload={=usize})",
                     header_size_bytes + packet_length,
                     header_size_bytes,
                     packet_length
@@ -83,7 +83,7 @@ impl<'a> PacketReader<'a> {
         // We should have found the packet length by now.
         if self.read_bytes >= 5 && self.packet_length.is_none() {
             warn!(
-                "PacketReader failed to resolve MQTT remaining length after {} bytes",
+                "PacketReader failed to resolve MQTT remaining length after {=usize} bytes",
                 self.read_bytes
             );
             return Err(Error::MalformedPacket);
@@ -101,7 +101,7 @@ impl<'a> PacketReader<'a> {
 
     pub fn reset(&mut self) {
         trace!(
-            "PacketReader reset (read_bytes={}, packet_length={:?})",
+            "PacketReader reset (read_bytes={=usize}, packet_length={=?})",
             self.read_bytes, self.packet_length
         );
         self.read_bytes = 0;
@@ -115,7 +115,7 @@ impl<'a> PacketReader<'a> {
     pub fn take_packet(&mut self) -> Result<(usize, ReceivedPacket<'_>), Error> {
         let packet_length = *self.packet_length.as_ref().ok_or(Error::MalformedPacket)?;
         trace!(
-            "PacketReader handing off complete packet of {} bytes",
+            "PacketReader handing off complete packet of {=usize} bytes",
             packet_length
         );
 

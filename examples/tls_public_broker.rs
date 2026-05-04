@@ -92,5 +92,6 @@ async fn run() -> Result<(), Box<dyn StdError>> {
 #[tokio::main]
 async fn main() {
     env_logger::init();
+    defmt2log::init_from_current_exe().unwrap();
     run().await.unwrap();
 }

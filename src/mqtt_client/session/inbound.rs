@@ -21,12 +21,12 @@ impl<'a> SessionData<'a> {
             ReceivedPacket::SubAck(ack) => {
                 if !self.outbound.ack_packet(ack.packet_identifier) {
                     debug!(
-                        "Ignoring stale SUBACK for packet id {}",
+                        "Ignoring stale SUBACK for packet id {=u16}",
                         ack.packet_identifier
                     );
                     return Ok(false);
                 }
-                debug!("Processed SUBACK packet_id={}", ack.packet_identifier);
+                debug!("Processed SUBACK packet_id={=u16}", ack.packet_identifier);
                 for &code in ack.codes {
                     ReasonCode::from(code).as_result()?;
                 }
@@ -34,12 +34,12 @@ impl<'a> SessionData<'a> {
             ReceivedPacket::UnsubAck(ack) => {
                 if !self.outbound.ack_packet(ack.packet_identifier) {
                     debug!(
-                        "Ignoring stale UNSUBACK for packet id {}",
+                        "Ignoring stale UNSUBACK for packet id {=u16}",
                         ack.packet_identifier
                     );
                     return Ok(false);
                 }
-                debug!("Processed UNSUBACK packet_id={}", ack.packet_identifier);
+                debug!("Processed UNSUBACK packet_id={=u16}", ack.packet_identifier);
                 for &code in ack.codes {
                     ReasonCode::from(code).as_result()?;
                 }
@@ -51,7 +51,7 @@ impl<'a> SessionData<'a> {
             ReceivedPacket::PubAck(ack) => {
                 if !self.outbound.ack_packet(ack.packet_identifier) {
                     debug!(
-                        "Ignoring stale PUBACK for packet id {}",
+                        "Ignoring stale PUBACK for packet id {=u16}",
                         ack.packet_identifier
                     );
                     return Ok(false);
@@ -61,7 +61,7 @@ impl<'a> SessionData<'a> {
                     .saturating_add(1)
                     .min(runtime.max_send_quota);
                 debug!(
-                    "Processed PUBACK packet_id={} send_quota={}",
+                    "Processed PUBACK packet_id={=u16} send_quota={=u16}",
                     ack.packet_identifier, runtime.send_quota
                 );
                 ack.reason.code().as_result()?;
@@ -74,20 +74,20 @@ impl<'a> SessionData<'a> {
                             .saturating_add(1)
                             .min(runtime.max_send_quota);
                         debug!(
-                            "Processed PUBREC packet_id={} send_quota={}",
+                            "Processed PUBREC packet_id={=u16} send_quota={=u16}",
                             rec.packet_id, runtime.send_quota
                         );
                         true
                     }
                     false if self.outbound.has_pending_release(rec.packet_id) => {
                         debug!(
-                            "Replaying PUBREL after stale PUBREC for packet id {}",
+                            "Replaying PUBREL after stale PUBREC for packet id {=u16}",
                             rec.packet_id
                         );
                         false
                     }
                     false => {
-                        debug!("Ignoring stale PUBREC for packet id {}", rec.packet_id);
+                        debug!("Ignoring stale PUBREC for packet id {=u16}", rec.packet_id);
                         return Ok(false);
                     }
                 };
@@ -100,15 +100,18 @@ impl<'a> SessionData<'a> {
                     )?;
                     self.outbound
                         .queue_release(rec.packet_id, ReasonCode::Success)?;
-                    debug!("Queued PUBREL for packet_id={}", rec.packet_id);
+                    debug!("Queued PUBREL for packet_id={=u16}", rec.packet_id);
                 }
             }
             ReceivedPacket::PubComp(comp) => {
                 if !self.outbound.ack_release(comp.packet_id) {
-                    debug!("Ignoring stale PUBCOMP for packet id {}", comp.packet_id);
+                    debug!(
+                        "Ignoring stale PUBCOMP for packet id {=u16}",
+                        comp.packet_id
+                    );
                     return Ok(false);
                 }
-                debug!("Processed PUBCOMP packet_id={}", comp.packet_id);
+                debug!("Processed PUBCOMP packet_id={=u16}", comp.packet_id);
                 comp.reason.code().as_result()?;
             }
             ReceivedPacket::PubRel(rel) => {
@@ -123,7 +126,7 @@ impl<'a> SessionData<'a> {
                     ReasonCode::PacketIdNotFound
                 };
                 debug!(
-                    "Queueing PUBCOMP for inbound PUBREL packet_id={} reason={:?} pending_inbound_qos2={}",
+                    "Queueing PUBCOMP for inbound PUBREL packet_id={=u16} reason={} pending_inbound_qos2={=usize}",
                     rel.packet_id,
                     reason,
                     self.pending_server_packet_ids.len()
@@ -137,7 +140,7 @@ impl<'a> SessionData<'a> {
             }
             ReceivedPacket::Publish(info) => {
                 debug!(
-                    "Handling inbound PUBLISH packet_id={:?} topic={} qos={:?} retain={:?} payload_len={}",
+                    "Handling inbound PUBLISH packet_id={=?} topic={=str} qos={} retain={} payload_len={=usize}",
                     info.packet_id,
                     info.topic.0,
                     info.qos,
@@ -154,7 +157,7 @@ impl<'a> SessionData<'a> {
                             ReasonCode::Success
                         };
                         trace!(
-                            "Queueing PUBACK for inbound QoS1 PUBLISH packet_id={} {:?}",
+                            "Queueing PUBACK for inbound QoS1 PUBLISH packet_id={=u16} {}",
                             packet_id, reason
                         );
                         let action = ControlAction::PubAck { packet_id, reason };
@@ -173,7 +176,7 @@ impl<'a> SessionData<'a> {
                             ReasonCode::Success
                         };
                         trace!(
-                            "Queueing PUBREC for inbound QoS2 PUBLISH packet_id={} duplicate={} {:?}",
+                            "Queueing PUBREC for inbound QoS2 PUBLISH packet_id={=u16} duplicate={=bool} {}",
                             packet_id, duplicate, reason
                         );
                         let action = ControlAction::PubRec { packet_id, reason };
@@ -181,7 +184,7 @@ impl<'a> SessionData<'a> {
                         self.outbound.queue_control(action)?;
                         if duplicate || !reason.success() {
                             debug!(
-                                "Ignoring inbound QoS2 PUBLISH after PUBREC packet_id={} duplicate={} reason={:?}",
+                                "Ignoring inbound QoS2 PUBLISH after PUBREC packet_id={=u16} duplicate={=bool} reason={}",
                                 packet_id, duplicate, reason
                             );
                             return Ok(false);
@@ -212,7 +215,7 @@ where
         let (packet_length, packet) = match self.packet_reader.take_packet() {
             Ok(packet) => packet,
             Err(err) => {
-                warn!("Failed to decode inbound packet: {:?}", err);
+                warn!("Failed to decode inbound packet: {}", err);
                 self.handle_disconnect();
                 return Err(err.into());
             }

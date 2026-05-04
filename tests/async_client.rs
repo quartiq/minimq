@@ -8,7 +8,7 @@ use minimq::{
     types::{BinaryData, Properties, TopicFilter},
 };
 use std::{cell::RefCell, collections::VecDeque, future::poll_fn, rc::Rc, task::Poll};
-use support::{block_on, poll_once};
+use support::{block_on, init_host_logging, poll_once};
 
 const WAIT_STEPS: usize = 64;
 
@@ -163,6 +163,7 @@ impl MockConnector {
 }
 
 fn config() -> ConfigBuilder<'static> {
+    init_host_logging();
     let rx = Box::leak(Box::new([0; 128]));
     let tx = Box::leak(Box::new([0; 1152]));
     ConfigBuilder::new(Buffers::new(rx, tx))

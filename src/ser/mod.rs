@@ -39,7 +39,7 @@ use serde::Serialize;
 pub(crate) const MAX_FIXED_HEADER_SIZE: usize = 5;
 
 /// Errors that result from the serialization process
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(defmt::Format, Debug, Copy, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Error {
     /// The provided memory buffer did not have enough space to serialize into.
@@ -59,7 +59,7 @@ impl serde::ser::StdError for Error {}
 
 impl serde::ser::Error for Error {
     fn custom<T: core::fmt::Display>(_msg: T) -> Self {
-        crate::trace!("Serialization error: {}", _msg);
+        crate::trace!("Serialization error");
         Error::Custom
     }
 }
@@ -215,7 +215,7 @@ impl<'a> MqttSerializer<'a> {
     /// # Args
     /// * `data` - The data to push to the current head of the packet.
     pub fn push_bytes(&mut self, data: &[u8]) -> Result<(), Error> {
-        crate::trace!("Serializer pushed {} bytes", data.len());
+        crate::trace!("Serializer pushed {=usize} bytes", data.len());
         if self.buf.len().saturating_sub(self.index) < data.len() {
             return Err(Error::InsufficientMemory);
         }

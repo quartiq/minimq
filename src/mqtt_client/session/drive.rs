@@ -43,7 +43,7 @@ pub(super) async fn fill_packet_reader<'buf, C: Io>(
             return Err(Error::Disconnected);
         }
         packet_reader.commit(count);
-        trace!("Read {} transport bytes", count);
+        trace!("Read {=usize} transport bytes", count);
     }
 
     Ok(())
@@ -184,7 +184,7 @@ where
             .unwrap_or(false)
         {
             warn!(
-                "Keepalive ping timed out; disconnecting session next_ping={:?} ping_timeout={:?}",
+                "Keepalive ping timed out; disconnecting session next_ping={=?} ping_timeout={=?}",
                 self.runtime.next_ping, self.runtime.ping_timeout
             );
             self.handle_disconnect();
@@ -216,7 +216,7 @@ where
         };
         if let Err(err) = fill_packet_reader(&mut self.packet_reader, connection).await {
             match &err {
-                Error::Transport(err) => warn!("Transport read failed: {:?}", err.kind()),
+                Error::Transport(err) => warn!("Transport read failed: {}", err.kind()),
                 Error::Disconnected => warn!("Transport returned EOF; disconnecting session"),
                 _ => {}
             }
@@ -283,7 +283,7 @@ where
             OutboundStep::Control(step) => match step.state {
                 SendState::Write { written } => {
                     trace!(
-                        "Driving control packet {:?} progress_from={} control={} retained={} pending_release={}",
+                        "Driving control packet {} progress_from={=usize} control={=usize} retained={=usize} pending_release={=usize}",
                         step.action,
                         written,
                         self.data.outbound.pending_control_len(),
@@ -299,7 +299,7 @@ where
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.write(&packet[written..]).await
                     };
-                    let count = write_or_disconnect!(res, "Control packet write failed: {:?}");
+                    let count = write_or_disconnect!(res, "Control packet write failed: {}");
                     self.data.outbound.set_control_written(
                         step.action,
                         written + count,
@@ -308,22 +308,22 @@ where
                     if written + count < packet.len() {
                         return Ok(true);
                     }
-                    trace!("Flushing control packet {:?}", step.action);
+                    trace!("Flushing control packet {}", step.action);
                     let res = {
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.flush().await
                     };
-                    flush_or_disconnect!(res, "Control packet flush failed: {:?}");
+                    flush_or_disconnect!(res, "Control packet flush failed: {}");
                     self.complete_flush(FlushedPacket::Control(step.action), now);
                     Ok(true)
                 }
                 SendState::Flush => {
-                    trace!("Flushing control packet {:?}", step.action);
+                    trace!("Flushing control packet {}", step.action);
                     let res = {
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.flush().await
                     };
-                    flush_or_disconnect!(res, "Control packet flush failed: {:?}");
+                    flush_or_disconnect!(res, "Control packet flush failed: {}");
                     self.complete_flush(FlushedPacket::Control(step.action), now);
                     Ok(true)
                 }
@@ -332,7 +332,7 @@ where
             OutboundStep::Release(step) => match step.state {
                 SendState::Write { written } => {
                     trace!(
-                        "Driving PUBREL write packet_id={} progress_from={} control={} retained={} pending_release={}",
+                        "Driving PUBREL write packet_id={=u16} progress_from={=usize} control={=usize} retained={=usize} pending_release={=usize}",
                         step.packet_id,
                         written,
                         self.data.outbound.pending_control_len(),
@@ -349,7 +349,7 @@ where
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.write(&packet[written..]).await
                     };
-                    let count = write_or_disconnect!(res, "PUBREL write failed: {:?}");
+                    let count = write_or_disconnect!(res, "PUBREL write failed: {}");
                     self.data.outbound.set_release_written(
                         step.packet_id,
                         written + count,
@@ -358,22 +358,22 @@ where
                     if written + count < packet.len() {
                         return Ok(true);
                     }
-                    trace!("Flushing PUBREL packet packet_id={}", step.packet_id);
+                    trace!("Flushing PUBREL packet packet_id={=u16}", step.packet_id);
                     let res = {
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.flush().await
                     };
-                    flush_or_disconnect!(res, "PUBREL flush failed: {:?}");
+                    flush_or_disconnect!(res, "PUBREL flush failed: {}");
                     self.complete_flush(FlushedPacket::Release(step.packet_id), now);
                     Ok(true)
                 }
                 SendState::Flush => {
-                    trace!("Flushing PUBREL packet packet_id={}", step.packet_id);
+                    trace!("Flushing PUBREL packet packet_id={=u16}", step.packet_id);
                     let res = {
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.flush().await
                     };
-                    flush_or_disconnect!(res, "PUBREL flush failed: {:?}");
+                    flush_or_disconnect!(res, "PUBREL flush failed: {}");
                     self.complete_flush(FlushedPacket::Release(step.packet_id), now);
                     Ok(true)
                 }
@@ -382,7 +382,7 @@ where
             OutboundStep::Retained(step) => match step.state {
                 SendState::Write { written } => {
                     debug!(
-                        "Driving retained packet write packet_id={} progress {}/{} control={} tx_used={} tx_capacity={} retained={} pending_release={}",
+                        "Driving retained packet write packet_id={=u16} progress {=usize}/{=usize} control={=usize} tx_used={=usize} tx_capacity={=usize} retained={=usize} pending_release={=usize}",
                         step.packet_id,
                         written,
                         step.len,
@@ -398,7 +398,7 @@ where
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.write(&packet[written..]).await
                     };
-                    let count = write_or_disconnect!(res, "Retained packet write failed: {:?}");
+                    let count = write_or_disconnect!(res, "Retained packet write failed: {}");
                     self.data.outbound.set_retained_written(
                         step.packet_id,
                         written + count,
@@ -407,22 +407,22 @@ where
                     if written + count < step.len {
                         return Ok(true);
                     }
-                    debug!("Flushing retained packet packet_id={}", step.packet_id);
+                    debug!("Flushing retained packet packet_id={=u16}", step.packet_id);
                     let res = {
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.flush().await
                     };
-                    flush_or_disconnect!(res, "Retained packet flush failed: {:?}");
+                    flush_or_disconnect!(res, "Retained packet flush failed: {}");
                     self.complete_flush(FlushedPacket::Retained(step.packet_id), now);
                     Ok(true)
                 }
                 SendState::Flush => {
-                    debug!("Flushing retained packet packet_id={}", step.packet_id);
+                    debug!("Flushing retained packet packet_id={=u16}", step.packet_id);
                     let res = {
                         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
                         connection.flush().await
                     };
-                    flush_or_disconnect!(res, "Retained packet flush failed: {:?}");
+                    flush_or_disconnect!(res, "Retained packet flush failed: {}");
                     self.complete_flush(FlushedPacket::Retained(step.packet_id), now);
                     Ok(true)
                 }
@@ -433,7 +433,7 @@ where
 
     pub(super) fn handle_disconnect(&mut self) {
         debug!(
-            "Resetting local session transport state and arming replay if needed control={} tx_used={} tx_capacity={} retained={} pending_release={}",
+            "Resetting local session transport state and arming replay if needed control={=usize} tx_used={=usize} tx_capacity={=usize} retained={=usize} pending_release={=usize}",
             self.data.outbound.pending_control_len(),
             self.data.outbound.used(),
             self.data.outbound.capacity(),
