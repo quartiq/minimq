@@ -88,6 +88,14 @@ the session.
 For a TLS connectivity example and for caller-side cooperative driving via external timeouts, see
 `examples/tls_public_broker.rs`.
 
+## Errors
+
+`ConfigBuilder` reports setup-time validation failures through [`ConfigError`].
+Connected session operations report [`Error`]:
+- broker rejections and invalid inbound MQTT data surface as [`PeerError`]
+- local buffer and capacity limits surface as [`ResourceError`]
+- transport failures surface as [`Error::Transport`]
+
 ## Session Model
 
 You provide packet buffers plus an already-established transport, and a loop that explicitly

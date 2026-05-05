@@ -6,20 +6,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [UNRELEASED](https://github.com/quartiq/minimq/compare/v0.10.0...HEAD) - DATA
+## [0.11.0](https://github.com/quartiq/minimq/compare/v0.10.0...v0.11.0) - 2026-05-05
 
 ## Changed
 
 * Edition 2024, MSRV 1.85
 * Redesign and rebase onto async (`embedded-io-async`). This breaks most of the API surface.
   There is no sync compat layer.
+* Public errors are organized around `ConfigError` for setup validation, `PeerError` for
+  broker/protocol failures, and `ResourceError` for local capacity limits.
 * Broker session handling is now explicit: `ConnectEvent::Connected` means a fresh broker session,
   `ConnectEvent::Reconnected` means the broker resumed the existing session.
+* `Session::poll()` is the primary cancel-safe blocking API. `Session::drive()` provides immediate
+  local progress without waiting for future read I/O or deadlines.
 * Caller-owned packet buffers are now documented as `rx` and `tx`. `rx` holds one inbound packet;
   `tx` is the shared outbound encode/replay arena.
 * Plain MQTT username/password auth is always available. The crate-local `unsecure` feature was
   removed.
-* Logging now goes directly through `log`. The crate-local `logging` feature was removed.
+* Logging now goes through `defmt`. Host examples and integration tests bridge it to std logging
+  with `defmt2log`. The crate-local `logging` feature was removed.
 
 ## Added
 
