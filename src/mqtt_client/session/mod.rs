@@ -81,6 +81,16 @@ where
         self.connection.is_some()
     }
 
+    /// Return the maximum inbound MQTT packet size accepted by this session.
+    pub fn max_rx_packet_size(&self) -> usize {
+        self.packet_reader.capacity()
+    }
+
+    /// Return the maximum outbound MQTT packet arena size available to this session.
+    pub fn max_tx_packet_size(&self) -> usize {
+        self.data.outbound.capacity()
+    }
+
     /// Return whether the session currently has the local capacity to attempt a
     /// publish at the requested QoS.
     pub fn can_publish(&mut self, qos: QoS) -> bool {
