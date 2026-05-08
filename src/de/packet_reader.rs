@@ -18,6 +18,10 @@ impl<'a> PacketReader<'a> {
         }
     }
 
+    pub fn capacity(&self) -> usize {
+        self.buffer.len()
+    }
+
     pub fn receive_buffer(&mut self) -> Result<&mut [u8], Error> {
         if self.packet_length.is_none() {
             self.probe_fixed_header()?;

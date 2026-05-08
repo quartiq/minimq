@@ -65,6 +65,14 @@ fn session() -> Session<'static, MockConnection> {
 }
 
 #[test]
+fn session_exposes_local_packet_capacities() {
+    let session = session();
+
+    assert_eq!(session.max_rx_packet_size(), 128);
+    assert_eq!(session.max_tx_packet_size(), 1152);
+}
+
+#[test]
 fn maintain_sends_pingreq_when_due() {
     let mut session = session();
     session.connection = Some(MockConnection::default());
