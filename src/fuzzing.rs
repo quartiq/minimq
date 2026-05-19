@@ -215,7 +215,7 @@ pub fn encode_packet(
             );
         }
         _ => {
-            let _ = MqttSerializer::to_buffer(buf, &DisconnectReq);
+            let _ = MqttSerializer::to_buffer(buf, &DisconnectReq::success());
         }
     }
 }

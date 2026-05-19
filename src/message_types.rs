@@ -103,6 +103,6 @@ impl ControlPacket for Disconnect<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::Disconnect;
 }
 
-impl ControlPacket for DisconnectReq {
+impl ControlPacket for DisconnectReq<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::Disconnect;
 }

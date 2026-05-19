@@ -148,7 +148,26 @@ impl serde::Serialize for TopicFilters<'_> {
 pub struct PingReq;
 
 #[derive(Debug, Serialize)]
-pub struct DisconnectReq;
+pub struct DisconnectReq<'a> {
+    pub reason_code: Option<ReasonCode>,
+    pub properties: Option<Properties<'a>>,
+}
+
+impl DisconnectReq<'_> {
+    pub const fn success() -> Self {
+        Self {
+            reason_code: None,
+            properties: None,
+        }
+    }
+
+    pub const fn with_will() -> Self {
+        Self {
+            reason_code: Some(ReasonCode::DisconnectWithWill),
+            properties: Some(Properties::Slice(&[])),
+        }
+    }
+}
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]

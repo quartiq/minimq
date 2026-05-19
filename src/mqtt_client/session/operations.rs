@@ -16,12 +16,27 @@ where
     ///
     /// Cancel-safe if the underlying transport write/flush futures are cancel-safe.
     pub async fn disconnect(&mut self) -> Result<(), Error<IO::Error>> {
+        self.disconnect_with(DisconnectReq::success()).await
+    }
+
+    /// Close the current MQTT transport and ask the broker to publish the configured Will.
+    ///
+    /// This uses MQTT 5 `DISCONNECT` reason code `DisconnectWithWill`, so the broker
+    /// applies the Will configured during `CONNECT` immediately instead of waiting
+    /// for keepalive/TCP timeout.
+    ///
+    /// Cancel-safe if the underlying transport write/flush futures are cancel-safe.
+    pub async fn disconnect_with_will(&mut self) -> Result<(), Error<IO::Error>> {
+        self.disconnect_with(DisconnectReq::with_will()).await
+    }
+
+    async fn disconnect_with(&mut self, packet: DisconnectReq<'_>) -> Result<(), Error<IO::Error>> {
         let Some(connection) = self.connection.as_mut() else {
             return Ok(());
         };
         info!("Graceful disconnect requested");
         let mut buffer = [0u8; 9];
-        let result = write_packet(&mut buffer, connection, &DisconnectReq).await;
+        let result = write_packet(&mut buffer, connection, &packet).await;
         self.handle_disconnect();
         result
     }
