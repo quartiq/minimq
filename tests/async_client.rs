@@ -3,8 +3,8 @@ mod support;
 use embassy_time::{Duration, with_timeout};
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use minimq::{
-    Buffers, ConfigBuilder, ConnectEvent, Error, InboundPublish, Op, PeerError, Property, PubError,
-    Publication, QoS, ReasonCode, ResourceError, Session,
+    Buffers, ConfigBuilder, ConnectEvent, Disconnect, Error, InboundPublish, Op, PeerError,
+    Property, PubError, Publication, QoS, ReasonCode, ResourceError, Session,
     types::{BinaryData, Properties, TopicFilter},
 };
 use std::{cell::RefCell, collections::VecDeque, future::poll_fn, rc::Rc, task::Poll};
@@ -239,8 +239,8 @@ fn disconnect_req() -> [u8; 2] {
     [0xE0, 0x00]
 }
 
-fn disconnect_req_with_will() -> [u8; 4] {
-    [0xE0, 0x02, ReasonCode::DisconnectWithWill as u8, 0x00]
+fn disconnect_with_will() -> [u8; 3] {
+    [0xE0, 0x01, ReasonCode::DisconnectWithWill as u8]
 }
 
 fn suback(id: u16, code: u8) -> [u8; 6] {
@@ -1219,17 +1219,41 @@ fn disconnect_sends_disconnect_packet_and_drops_connection() {
 }
 
 #[test]
-fn disconnect_with_will_sends_reason_and_drops_connection() {
+fn disconnect_with_sends_reason_and_drops_connection() {
     let mut connection = MockConnection::default();
     let inspect = connection.clone();
     connection.push_rx(&connack());
     let connector = MockConnector::new(connection);
     let mut session = connected_session(&connector);
 
-    block_on(session.disconnect_with_will()).unwrap();
+    block_on(session.disconnect_with(Disconnect::with_will())).unwrap();
 
     assert!(!session.is_connected());
-    assert_eq!(inspect.tx().last().unwrap(), &disconnect_req_with_will());
+    assert_eq!(inspect.tx().last().unwrap(), &disconnect_with_will());
+}
+
+#[test]
+fn disconnect_uses_dedicated_control_storage_when_tx_arena_is_full() {
+    let rx = Box::leak(Box::new([0; 128]));
+    let tx = Box::leak(Box::new([0; 96]));
+    let config = ConfigBuilder::new(Buffers::new(rx, tx))
+        .client_id("test")
+        .unwrap();
+    let mut session = Session::new(config);
+
+    let mut connection = MockConnection::default();
+    let inspect = connection.clone();
+    connection.push_rx(&connack());
+    let connector = MockConnector::new(connection);
+    expect_connected(&mut session, &connector);
+
+    let payload = [0u8; 80];
+    block_on(session.publish(Publication::bytes("data", &payload).qos(QoS::AtLeastOnce))).unwrap();
+
+    block_on(session.disconnect()).unwrap();
+
+    assert!(!session.is_connected());
+    assert_eq!(inspect.tx().last().unwrap(), &disconnect_req());
 }
 
 #[test]

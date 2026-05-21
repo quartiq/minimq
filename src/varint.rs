@@ -24,14 +24,14 @@ impl From<u32> for Varint {
     }
 }
 
-pub struct VarintBuffer {
+pub(crate) struct VarintBuffer {
     data: [u8; 4],
     len: u8,
 }
 
 impl VarintBuffer {
     #[inline]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             data: [0; 4],
             len: 0,
@@ -39,7 +39,7 @@ impl VarintBuffer {
     }
 
     #[inline]
-    pub fn as_slice(&self) -> &[u8] {
+    pub(crate) fn as_slice(&self) -> &[u8] {
         &self.data[..usize::from(self.len)]
     }
 

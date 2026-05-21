@@ -1,12 +1,12 @@
 use core::convert::Infallible;
 
 use crate::de::received_packet::ReceivedPacket;
+use crate::mqtt_client::outbound::{ControlAction, check_control_packet_size, check_pubrel_size};
 use crate::{
     Error, InboundPublish, PeerError, ProtocolError, QoS, ReasonCode, ResourceError, debug, info,
     trace, warn,
 };
 
-use super::super::outbound::{ControlAction, check_control_packet_size, check_pubrel_size};
 use super::state::{RuntimeState, SessionData};
 use super::{Io, Session};
 
@@ -19,27 +19,24 @@ impl<'a> SessionData<'a> {
         match packet {
             ReceivedPacket::ConnAck(_) => return Err(ProtocolError::UnexpectedPacket.into()),
             ReceivedPacket::SubAck(ack) => {
-                if !self.outbound.ack_packet(ack.packet_identifier) {
-                    debug!(
-                        "Ignoring stale SUBACK for packet id {=u16}",
-                        ack.packet_identifier
-                    );
+                if !self.outbound.ack_packet(ack.packet_id) {
+                    debug!("Ignoring stale SUBACK for packet id {=u16}", ack.packet_id);
                     return Ok(false);
                 }
-                debug!("Processed SUBACK packet_id={=u16}", ack.packet_identifier);
+                debug!("Processed SUBACK packet_id={=u16}", ack.packet_id);
                 for &code in ack.codes {
                     ReasonCode::from(code).as_result()?;
                 }
             }
             ReceivedPacket::UnsubAck(ack) => {
-                if !self.outbound.ack_packet(ack.packet_identifier) {
+                if !self.outbound.ack_packet(ack.packet_id) {
                     debug!(
                         "Ignoring stale UNSUBACK for packet id {=u16}",
-                        ack.packet_identifier
+                        ack.packet_id
                     );
                     return Ok(false);
                 }
-                debug!("Processed UNSUBACK packet_id={=u16}", ack.packet_identifier);
+                debug!("Processed UNSUBACK packet_id={=u16}", ack.packet_id);
                 for &code in ack.codes {
                     ReasonCode::from(code).as_result()?;
                 }
@@ -49,11 +46,8 @@ impl<'a> SessionData<'a> {
                 runtime.ping_timeout = None;
             }
             ReceivedPacket::PubAck(ack) => {
-                if !self.outbound.ack_packet(ack.packet_identifier) {
-                    debug!(
-                        "Ignoring stale PUBACK for packet id {=u16}",
-                        ack.packet_identifier
-                    );
+                if !self.outbound.ack_packet(ack.packet_id) {
+                    debug!("Ignoring stale PUBACK for packet id {=u16}", ack.packet_id);
                     return Ok(false);
                 }
                 runtime.send_quota = runtime
@@ -62,7 +56,7 @@ impl<'a> SessionData<'a> {
                     .min(runtime.max_send_quota);
                 debug!(
                     "Processed PUBACK packet_id={=u16} send_quota={=u16}",
-                    ack.packet_identifier, runtime.send_quota
+                    ack.packet_id, runtime.send_quota
                 );
                 ack.reason.code().as_result()?;
             }

@@ -10,7 +10,7 @@ pub(crate) struct PacketReader<'a> {
 }
 
 impl<'a> PacketReader<'a> {
-    pub fn new(buffer: &'a mut [u8]) -> PacketReader<'a> {
+    pub(crate) fn new(buffer: &'a mut [u8]) -> PacketReader<'a> {
         PacketReader {
             buffer,
             read_bytes: 0,
@@ -18,11 +18,11 @@ impl<'a> PacketReader<'a> {
         }
     }
 
-    pub fn capacity(&self) -> usize {
+    pub(crate) fn capacity(&self) -> usize {
         self.buffer.len()
     }
 
-    pub fn receive_buffer(&mut self) -> Result<&mut [u8], Error> {
+    pub(crate) fn receive_buffer(&mut self) -> Result<&mut [u8], Error> {
         if self.packet_length.is_none() {
             self.probe_fixed_header()?;
         }
@@ -49,7 +49,7 @@ impl<'a> PacketReader<'a> {
         }
     }
 
-    pub fn commit(&mut self, count: usize) {
+    pub(crate) fn commit(&mut self, count: usize) {
         self.read_bytes += count;
         trace!(
             "PacketReader committed {=usize} bytes, total {=usize}",
@@ -96,14 +96,14 @@ impl<'a> PacketReader<'a> {
         Ok(())
     }
 
-    pub fn packet_available(&self) -> bool {
+    pub(crate) fn packet_available(&self) -> bool {
         match self.packet_length {
             Some(length) => self.read_bytes >= length,
             None => false,
         }
     }
 
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         trace!(
             "PacketReader reset (read_bytes={=usize}, packet_length={=?})",
             self.read_bytes, self.packet_length
@@ -112,11 +112,11 @@ impl<'a> PacketReader<'a> {
         self.packet_length = None;
     }
 
-    pub fn received_packet(&mut self) -> Result<ReceivedPacket<'_>, Error> {
+    pub(crate) fn received_packet(&mut self) -> Result<ReceivedPacket<'_>, Error> {
         self.take_packet().map(|(_, packet)| packet)
     }
 
-    pub fn take_packet(&mut self) -> Result<(usize, ReceivedPacket<'_>), Error> {
+    pub(crate) fn take_packet(&mut self) -> Result<(usize, ReceivedPacket<'_>), Error> {
         let packet_length = *self.packet_length.as_ref().ok_or(Error::MalformedPacket)?;
         trace!(
             "PacketReader handing off complete packet of {=usize} bytes",

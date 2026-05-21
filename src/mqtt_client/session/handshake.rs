@@ -2,12 +2,12 @@ use embassy_time::{Duration, Instant};
 use embedded_io_async::Error as _;
 
 use crate::de::received_packet::ReceivedPacket;
+use crate::mqtt_client::ConnectEvent;
+use crate::mqtt_client::outbound::write_packet;
 use crate::packets::Connect;
 use crate::types::{Properties, Utf8String};
 use crate::{Error, PeerError, Property, QoS, debug, info, warn};
 
-use super::super::ConnectEvent;
-use super::super::outbound::write_packet;
 use super::drive::fill_packet_reader;
 use super::{Io, Session};
 

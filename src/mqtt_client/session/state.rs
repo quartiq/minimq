@@ -3,9 +3,8 @@ use core::num::NonZeroU16;
 use embassy_time::{Duration, Instant};
 use heapless::Vec;
 
+use crate::mqtt_client::outbound::Outbound;
 use crate::{Error, QoS, ResourceError};
-
-use super::super::outbound::Outbound;
 
 /// Upper bound for one MQTT keepalive round trip.
 ///

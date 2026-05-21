@@ -41,7 +41,7 @@ pub(crate) const MAX_FIXED_HEADER_SIZE: usize = 5;
 /// Errors that result from the serialization process
 #[derive(defmt::Format, Debug, Copy, Clone, PartialEq)]
 #[non_exhaustive]
-pub enum Error {
+pub(crate) enum Error {
     /// The provided memory buffer did not have enough space to serialize into.
     InsufficientMemory,
 
@@ -50,7 +50,7 @@ pub enum Error {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub enum PubError<E> {
+pub(crate) enum PubError<E> {
     Encode(Error),
     Payload(E),
 }
@@ -78,10 +78,9 @@ impl core::fmt::Display for Error {
 }
 
 /// A structure to serialize MQTT data into a buffer.
-pub struct MqttSerializer<'a> {
+pub(crate) struct MqttSerializer<'a> {
     buf: &'a mut [u8],
     index: usize,
-    with_header: bool,
 }
 
 impl<'a> MqttSerializer<'a> {
@@ -89,30 +88,11 @@ impl<'a> MqttSerializer<'a> {
     ///
     /// # Args
     /// * `buf` - The location to serialize data into.
-    pub fn new(buf: &'a mut [u8]) -> Self {
+    pub(crate) fn new(buf: &'a mut [u8]) -> Self {
         Self {
             buf,
             index: MAX_FIXED_HEADER_SIZE,
-            with_header: true,
         }
-    }
-
-    pub fn new_without_header(buf: &'a mut [u8]) -> Self {
-        Self {
-            buf,
-            index: 0,
-            with_header: false,
-        }
-    }
-
-    /// Immediately finish the packet and return the contents.
-    ///
-    /// # Note
-    /// This does not append any MQTT headers.
-    pub fn finish(self) -> &'a mut [u8] {
-        assert!(!self.with_header);
-
-        &mut self.buf[..self.index]
     }
 
     /// Encode an MQTT control packet into a buffer.
@@ -120,7 +100,7 @@ impl<'a> MqttSerializer<'a> {
     /// # Args
     /// * `buf` - The buffer to encode data into.
     /// * `packet` - The packet to encode.
-    pub fn to_buffer_meta<T: Serialize + ControlPacket>(
+    pub(crate) fn to_buffer_meta<T: Serialize + ControlPacket>(
         buf: &'a mut [u8],
         packet: &T,
     ) -> Result<(usize, &'a [u8]), Error> {
@@ -130,12 +110,12 @@ impl<'a> MqttSerializer<'a> {
         Ok((offset, packet))
     }
 
-    pub fn pub_to_buffer_meta<P: crate::publication::ToPayload>(
+    pub(crate) fn pub_to_buffer_meta<P: crate::publication::ToPayload>(
         buf: &'a mut [u8],
         header: &PublishHeader<'_>,
         payload: P,
     ) -> Result<(usize, &'a [u8]), PubError<P::Error>> {
-        let mut serializer = crate::ser::MqttSerializer::new(buf);
+        let mut serializer = Self::new(buf);
         header
             .serialize(&mut serializer)
             .map_err(PubError::Encode)?;
@@ -154,7 +134,7 @@ impl<'a> MqttSerializer<'a> {
         Ok((offset, packet))
     }
 
-    pub fn pub_to_buffer<P: crate::publication::ToPayload>(
+    pub(crate) fn pub_to_buffer<P: crate::publication::ToPayload>(
         buf: &'a mut [u8],
         header: &PublishHeader<'_>,
         payload: P,
@@ -168,7 +148,7 @@ impl<'a> MqttSerializer<'a> {
     /// # Args
     /// * `buf` - The buffer to encode data into.
     /// * `packet` - The packet to encode.
-    pub fn to_buffer<T: Serialize + ControlPacket>(
+    pub(crate) fn to_buffer<T: Serialize + ControlPacket>(
         buf: &'a mut [u8],
         packet: &T,
     ) -> Result<&'a [u8], Error> {
@@ -184,7 +164,7 @@ impl<'a> MqttSerializer<'a> {
     ///
     /// # Returns
     /// A slice representing the serialized packet.
-    pub fn finalize(self, typ: MessageType, flags: u8) -> Result<(usize, &'a [u8]), Error> {
+    pub(crate) fn finalize(self, typ: MessageType, flags: u8) -> Result<(usize, &'a [u8]), Error> {
         let len = self
             .index
             .checked_sub(MAX_FIXED_HEADER_SIZE)
@@ -214,7 +194,7 @@ impl<'a> MqttSerializer<'a> {
     ///
     /// # Args
     /// * `data` - The data to push to the current head of the packet.
-    pub fn push_bytes(&mut self, data: &[u8]) -> Result<(), Error> {
+    pub(crate) fn push_bytes(&mut self, data: &[u8]) -> Result<(), Error> {
         crate::trace!("Serializer pushed {=usize} bytes", data.len());
         if self.buf.len().saturating_sub(self.index) < data.len() {
             return Err(Error::InsufficientMemory);
@@ -230,7 +210,7 @@ impl<'a> MqttSerializer<'a> {
     ///
     /// # Args
     /// * `byte` - The byte to write to the tail.
-    pub fn push(&mut self, byte: u8) -> Result<(), Error> {
+    pub(crate) fn push(&mut self, byte: u8) -> Result<(), Error> {
         if self.buf.len().saturating_sub(self.index) < 1 {
             return Err(Error::InsufficientMemory);
         }
@@ -244,7 +224,7 @@ impl<'a> MqttSerializer<'a> {
     ///
     /// # Note
     /// You must call `commit` after serializing.
-    pub fn remainder(&mut self) -> &mut [u8] {
+    pub(crate) fn remainder(&mut self) -> &mut [u8] {
         let start = self.index.min(self.buf.len());
         &mut self.buf[start..]
     }
@@ -253,7 +233,7 @@ impl<'a> MqttSerializer<'a> {
     ///
     /// # Args
     /// * `len` - The number of bytes serialized.
-    pub fn commit(&mut self, len: usize) -> Result<(), Error> {
+    pub(crate) fn commit(&mut self, len: usize) -> Result<(), Error> {
         if self.buf.len().saturating_sub(self.index) < len {
             return Err(Error::InsufficientMemory);
         }

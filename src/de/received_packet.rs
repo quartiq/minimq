@@ -1,7 +1,7 @@
 use crate::{
     ProtocolError, QoS, Retain,
     message_types::MessageType,
-    packets::{ConnAck, Disconnect, Pub, PubAck, PubComp, PubRec, PubRel, SubAck, UnsubAck},
+    packets::{ConnAck, Disconnect, PubAck, PubComp, PubRec, PubRel, Publish, SubAck, UnsubAck},
     varint::Varint,
 };
 
@@ -13,9 +13,9 @@ use core::convert::TryFrom;
 use serde::Deserialize;
 
 #[derive(Debug)]
-pub enum ReceivedPacket<'a> {
+pub(crate) enum ReceivedPacket<'a> {
     ConnAck(ConnAck<'a>),
-    Publish(Pub<'a, &'a [u8]>),
+    Publish(Publish<'a, &'a [u8]>),
     PubAck(PubAck<'a>),
     SubAck(SubAck<'a>),
     UnsubAck(UnsubAck<'a>),
@@ -28,7 +28,7 @@ pub enum ReceivedPacket<'a> {
 }
 
 impl<'a> ReceivedPacket<'a> {
-    pub fn kind(&self) -> &'static str {
+    pub(crate) fn kind(&self) -> &'static str {
         match self {
             ReceivedPacket::ConnAck(_) => "CONNACK",
             ReceivedPacket::Publish(_) => "PUBLISH",
@@ -43,7 +43,7 @@ impl<'a> ReceivedPacket<'a> {
         }
     }
 
-    pub fn from_buffer(buf: &'a [u8]) -> Result<Self, ProtocolError> {
+    pub(crate) fn from_buffer(buf: &'a [u8]) -> Result<Self, ProtocolError> {
         trace!(
             "Parsing received packet buffer of {=usize} bytes",
             buf.len()
@@ -141,7 +141,7 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
 
                 let properties = seq.next_element()?.unwrap();
 
-                let publish: Pub<'_, &[u8]> = Pub {
+                let publish: Publish<'_, &[u8]> = Publish {
                     topic,
                     packet_id,
                     properties,
@@ -250,7 +250,7 @@ mod test {
         match packet {
             ReceivedPacket::PubAck(pub_ack) => {
                 assert_eq!(pub_ack.reason.code(), ReasonCode::NoMatchingSubscribers);
-                assert_eq!(pub_ack.packet_identifier, 5);
+                assert_eq!(pub_ack.packet_id, 5);
             }
             _ => panic!("Invalid message"),
         }
@@ -267,7 +267,7 @@ mod test {
         let packet = ReceivedPacket::from_buffer(&serialized_puback).unwrap();
         match packet {
             ReceivedPacket::PubAck(pub_ack) => {
-                assert_eq!(pub_ack.packet_identifier, 6);
+                assert_eq!(pub_ack.packet_id, 6);
                 assert_eq!(pub_ack.reason.code(), ReasonCode::Success);
             }
             _ => panic!("Invalid message"),
@@ -286,7 +286,7 @@ mod test {
         let packet = ReceivedPacket::from_buffer(&serialized_puback).unwrap();
         match packet {
             ReceivedPacket::PubAck(pub_ack) => {
-                assert_eq!(pub_ack.packet_identifier, 6);
+                assert_eq!(pub_ack.packet_id, 6);
                 assert_eq!(pub_ack.reason.code(), ReasonCode::NoMatchingSubscribers);
             }
             _ => panic!("Invalid message"),
@@ -308,7 +308,7 @@ mod test {
             ReceivedPacket::SubAck(sub_ack) => {
                 assert_eq!(sub_ack.codes.len(), 1);
                 assert_eq!(ReasonCode::from(sub_ack.codes[0]), ReasonCode::GrantedQos2);
-                assert_eq!(sub_ack.packet_identifier, 5);
+                assert_eq!(sub_ack.packet_id, 5);
             }
             _ => panic!("Invalid message"),
         }
@@ -332,7 +332,7 @@ mod test {
                     ReasonCode::from(unsub_ack.codes[0]),
                     ReasonCode::NoSubscriptionExisted
                 );
-                assert_eq!(unsub_ack.packet_identifier, 5);
+                assert_eq!(unsub_ack.packet_id, 5);
             }
             _ => panic!("Invalid message"),
         }
@@ -506,7 +506,25 @@ mod test {
         let packet = ReceivedPacket::from_buffer(&serialized_disconnect).unwrap();
         match packet {
             ReceivedPacket::Disconnect(disconnect) => {
-                assert_eq!(disconnect.reason_code, ReasonCode::ProtocolError);
+                assert_eq!(disconnect.reason_code(), ReasonCode::ProtocolError);
+            }
+            _ => panic!("Invalid message"),
+        }
+    }
+
+    #[test]
+    fn deserialize_disconnect_with_explicit_empty_properties() {
+        let serialized_disconnect: [u8; 4] = [
+            14 << 4, // Disconnect
+            0x02,    // Remaining length
+            0x00,    // Success
+            0x00,    // Properties length
+        ];
+        let packet = ReceivedPacket::from_buffer(&serialized_disconnect).unwrap();
+        match packet {
+            ReceivedPacket::Disconnect(disconnect) => {
+                assert_eq!(disconnect.reason_code(), ReasonCode::Success);
+                assert_eq!(disconnect.properties().unwrap().size(), 0);
             }
             _ => panic!("Invalid message"),
         }
@@ -521,7 +539,7 @@ mod test {
         let packet = ReceivedPacket::from_buffer(&serialized_disconnect).unwrap();
         match packet {
             ReceivedPacket::Disconnect(disconnect) => {
-                assert_eq!(disconnect.reason_code, ReasonCode::Success);
+                assert_eq!(disconnect.reason_code(), ReasonCode::Success);
             }
             _ => panic!("Invalid message"),
         }

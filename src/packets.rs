@@ -1,5 +1,5 @@
 use crate::{
-    QoS, Retain,
+    Property, QoS, Retain,
     reason_codes::ReasonCode,
     types::{Auth, BinaryData, Properties, TopicFilter, Utf8String},
     will::Will,
@@ -10,14 +10,14 @@ use serde::{Deserialize, Serialize};
 use serde::ser::SerializeStruct;
 
 #[derive(Debug)]
-pub struct Connect<'a> {
-    pub keepalive: u16,
-    pub properties: Properties<'a>,
-    pub client_id: Utf8String<'a>,
+pub(crate) struct Connect<'a> {
+    pub(crate) keepalive: u16,
+    pub(crate) properties: Properties<'a>,
+    pub(crate) client_id: Utf8String<'a>,
     #[allow(dead_code)]
-    pub auth: Option<Auth<'a>>,
+    pub(crate) auth: Option<Auth<'a>>,
     pub(crate) will: Option<Will<'a>>,
-    pub clean_start: bool,
+    pub(crate) clean_start: bool,
 }
 
 impl serde::Serialize for Connect<'_> {
@@ -59,39 +59,39 @@ impl serde::Serialize for Connect<'_> {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ConnAck<'a> {
-    pub session_present: bool,
-    pub reason_code: ReasonCode,
+pub(crate) struct ConnAck<'a> {
+    pub(crate) session_present: bool,
+    pub(crate) reason_code: ReasonCode,
     #[serde(borrow)]
-    pub properties: Properties<'a>,
+    pub(crate) properties: Properties<'a>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct PublishHeader<'a> {
-    pub topic: Utf8String<'a>,
-    pub packet_id: Option<u16>,
-    pub properties: Properties<'a>,
+pub(crate) struct PublishHeader<'a> {
+    pub(crate) topic: Utf8String<'a>,
+    pub(crate) packet_id: Option<u16>,
+    pub(crate) properties: Properties<'a>,
     #[serde(skip)]
-    pub retain: Retain,
+    pub(crate) retain: Retain,
     #[serde(skip)]
-    pub qos: QoS,
+    pub(crate) qos: QoS,
     #[serde(skip)]
-    pub dup: bool,
+    pub(crate) dup: bool,
 }
 
-pub struct Pub<'a, P> {
-    pub topic: Utf8String<'a>,
-    pub packet_id: Option<u16>,
-    pub properties: Properties<'a>,
-    pub payload: P,
-    pub retain: Retain,
-    pub qos: QoS,
-    pub dup: bool,
+pub(crate) struct Publish<'a, P> {
+    pub(crate) topic: Utf8String<'a>,
+    pub(crate) packet_id: Option<u16>,
+    pub(crate) properties: Properties<'a>,
+    pub(crate) payload: P,
+    pub(crate) retain: Retain,
+    pub(crate) qos: QoS,
+    pub(crate) dup: bool,
 }
 
-impl<P> core::fmt::Debug for Pub<'_, P> {
+impl<P> core::fmt::Debug for Publish<'_, P> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Pub")
+        f.debug_struct("Publish")
             .field("topic", &self.topic)
             .field("packet_id", &self.packet_id)
             .field("properties", &self.properties)
@@ -104,20 +104,20 @@ impl<P> core::fmt::Debug for Pub<'_, P> {
 }
 
 #[derive(Debug, Serialize)]
-pub struct Subscribe<'a> {
-    pub packet_id: u16,
+pub(crate) struct Subscribe<'a> {
+    pub(crate) packet_id: u16,
     #[serde(skip)]
-    pub dup: bool,
-    pub properties: Properties<'a>,
-    pub topics: &'a [TopicFilter<'a>],
+    pub(crate) dup: bool,
+    pub(crate) properties: Properties<'a>,
+    pub(crate) topics: &'a [TopicFilter<'a>],
 }
 
 #[derive(Debug)]
-pub struct Unsubscribe<'a> {
-    pub packet_id: u16,
-    pub dup: bool,
-    pub properties: Properties<'a>,
-    pub topics: &'a [&'a str],
+pub(crate) struct Unsubscribe<'a> {
+    pub(crate) packet_id: u16,
+    pub(crate) dup: bool,
+    pub(crate) properties: Properties<'a>,
+    pub(crate) topics: &'a [&'a str],
 }
 
 impl serde::Serialize for Unsubscribe<'_> {
@@ -145,15 +145,75 @@ impl serde::Serialize for TopicFilters<'_> {
 }
 
 #[derive(Debug, Serialize)]
-pub struct PingReq;
+pub(crate) struct PingReq;
 
-#[derive(Debug, Serialize)]
-pub struct DisconnectReq<'a> {
-    pub reason_code: Option<ReasonCode>,
-    pub properties: Option<Properties<'a>>,
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub(crate) struct PingResp;
+
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct PubAck<'a> {
+    pub(crate) packet_id: u16,
+    #[serde(borrow)]
+    pub(crate) reason: Reason<'a>,
 }
 
-impl DisconnectReq<'_> {
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub(crate) struct SubAck<'a> {
+    pub(crate) packet_id: u16,
+    #[serde(borrow)]
+    pub(crate) properties: Properties<'a>,
+    #[serde(skip)]
+    pub(crate) codes: &'a [u8],
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub(crate) struct UnsubAck<'a> {
+    pub(crate) packet_id: u16,
+    #[serde(borrow)]
+    pub(crate) properties: Properties<'a>,
+    #[serde(skip)]
+    pub(crate) codes: &'a [u8],
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct PubRec<'a> {
+    pub(crate) packet_id: u16,
+    #[serde(borrow)]
+    pub(crate) reason: Reason<'a>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct PubRel<'a> {
+    pub(crate) packet_id: u16,
+    #[serde(borrow)]
+    pub(crate) reason: Reason<'a>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct PubComp<'a> {
+    pub(crate) packet_id: u16,
+    #[serde(borrow)]
+    pub(crate) reason: Reason<'a>,
+}
+
+/// MQTT `DISCONNECT` packet.
+#[derive(Debug, Serialize)]
+pub struct Disconnect<'a> {
+    reason_code: Option<ReasonCode>,
+    properties: Option<Properties<'a>>,
+}
+
+impl Default for Disconnect<'_> {
+    fn default() -> Self {
+        Self::success()
+    }
+}
+
+impl Disconnect<'_> {
+    /// Construct a minimal successful `DISCONNECT`.
     pub const fn success() -> Self {
         Self {
             reason_code: None,
@@ -161,71 +221,39 @@ impl DisconnectReq<'_> {
         }
     }
 
-    pub const fn with_will() -> Self {
+    /// Construct a `DISCONNECT` with an explicit reason code.
+    pub const fn with_reason(reason_code: ReasonCode) -> Self {
         Self {
-            reason_code: Some(ReasonCode::DisconnectWithWill),
-            properties: Some(Properties::Slice(&[])),
+            reason_code: Some(reason_code),
+            properties: None,
         }
+    }
+
+    /// Ask the broker to publish the configured Will immediately.
+    pub const fn with_will() -> Self {
+        Self::with_reason(ReasonCode::DisconnectWithWill)
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-pub struct PingResp;
+impl<'a> Disconnect<'a> {
+    /// Attach MQTT v5 DISCONNECT properties.
+    pub const fn with_properties(mut self, properties: &'a [Property<'a>]) -> Self {
+        if self.reason_code.is_none() {
+            self.reason_code = Some(ReasonCode::Success);
+        }
+        self.properties = Some(Properties::Slice(properties));
+        self
+    }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct PubAck<'a> {
-    pub packet_identifier: u16,
-    #[serde(borrow)]
-    pub reason: Reason<'a>,
-}
+    /// Return the reason code, defaulting to `Success` when omitted on the wire.
+    pub fn reason_code(&self) -> ReasonCode {
+        self.reason_code.unwrap_or(ReasonCode::Success)
+    }
 
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-pub struct SubAck<'a> {
-    pub packet_identifier: u16,
-    #[serde(borrow)]
-    pub properties: Properties<'a>,
-    #[serde(skip)]
-    pub codes: &'a [u8],
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-pub struct UnsubAck<'a> {
-    pub packet_identifier: u16,
-    #[serde(borrow)]
-    pub properties: Properties<'a>,
-    #[serde(skip)]
-    pub codes: &'a [u8],
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PubRec<'a> {
-    pub packet_id: u16,
-    #[serde(borrow)]
-    pub reason: Reason<'a>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct PubRel<'a> {
-    pub packet_id: u16,
-    #[serde(borrow)]
-    pub reason: Reason<'a>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PubComp<'a> {
-    pub packet_id: u16,
-    #[serde(borrow)]
-    pub reason: Reason<'a>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct Disconnect<'a> {
-    pub reason_code: ReasonCode,
-    pub properties: Properties<'a>,
+    /// Return the property block when it was present on the wire or builder.
+    pub const fn properties(&self) -> Option<&Properties<'a>> {
+        self.properties.as_ref()
+    }
 }
 
 impl<'a, 'de: 'a> Deserialize<'de> for Disconnect<'a> {
@@ -240,14 +268,14 @@ impl<'a, 'de: 'a> Deserialize<'de> for Disconnect<'a> {
 
         let wire = Wire::deserialize(deserializer)?;
         Ok(Self {
-            reason_code: wire.reason_code.unwrap_or(ReasonCode::Success),
-            properties: wire.properties.unwrap_or(Properties::Slice(&[])),
+            reason_code: wire.reason_code,
+            properties: wire.properties,
         })
     }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct Reason<'a> {
+pub(crate) struct Reason<'a> {
     #[serde(borrow)]
     reason: Option<ReasonData<'a>>,
 }
@@ -277,7 +305,7 @@ impl<'a> Reason<'a> {
         }
     }
 
-    pub fn code(&self) -> ReasonCode {
+    pub(crate) fn code(&self) -> ReasonCode {
         self.reason
             .as_ref()
             .map(|data| data.code)
@@ -294,9 +322,12 @@ struct ReasonData<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::Disconnect;
+    use crate::properties::Property;
     use crate::reason_codes::ReasonCode;
     use crate::ser::MqttSerializer;
-    use crate::types::TopicFilter;
+    use crate::types::{Properties, TopicFilter, Utf8String};
+    use crate::{QoS, Retain};
 
     #[test]
     pub fn serialize_publish() {
@@ -309,12 +340,12 @@ mod tests {
         ];
 
         let header = crate::packets::PublishHeader {
-            qos: crate::QoS::AtMostOnce,
+            qos: QoS::AtMostOnce,
             packet_id: None,
             dup: false,
-            properties: crate::types::Properties::Slice(&[]),
-            retain: crate::Retain::NotRetained,
-            topic: crate::types::Utf8String("ABC"),
+            properties: Properties::Slice(&[]),
+            retain: Retain::NotRetained,
+            topic: Utf8String("ABC"),
         };
         let payload = &[0xAB, 0xCD][..];
 
@@ -336,12 +367,39 @@ mod tests {
         ];
 
         let header = crate::packets::PublishHeader {
-            qos: crate::QoS::AtLeastOnce,
-            topic: crate::types::Utf8String("ABC"),
+            qos: QoS::AtLeastOnce,
+            topic: Utf8String("ABC"),
             packet_id: Some(0xBEEF),
             dup: false,
-            properties: crate::types::Properties::Slice(&[]),
-            retain: crate::Retain::NotRetained,
+            properties: Properties::Slice(&[]),
+            retain: Retain::NotRetained,
+        };
+        let payload = &[0xAB, 0xCD][..];
+
+        let mut buffer: [u8; 900] = [0; 900];
+        let message = MqttSerializer::pub_to_buffer(&mut buffer, &header, payload).unwrap();
+
+        assert_eq!(message, good_publish);
+    }
+
+    #[test]
+    pub fn serialize_publish_qos1_dup() {
+        let good_publish: [u8; 12] = [
+            0x3A, // Publish message, QoS 1, DUP
+            0x0a, // Remaining length (10)
+            0x00, 0x03, 0x41, 0x42, 0x43, // Topic: ABC
+            0xBE, 0xEF, // Packet identifier
+            0x00, // Properties length
+            0xAB, 0xCD, // Payload
+        ];
+
+        let header = crate::packets::PublishHeader {
+            qos: QoS::AtLeastOnce,
+            topic: Utf8String("ABC"),
+            packet_id: Some(0xBEEF),
+            dup: true,
+            properties: Properties::Slice(&[]),
+            retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
 
@@ -365,7 +423,7 @@ mod tests {
         let subscribe = crate::packets::Subscribe {
             packet_id: 16,
             dup: false,
-            properties: crate::types::Properties::Slice(&[]),
+            properties: Properties::Slice(&[]),
             topics: &[TopicFilter::new("ABC")],
         };
 
@@ -388,7 +446,7 @@ mod tests {
         let unsubscribe = crate::packets::Unsubscribe {
             packet_id: 16,
             dup: false,
-            properties: crate::types::Properties::Slice(&[]),
+            properties: Properties::Slice(&[]),
             topics: &["ABC"],
         };
 
@@ -410,14 +468,12 @@ mod tests {
         ];
 
         let header = crate::packets::PublishHeader {
-            qos: crate::QoS::AtMostOnce,
-            topic: crate::types::Utf8String("ABC"),
+            qos: QoS::AtMostOnce,
+            topic: Utf8String("ABC"),
             packet_id: None,
             dup: false,
-            properties: crate::types::Properties::Slice(&[
-                crate::properties::Property::ResponseTopic(crate::types::Utf8String("A")),
-            ]),
-            retain: crate::Retain::NotRetained,
+            properties: Properties::Slice(&[Property::ResponseTopic(Utf8String("A"))]),
+            retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
 
@@ -439,17 +495,15 @@ mod tests {
         ];
 
         let header = crate::packets::PublishHeader {
-            qos: crate::QoS::AtMostOnce,
-            topic: crate::types::Utf8String("ABC"),
+            qos: QoS::AtMostOnce,
+            topic: Utf8String("ABC"),
             packet_id: None,
             dup: false,
-            properties: crate::types::Properties::Slice(&[
-                crate::properties::Property::UserProperty(
-                    crate::types::Utf8String("A"),
-                    crate::types::Utf8String("B"),
-                ),
-            ]),
-            retain: crate::Retain::NotRetained,
+            properties: Properties::Slice(&[Property::UserProperty(
+                Utf8String("A"),
+                Utf8String("B"),
+            )]),
+            retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
 
@@ -473,11 +527,11 @@ mod tests {
 
         let mut buffer: [u8; 900] = [0; 900];
         let connect: crate::packets::Connect<'_> = crate::packets::Connect {
-            client_id: crate::types::Utf8String("ABC"),
+            client_id: Utf8String("ABC"),
             auth: None,
             will: None,
             keepalive: 10,
-            properties: crate::types::Properties::Slice(&[]),
+            properties: Properties::Slice(&[]),
             clean_start: true,
         };
 
@@ -522,8 +576,8 @@ mod tests {
         let connect = crate::packets::Connect {
             clean_start: true,
             keepalive: 10,
-            properties: crate::types::Properties::Slice(&[]),
-            client_id: crate::types::Utf8String("ABC"),
+            properties: Properties::Slice(&[]),
+            client_id: Utf8String("ABC"),
             auth: None,
             will: Some(will),
         };
@@ -543,6 +597,28 @@ mod tests {
         let mut buffer: [u8; 1024] = [0; 1024];
         let message = MqttSerializer::to_buffer(&mut buffer, &crate::packets::PingReq {}).unwrap();
         assert_eq!(message, good_ping_req);
+    }
+
+    #[test]
+    fn serialize_disconnect_success() {
+        let mut buffer = [0u8; 16];
+        let message = MqttSerializer::to_buffer(&mut buffer, &Disconnect::success()).unwrap();
+        assert_eq!(message, [0xe0, 0x00]);
+    }
+
+    #[test]
+    fn serialize_disconnect_with_will() {
+        let mut buffer = [0u8; 16];
+        let message = MqttSerializer::to_buffer(&mut buffer, &Disconnect::with_will()).unwrap();
+        assert_eq!(message, [0xe0, 0x01, ReasonCode::DisconnectWithWill as u8]);
+    }
+
+    #[test]
+    fn serialize_disconnect_with_explicit_empty_properties() {
+        let mut buffer = [0u8; 16];
+        let disconnect = Disconnect::with_reason(ReasonCode::Success).with_properties(&[]);
+        let message = MqttSerializer::to_buffer(&mut buffer, &disconnect).unwrap();
+        assert_eq!(message, [0xe0, 0x02, ReasonCode::Success as u8, 0x00]);
     }
 
     #[test]
@@ -578,7 +654,7 @@ mod tests {
         ];
 
         let pubrel = crate::packets::PubAck {
-            packet_identifier: 0x15,
+            packet_id: 0x15,
             reason: crate::packets::Reason {
                 reason: Some(crate::packets::ReasonData {
                     code: ReasonCode::Success,
