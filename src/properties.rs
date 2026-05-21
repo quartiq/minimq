@@ -208,8 +208,8 @@ pub struct Properties<'a> {
 #[derive(Debug, PartialEq)]
 enum PropertiesData<'a> {
     Slice(&'a [Property<'a>]),
-    DataBlock(&'a [u8]),
-    CorrelatedSlice {
+    Encoded(&'a [u8]),
+    WithCorrelation {
         correlation: Property<'a>,
         properties: &'a [Property<'a>],
     },
@@ -232,7 +232,7 @@ impl Properties<'_> {
     pub fn size(&self) -> usize {
         match &self.inner {
             PropertiesData::Slice(props) => props.iter().map(|prop| prop.size()).sum(),
-            PropertiesData::CorrelatedSlice {
+            PropertiesData::WithCorrelation {
                 correlation,
                 properties,
             } => properties
@@ -240,15 +240,15 @@ impl Properties<'_> {
                 .chain([correlation.clone()].iter())
                 .map(|prop| prop.size())
                 .sum(),
-            PropertiesData::DataBlock(block) => block.len(),
+            PropertiesData::Encoded(block) => block.len(),
         }
     }
 }
 
 impl<'a> Properties<'a> {
-    pub(crate) const fn data_block(data: &'a [u8]) -> Self {
+    pub(crate) const fn encoded(data: &'a [u8]) -> Self {
         Self {
-            inner: PropertiesData::DataBlock(data),
+            inner: PropertiesData::Encoded(data),
         }
     }
 
@@ -275,13 +275,13 @@ impl<'a> Properties<'a> {
 
     pub(crate) fn with_properties(self, properties: &'a [Property<'a>]) -> Self {
         match self.inner {
-            PropertiesData::CorrelatedSlice { correlation, .. } => Self {
-                inner: PropertiesData::CorrelatedSlice {
+            PropertiesData::WithCorrelation { correlation, .. } => Self {
+                inner: PropertiesData::WithCorrelation {
                     correlation,
                     properties,
                 },
             },
-            PropertiesData::Slice(_) | PropertiesData::DataBlock(_) => Self::from_slice(properties),
+            PropertiesData::Slice(_) | PropertiesData::Encoded(_) => Self::from_slice(properties),
         }
     }
 
@@ -289,14 +289,14 @@ impl<'a> Properties<'a> {
         let correlation = Property::CorrelationData(data);
         match self.inner {
             PropertiesData::Slice(properties)
-            | PropertiesData::CorrelatedSlice { properties, .. } => Self {
-                inner: PropertiesData::CorrelatedSlice {
+            | PropertiesData::WithCorrelation { properties, .. } => Self {
+                inner: PropertiesData::WithCorrelation {
                     correlation,
                     properties,
                 },
             },
-            PropertiesData::DataBlock(_) => Self {
-                inner: PropertiesData::CorrelatedSlice {
+            PropertiesData::Encoded(_) => Self {
+                inner: PropertiesData::WithCorrelation {
                     correlation,
                     properties: &[],
                 },
@@ -304,7 +304,7 @@ impl<'a> Properties<'a> {
         }
     }
 
-    pub(crate) fn iter_concrete(&'a self) -> PropertiesIter<'a> {
+    pub(crate) fn iter_decoded(&'a self) -> PropertiesIter<'a> {
         self.iter_inner()
     }
 
@@ -315,8 +315,8 @@ impl<'a> Properties<'a> {
 
     fn iter_inner(&'a self) -> PropertiesIter<'a> {
         match &self.inner {
-            PropertiesData::DataBlock(data) => PropertiesIter {
-                inner: PropertiesIterInner::DataBlock {
+            PropertiesData::Encoded(data) => PropertiesIter {
+                inner: PropertiesIterInner::Encoded {
                     props: data,
                     index: 0,
                 },
@@ -324,11 +324,11 @@ impl<'a> Properties<'a> {
             PropertiesData::Slice(props) => PropertiesIter {
                 inner: PropertiesIterInner::Slice { props, index: 0 },
             },
-            PropertiesData::CorrelatedSlice {
+            PropertiesData::WithCorrelation {
                 correlation,
                 properties,
             } => PropertiesIter {
-                inner: PropertiesIterInner::Correlated {
+                inner: PropertiesIterInner::WithCorrelation {
                     correlation: correlation.clone(),
                     yielded_correlation: false,
                     props: properties,
@@ -345,7 +345,7 @@ pub(crate) struct PropertiesIter<'a> {
 }
 
 enum PropertiesIterInner<'a> {
-    DataBlock {
+    Encoded {
         props: &'a [u8],
         index: usize,
     },
@@ -353,7 +353,7 @@ enum PropertiesIterInner<'a> {
         props: &'a [Property<'a>],
         index: usize,
     },
-    Correlated {
+    WithCorrelation {
         correlation: Property<'a>,
         yielded_correlation: bool,
         props: &'a [Property<'a>],
@@ -366,7 +366,7 @@ impl<'a> core::iter::Iterator for PropertiesIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.inner {
-            PropertiesIterInner::DataBlock { props, index } => {
+            PropertiesIterInner::Encoded { props, index } => {
                 if *index >= props.len() {
                     return None;
                 }
@@ -382,7 +382,7 @@ impl<'a> core::iter::Iterator for PropertiesIter<'a> {
                 *index += 1;
                 Some(Ok(property))
             }
-            PropertiesIterInner::Correlated {
+            PropertiesIterInner::WithCorrelation {
                 correlation,
                 yielded_correlation,
                 props,
@@ -410,14 +410,14 @@ impl serde::Serialize for Properties<'_> {
             PropertiesData::Slice(props) => {
                 item.serialize_field("_props", props)?;
             }
-            PropertiesData::CorrelatedSlice {
+            PropertiesData::WithCorrelation {
                 correlation,
                 properties,
             } => {
                 item.serialize_field("_correlation", &correlation)?;
                 item.serialize_field("_props", properties)?;
             }
-            PropertiesData::DataBlock(block) => {
+            PropertiesData::Encoded(block) => {
                 item.serialize_field("_data", block)?;
             }
         }
@@ -437,7 +437,7 @@ impl<'de> serde::de::Visitor<'de> for PropertiesVisitor {
 
     fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
         let data = seq.next_element()?;
-        Ok(Properties::data_block(data.unwrap_or(&[])))
+        Ok(Properties::encoded(data.unwrap_or(&[])))
     }
 }
 

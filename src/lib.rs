@@ -36,7 +36,7 @@ use num_enum::TryFromPrimitive;
 pub(crate) use defmt::{debug, error, info, trace, warn};
 
 #[cfg(not(feature = "defmt"))]
-macro_rules! log_ignore {
+macro_rules! discard_log {
     ($message:literal $(, $arg:expr)* $(,)?) => {
         {
             let _ = $message;
@@ -46,15 +46,15 @@ macro_rules! log_ignore {
 }
 
 #[cfg(not(feature = "defmt"))]
-pub(crate) use log_ignore as debug;
+pub(crate) use discard_log as debug;
 #[cfg(not(feature = "defmt"))]
-pub(crate) use log_ignore as error;
+pub(crate) use discard_log as error;
 #[cfg(not(feature = "defmt"))]
-pub(crate) use log_ignore as info;
+pub(crate) use discard_log as info;
 #[cfg(not(feature = "defmt"))]
-pub(crate) use log_ignore as trace;
+pub(crate) use discard_log as trace;
 #[cfg(not(feature = "defmt"))]
-pub(crate) use log_ignore as warn;
+pub(crate) use discard_log as warn;
 
 /// Session error type for a specific transport.
 pub type SessionError<IO> = Error<<IO as embedded_io_async::ErrorType>::Error>;

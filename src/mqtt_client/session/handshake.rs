@@ -129,7 +129,7 @@ where
         let mut keepalive_interval = self.runtime.keepalive_interval;
         let mut assigned_client_id = None;
 
-        for property in ack.properties.iter_concrete() {
+        for property in ack.properties.iter_decoded() {
             match match property {
                 Ok(property) => property,
                 Err(err) => {

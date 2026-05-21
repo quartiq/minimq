@@ -288,7 +288,7 @@ impl From<ReasonCode> for Reason<'_> {
         Self {
             reason: Some(ReasonData {
                 code,
-                _properties: None,
+                properties: None,
             }),
         }
     }
@@ -303,7 +303,7 @@ impl<'a> Reason<'a> {
         Self {
             reason: Some(ReasonData {
                 code,
-                _properties: Some(Properties::from_slice(properties)),
+                properties: Some(Properties::from_slice(properties)),
             }),
         }
     }
@@ -320,7 +320,8 @@ impl<'a> Reason<'a> {
 struct ReasonData<'a> {
     pub code: ReasonCode,
     #[serde(borrow)]
-    pub _properties: Option<Properties<'a>>,
+    #[allow(dead_code)]
+    pub properties: Option<Properties<'a>>,
 }
 
 #[cfg(test)]
@@ -658,7 +659,7 @@ mod tests {
             reason: crate::packets::Reason {
                 reason: Some(crate::packets::ReasonData {
                     code: ReasonCode::Success,
-                    _properties: None,
+                    properties: None,
                 }),
             },
         };
@@ -685,7 +686,7 @@ mod tests {
             reason: crate::packets::Reason {
                 reason: Some(crate::packets::ReasonData {
                     code: ReasonCode::Success,
-                    _properties: None,
+                    properties: None,
                 }),
             },
         };
