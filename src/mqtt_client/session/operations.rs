@@ -7,7 +7,8 @@ use crate::packets::{Disconnect, PublishHeader, Subscribe, Unsubscribe};
 use crate::properties::{Properties, PropertyContext};
 use crate::publication::{Publication, ToPayload};
 use crate::ser::MqttSerializer;
-use crate::types::{TopicFilter, Utf8String};
+use crate::types::TopicFilter;
+use crate::wire::Utf8String;
 use crate::{Error, Op, Property, PubError, QoS, ResourceError, debug, info, warn};
 
 use super::{Io, Session};
@@ -42,7 +43,7 @@ where
             return Err(Error::InvalidRequest);
         }
         let mut buffer = [0u8; CONTROL_PACKET_LEN];
-        let packet = MqttSerializer::to_buffer(&mut buffer, &disconnect)?;
+        let packet = MqttSerializer::encode(&mut buffer, &disconnect)?;
         self.runtime.require_packet_size(packet.len())?;
         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
         let result = match write_all(connection, packet).await {
@@ -229,7 +230,7 @@ where
         }
 
         let packet =
-            MqttSerializer::pub_to_buffer(self.data.outbound.scratch_space(), &header, payload)?;
+            MqttSerializer::encode_publish(self.data.outbound.scratch_space(), &header, payload)?;
         self.runtime.require_packet_size(packet.len())?;
         debug!("Sending QoS0 PUBLISH len={=usize}", packet.len());
         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;

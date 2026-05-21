@@ -3,7 +3,6 @@
 
 mod config;
 mod de;
-mod message_types;
 mod mqtt_client;
 mod packets;
 mod properties;
@@ -13,6 +12,7 @@ mod ser;
 mod types;
 mod varint;
 mod will;
+mod wire;
 
 pub use config::{Buffers, ConfigBuilder};
 pub use mqtt_client::{ConnectEvent, InboundPublish, Io, Op, Session};

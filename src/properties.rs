@@ -1,8 +1,8 @@
 use crate::{
     PeerError,
     de::deserializer::MqttDeserializer,
-    types::{BinaryData, Utf8String},
     varint::Varint,
+    wire::{BinaryData, Utf8String},
 };
 
 use core::convert::TryFrom;
@@ -743,5 +743,32 @@ impl Property<'_> {
             | Property::SubscriptionIdentifierAvailable(_)
             | Property::SharedSubscriptionAvailable(_) => 1 + identifier_length,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use heapless::Vec;
+
+    #[test]
+    fn iterate_slice_properties() {
+        let props = [Property::ReceiveMaximum(2), Property::MaximumQoS(1)];
+        let properties = Properties::from_slice(&props);
+        let values: Vec<_, 4> = properties.iter().collect();
+        let expected: Vec<_, 4> =
+            Vec::from_slice(&[Ok(props[0].clone()), Ok(props[1].clone())]).unwrap();
+        assert_eq!(values, expected);
+    }
+
+    #[test]
+    fn iterate_correlated_properties() {
+        let props = [Property::ReceiveMaximum(2)];
+        let correlation = Property::CorrelationData(b"abc");
+        let properties = Properties::from_slice(&props).with_correlation(b"abc");
+        let values: Vec<_, 4> = properties.iter().collect();
+        let expected: Vec<_, 4> =
+            Vec::from_slice(&[Ok(correlation), Ok(props[0].clone())]).unwrap();
+        assert_eq!(values, expected);
     }
 }

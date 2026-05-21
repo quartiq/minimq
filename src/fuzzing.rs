@@ -8,7 +8,8 @@ use crate::{
     properties::{Properties, Property},
     publication::Publication,
     ser::MqttSerializer,
-    types::{TopicFilter, Utf8String},
+    types::TopicFilter,
+    wire::Utf8String,
 };
 
 /// Parse one inbound packet buffer.
@@ -115,7 +116,7 @@ pub fn encode_packet(
 ) {
     match tag % 10 {
         0 => {
-            let _ = MqttSerializer::to_buffer(buf, &PingReq);
+            let _ = MqttSerializer::encode(buf, &PingReq);
         }
         1 => {
             let mut publication = Publication::new(topic, payload).qos(fuzz_qos(qos));
@@ -135,11 +136,11 @@ pub fn encode_packet(
                 qos: publication.qos,
                 dup: false,
             };
-            let _ = MqttSerializer::pub_to_buffer(buf, &header, publication.payload);
+            let _ = MqttSerializer::encode_publish(buf, &header, publication.payload);
         }
         2 => {
             let topics = [TopicFilter::new(topic)];
-            let _ = MqttSerializer::to_buffer(
+            let _ = MqttSerializer::encode(
                 buf,
                 &Subscribe {
                     packet_id: 1,
@@ -151,7 +152,7 @@ pub fn encode_packet(
         }
         3 => {
             let topics = [topic];
-            let _ = MqttSerializer::to_buffer(
+            let _ = MqttSerializer::encode(
                 buf,
                 &Unsubscribe {
                     packet_id: 1,
@@ -162,7 +163,7 @@ pub fn encode_packet(
             );
         }
         4 => {
-            let _ = MqttSerializer::to_buffer(
+            let _ = MqttSerializer::encode(
                 buf,
                 &Connect {
                     keepalive: u16::from(aux),
@@ -175,7 +176,7 @@ pub fn encode_packet(
             );
         }
         5 => {
-            let _ = MqttSerializer::to_buffer(
+            let _ = MqttSerializer::encode(
                 buf,
                 &PubRel {
                     packet_id: 1,
@@ -184,7 +185,7 @@ pub fn encode_packet(
             );
         }
         6 => {
-            let _ = MqttSerializer::to_buffer(
+            let _ = MqttSerializer::encode(
                 buf,
                 &PubAck {
                     packet_id: 1,
@@ -193,7 +194,7 @@ pub fn encode_packet(
             );
         }
         7 => {
-            let _ = MqttSerializer::to_buffer(
+            let _ = MqttSerializer::encode(
                 buf,
                 &PubRec {
                     packet_id: 1,
@@ -202,7 +203,7 @@ pub fn encode_packet(
             );
         }
         8 => {
-            let _ = MqttSerializer::to_buffer(
+            let _ = MqttSerializer::encode(
                 buf,
                 &PubComp {
                     packet_id: 1,
@@ -211,7 +212,7 @@ pub fn encode_packet(
             );
         }
         _ => {
-            let _ = MqttSerializer::to_buffer(buf, &Disconnect::success());
+            let _ = MqttSerializer::encode(buf, &Disconnect::success());
         }
     }
 }

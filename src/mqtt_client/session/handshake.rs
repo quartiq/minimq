@@ -6,7 +6,7 @@ use crate::mqtt_client::ConnectEvent;
 use crate::mqtt_client::outbound::write_packet;
 use crate::packets::Connect;
 use crate::properties::Properties;
-use crate::types::Utf8String;
+use crate::wire::Utf8String;
 use crate::{Error, PeerError, Property, QoS, debug, info, warn};
 
 use super::drive::fill_packet_reader;

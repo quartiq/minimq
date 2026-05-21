@@ -1,8 +1,9 @@
 use crate::{
     Properties, Property, QoS, Retain,
     reason_codes::ReasonCode,
-    types::{Auth, BinaryData, TopicFilter, Utf8String},
+    types::{Auth, TopicFilter},
     will::Will,
+    wire::{BinaryData, Utf8String},
 };
 use serde::{Deserialize, Serialize};
 
@@ -330,8 +331,8 @@ mod tests {
     use crate::properties::{Properties, Property};
     use crate::reason_codes::ReasonCode;
     use crate::ser::MqttSerializer;
-    use crate::types::{TopicFilter, Utf8String};
     use crate::{QoS, Retain};
+    use crate::{types::TopicFilter, wire::Utf8String};
 
     #[test]
     pub fn serialize_publish() {
@@ -354,7 +355,7 @@ mod tests {
         let payload = &[0xAB, 0xCD][..];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::pub_to_buffer(&mut buffer, &header, payload).unwrap();
+        let message = MqttSerializer::encode_publish(&mut buffer, &header, payload).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -381,7 +382,7 @@ mod tests {
         let payload = &[0xAB, 0xCD][..];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::pub_to_buffer(&mut buffer, &header, payload).unwrap();
+        let message = MqttSerializer::encode_publish(&mut buffer, &header, payload).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -408,7 +409,7 @@ mod tests {
         let payload = &[0xAB, 0xCD][..];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::pub_to_buffer(&mut buffer, &header, payload).unwrap();
+        let message = MqttSerializer::encode_publish(&mut buffer, &header, payload).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -432,7 +433,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, &subscribe).unwrap();
+        let message = MqttSerializer::encode(&mut buffer, &subscribe).unwrap();
 
         assert_eq!(message, good_subscribe);
     }
@@ -455,7 +456,7 @@ mod tests {
         };
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::to_buffer(&mut buffer, &unsubscribe).unwrap();
+        let message = MqttSerializer::encode(&mut buffer, &unsubscribe).unwrap();
 
         assert_eq!(message, good_unsubscribe);
     }
@@ -482,7 +483,7 @@ mod tests {
         let payload = &[0xAB, 0xCD][..];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::pub_to_buffer(&mut buffer, &header, payload).unwrap();
+        let message = MqttSerializer::encode_publish(&mut buffer, &header, payload).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -509,7 +510,7 @@ mod tests {
         let payload = &[0xAB, 0xCD][..];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let message = MqttSerializer::pub_to_buffer(&mut buffer, &header, payload).unwrap();
+        let message = MqttSerializer::encode_publish(&mut buffer, &header, payload).unwrap();
 
         assert_eq!(message, good_publish);
     }
@@ -536,7 +537,7 @@ mod tests {
             clean_start: true,
         };
 
-        let message = MqttSerializer::to_buffer(&mut buffer, &connect).unwrap();
+        let message = MqttSerializer::encode(&mut buffer, &connect).unwrap();
 
         assert_eq!(message, good_serialized_connect)
     }
@@ -583,7 +584,7 @@ mod tests {
             will: Some(will),
         };
 
-        let message = MqttSerializer::to_buffer(&mut buffer, &connect).unwrap();
+        let message = MqttSerializer::encode(&mut buffer, &connect).unwrap();
 
         assert_eq!(message, good_serialized_connect)
     }
@@ -596,21 +597,21 @@ mod tests {
         ];
 
         let mut buffer: [u8; 1024] = [0; 1024];
-        let message = MqttSerializer::to_buffer(&mut buffer, &crate::packets::PingReq {}).unwrap();
+        let message = MqttSerializer::encode(&mut buffer, &crate::packets::PingReq {}).unwrap();
         assert_eq!(message, good_ping_req);
     }
 
     #[test]
     fn serialize_disconnect_success() {
         let mut buffer = [0u8; 16];
-        let message = MqttSerializer::to_buffer(&mut buffer, &Disconnect::success()).unwrap();
+        let message = MqttSerializer::encode(&mut buffer, &Disconnect::success()).unwrap();
         assert_eq!(message, [0xe0, 0x00]);
     }
 
     #[test]
     fn serialize_disconnect_with_will() {
         let mut buffer = [0u8; 16];
-        let message = MqttSerializer::to_buffer(&mut buffer, &Disconnect::with_will()).unwrap();
+        let message = MqttSerializer::encode(&mut buffer, &Disconnect::with_will()).unwrap();
         assert_eq!(message, [0xe0, 0x01, ReasonCode::DisconnectWithWill as u8]);
     }
 
@@ -618,7 +619,7 @@ mod tests {
     fn serialize_disconnect_with_explicit_empty_properties() {
         let mut buffer = [0u8; 16];
         let disconnect = Disconnect::with_reason(ReasonCode::Success).with_properties(&[]);
-        let message = MqttSerializer::to_buffer(&mut buffer, &disconnect).unwrap();
+        let message = MqttSerializer::encode(&mut buffer, &disconnect).unwrap();
         assert_eq!(message, [0xe0, 0x02, ReasonCode::Success as u8, 0x00]);
     }
 
@@ -639,7 +640,7 @@ mod tests {
 
         let mut buffer: [u8; 1024] = [0; 1024];
         assert_eq!(
-            MqttSerializer::to_buffer(&mut buffer, &pubrel).unwrap(),
+            MqttSerializer::encode(&mut buffer, &pubrel).unwrap(),
             good_pubrel
         );
     }
@@ -666,7 +667,7 @@ mod tests {
 
         let mut buffer: [u8; 1024] = [0; 1024];
         assert_eq!(
-            MqttSerializer::to_buffer(&mut buffer, &pubrel).unwrap(),
+            MqttSerializer::encode(&mut buffer, &pubrel).unwrap(),
             good_puback
         );
     }
@@ -693,7 +694,7 @@ mod tests {
 
         let mut buffer: [u8; 1024] = [0; 1024];
         assert_eq!(
-            MqttSerializer::to_buffer(&mut buffer, &pubrel).unwrap(),
+            MqttSerializer::encode(&mut buffer, &pubrel).unwrap(),
             good_pubcomp
         );
     }

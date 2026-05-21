@@ -1,7 +1,7 @@
 use crate::{
     ConfigError, QoS, Retain,
     properties::{Properties, Property, PropertyContext},
-    types::{BinaryData, Utf8String},
+    wire::{BinaryData, Utf8String},
 };
 use heapless::String;
 

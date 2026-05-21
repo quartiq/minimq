@@ -1,6 +1,7 @@
 use crate::packets::{PingReq, PubAck, PubComp, PubRec, PubRel, PublishHeader};
 use crate::publication::ToPayload;
 use crate::ser::{MAX_FIXED_HEADER_SIZE, MqttSerializer};
+use crate::wire::ControlPacket;
 use crate::{Error, ProtocolError, PubError, ReasonCode, ResourceError, error, trace};
 use heapless::Vec;
 
@@ -265,17 +266,17 @@ impl<'a> Outbound<'a> {
         self.compact();
         let start = self.used;
         let (offset, packet) =
-            MqttSerializer::pub_to_buffer_meta(&mut self.buf[start..], header, payload)?;
+            MqttSerializer::encode_publish_with_offset(&mut self.buf[start..], header, payload)?;
         Ok((start + offset, packet.len()))
     }
 
     pub(super) fn encode_packet<T>(&mut self, packet: &T) -> Result<(usize, usize), ProtocolError>
     where
-        T: serde::Serialize + crate::message_types::ControlPacket,
+        T: serde::Serialize + ControlPacket,
     {
         self.compact();
         let start = self.used;
-        let (offset, packet) = MqttSerializer::to_buffer_meta(&mut self.buf[start..], packet)?;
+        let (offset, packet) = MqttSerializer::encode_with_offset(&mut self.buf[start..], packet)?;
         Ok((start + offset, packet.len()))
     }
 
@@ -497,28 +498,28 @@ pub(super) fn serialize_control_packet<E>(
 
 fn encode_control_packet(buffer: &mut [u8], packet: ControlAction) -> Result<&[u8], ProtocolError> {
     Ok(match packet {
-        ControlAction::PubAck { packet_id, reason } => MqttSerializer::to_buffer(
+        ControlAction::PubAck { packet_id, reason } => MqttSerializer::encode(
             buffer,
             &PubAck {
                 packet_id,
                 reason: reason.into(),
             },
         ),
-        ControlAction::PubRec { packet_id, reason } => MqttSerializer::to_buffer(
+        ControlAction::PubRec { packet_id, reason } => MqttSerializer::encode(
             buffer,
             &PubRec {
                 packet_id,
                 reason: reason.into(),
             },
         ),
-        ControlAction::PubComp { packet_id, reason } => MqttSerializer::to_buffer(
+        ControlAction::PubComp { packet_id, reason } => MqttSerializer::encode(
             buffer,
             &PubComp {
                 packet_id,
                 reason: reason.into(),
             },
         ),
-        ControlAction::PingReq => MqttSerializer::to_buffer(buffer, &PingReq),
+        ControlAction::PingReq => MqttSerializer::encode(buffer, &PingReq),
     }?)
 }
 
@@ -566,7 +567,7 @@ fn encode_pubrel(
     packet_id: u16,
     reason: ReasonCode,
 ) -> Result<&[u8], ProtocolError> {
-    Ok(MqttSerializer::to_buffer(
+    Ok(MqttSerializer::encode(
         buffer,
         &PubRel {
             packet_id,
@@ -581,9 +582,9 @@ pub(super) async fn write_packet<C: Io, T>(
     packet: &T,
 ) -> Result<(), Error<C::Error>>
 where
-    T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
+    T: serde::Serialize + ControlPacket + core::fmt::Debug,
 {
-    let bytes = MqttSerializer::to_buffer(buffer, packet)?;
+    let bytes = MqttSerializer::encode(buffer, packet)?;
     write_all(connection, bytes).await?;
     connection.flush().await.map_err(Error::Transport)?;
     Ok(())
@@ -608,10 +609,8 @@ pub(super) async fn write_all<C: Io>(
 mod tests {
     use super::{ControlAction, Outbound, OutboundStep, SendState};
     use crate::{
-        Properties,
-        packets::Subscribe,
-        publication::Publication,
-        types::{TopicFilter, Utf8String},
+        Properties, packets::Subscribe, publication::Publication, types::TopicFilter,
+        wire::Utf8String,
     };
 
     #[test]

@@ -1,7 +1,8 @@
-//! Custom MQTT message deserializer
+//! MQTT packet deserializer.
 //!
 //! # Design
-//! This deserializer handles deserializing MQTT packets. It assumes the following:
+//! This is a narrow serde deserializer for MQTT wire fields. Packet structs describe field order;
+//! private wire helpers describe MQTT-specific field encodings.
 //!
 //! ### Integers
 //! All unsigned integers are transmitted in a fixed-width, big-endian notation.
@@ -88,7 +89,7 @@ impl core::fmt::Display for Error {
 pub(crate) struct MqttDeserializer<'a> {
     buf: &'a [u8],
     index: usize,
-    next_pending_length: Option<usize>,
+    next_bytes_len: Option<usize>,
 }
 
 impl<'a> MqttDeserializer<'a> {
@@ -97,16 +98,13 @@ impl<'a> MqttDeserializer<'a> {
         Self {
             buf,
             index: 0,
-            next_pending_length: None,
+            next_bytes_len: None,
         }
     }
 
-    /// Override the next binary bytes read with some pre-determined size.
-    ///
-    /// # Args
-    /// * `len` - The known length of the next binary data blob.
-    pub(crate) fn set_next_pending_length(&mut self, len: usize) {
-        self.next_pending_length.replace(len);
+    /// Override the next binary field length.
+    pub(crate) fn set_next_bytes_len(&mut self, len: usize) {
+        self.next_bytes_len.replace(len);
     }
 
     /// Attempt to take N bytes from the buffer.
@@ -208,7 +206,7 @@ impl<'de> serde::de::Deserializer<'de> for &'_ mut MqttDeserializer<'de> {
     }
 
     fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let length = match self.next_pending_length.take() {
+        let length = match self.next_bytes_len.take() {
             Some(length) => length,
             None => self.read_u16()? as usize,
         };
@@ -236,7 +234,7 @@ impl<'de> serde::de::Deserializer<'de> for &'_ mut MqttDeserializer<'de> {
 
         // If the properties are read as a binary blob, we already know the size and we don't
         // want to read a u16-prefixed size.
-        self.set_next_pending_length(length);
+        self.set_next_bytes_len(length);
 
         visitor.visit_seq(SeqAccess {
             deserializer: self,
@@ -395,7 +393,7 @@ impl<'a, 'de: 'a> serde::de::SeqAccess<'de> for SeqAccess<'a, 'de> {
                 .ok_or(Error::InsufficientData)?;
 
             // Since some data was just read, we no longer know the size of the binary data block.
-            self.deserializer.next_pending_length.take();
+            self.deserializer.next_bytes_len.take();
 
             Ok(Some(data))
         } else {

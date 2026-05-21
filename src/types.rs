@@ -1,79 +1,6 @@
 //! MQTT-specific data types used by the public API.
-use crate::QoS;
+use crate::{QoS, wire::Utf8String};
 use serde::Serialize;
-use serde::ser::SerializeStruct;
-
-/// MQTT binary data field.
-#[derive(Copy, Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub(crate) struct BinaryData<'a>(pub(crate) &'a [u8]);
-
-impl serde::Serialize for BinaryData<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::Error;
-
-        let len = u16::try_from(self.0.len())
-            .map_err(|_| S::Error::custom("Provided binary data is too long"))?;
-        let mut item = serializer.serialize_struct("_BinaryData", 0)?;
-        item.serialize_field("_len", &len)?;
-        item.serialize_field("_data", self.0)?;
-        item.end()
-    }
-}
-
-struct BinaryDataVisitor;
-
-impl<'de> serde::de::Visitor<'de> for BinaryDataVisitor {
-    type Value = BinaryData<'de>;
-
-    fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
-        write!(formatter, "BinaryData")
-    }
-
-    fn visit_borrowed_bytes<E: serde::de::Error>(self, data: &'de [u8]) -> Result<Self::Value, E> {
-        Ok(BinaryData(data))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{Properties, Property};
-    use heapless::Vec as HVec;
-
-    #[test]
-    fn iterate_slice_properties() {
-        let props = [Property::ReceiveMaximum(2), Property::MaximumQoS(1)];
-        let properties = Properties::from_slice(&props);
-        let values: HVec<_, 4> = properties.iter().collect();
-        let expected: HVec<_, 4> =
-            HVec::from_slice(&[Ok(props[0].clone()), Ok(props[1].clone())]).unwrap();
-        assert_eq!(values, expected);
-    }
-
-    #[test]
-    fn iterate_correlated_properties() {
-        let props = [Property::ReceiveMaximum(2)];
-        let correlation = Property::CorrelationData(b"abc");
-        let properties = Properties::from_slice(&props).with_correlation(b"abc");
-        let values: HVec<_, 4> = properties.iter().collect();
-        let expected: HVec<_, 4> =
-            HVec::from_slice(&[Ok(correlation), Ok(props[0].clone())]).unwrap();
-        assert_eq!(values, expected);
-    }
-
-    #[test]
-    fn default_subscription_options_cap_inbound_qos_to_at_most_once() {
-        let filter = TopicFilter::new("demo/in");
-        assert_eq!(filter.options.maximum_qos, QoS::AtMostOnce);
-    }
-}
-
-impl<'de> serde::de::Deserialize<'de> for BinaryData<'de> {
-    fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_bytes(BinaryDataVisitor)
-    }
-}
 
 /// Username/password authentication data used in `CONNECT`.
 #[derive(Debug, Copy, Clone)]
@@ -99,48 +26,6 @@ impl<'a> Auth<'a> {
     /// Return the MQTT password bytes.
     pub(crate) const fn password(&self) -> &'a [u8] {
         self.password
-    }
-}
-
-/// MQTT UTF-8 string field.
-#[derive(Copy, Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub(crate) struct Utf8String<'a>(pub(crate) &'a str);
-
-impl serde::Serialize for Utf8String<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::Error;
-
-        let len = u16::try_from(self.0.len())
-            .map_err(|_| S::Error::custom("Provided string is too long"))?;
-        let mut item = serializer.serialize_struct("_Utf8String", 0)?;
-        item.serialize_field("_len", &len)?;
-        item.serialize_field("_string", self.0)?;
-        item.end()
-    }
-}
-
-struct Utf8StringVisitor<'a> {
-    _data: core::marker::PhantomData<&'a ()>,
-}
-
-impl<'a, 'de: 'a> serde::de::Visitor<'de> for Utf8StringVisitor<'a> {
-    type Value = Utf8String<'a>;
-
-    fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
-        write!(formatter, "Utf8String")
-    }
-
-    fn visit_borrowed_str<E: serde::de::Error>(self, data: &'de str) -> Result<Self::Value, E> {
-        Ok(Utf8String(data))
-    }
-}
-
-impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Utf8String<'a> {
-    fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_str(Utf8StringVisitor {
-            _data: core::marker::PhantomData,
-        })
     }
 }
 
@@ -243,5 +128,16 @@ impl<'a> TopicFilter<'a> {
     pub fn options(mut self, options: SubscriptionOptions) -> Self {
         self.options = options;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_subscription_options_cap_inbound_qos_to_at_most_once() {
+        let filter = TopicFilter::new("demo/in");
+        assert_eq!(filter.options.maximum_qos, QoS::AtMostOnce);
     }
 }
