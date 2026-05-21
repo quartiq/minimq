@@ -5,7 +5,7 @@
 
 use embedded_io_adapters::tokio_1::FromTokio;
 use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
-use minimq::{ConfigBuilder, OpStatus, Publication, QoS, Session, types::TopicFilter};
+use minimq::{ConfigBuilder, OpStatus, Publication, QoS, Session, TopicFilter};
 use std::error::Error as StdError;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;

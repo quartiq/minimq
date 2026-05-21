@@ -588,7 +588,7 @@ mod tests {
             .encode_packet(&Subscribe {
                 packet_id: 16,
                 dup: false,
-                properties: Properties::Slice(&[]),
+                properties: Properties::from_slice(&[]),
                 topics: &[TopicFilter::new("ABC")],
             })
             .unwrap();

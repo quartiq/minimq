@@ -3,12 +3,11 @@ use serde::ser::SerializeSeq;
 pub(crate) const MQTT_VARINT_MAX: u32 = 0x0FFF_FFFF;
 
 #[derive(defmt::Format, Copy, Clone, Debug, PartialEq)]
-pub struct Varint(pub u32);
+pub(crate) struct Varint(pub(crate) u32);
 
 impl Varint {
     /// Return the encoded length for a valid MQTT variable byte integer.
-    pub fn len(&self) -> usize {
-        debug_assert!(self.0 <= MQTT_VARINT_MAX);
+    pub(crate) fn encoded_len(&self) -> usize {
         match self.0 {
             0..=0x7F => 1,
             0x80..=0x3FFF => 2,

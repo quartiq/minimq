@@ -1,19 +1,16 @@
 #![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
 
-/// Session configuration and caller-owned buffers.
-pub mod config;
+mod config;
 mod de;
 mod message_types;
 mod mqtt_client;
 mod packets;
 mod properties;
-/// Outbound publish builders and payload adapters.
-pub mod publication;
+mod publication;
 mod reason_codes;
 mod ser;
-/// MQTT-specific value types used by the public API.
-pub mod types;
+mod types;
 mod varint;
 mod will;
 
@@ -21,8 +18,9 @@ pub use config::{Buffers, ConfigBuilder};
 pub use mqtt_client::{ConnectEvent, InboundPublish, Io, Op, OpStatus, Session};
 pub use packets::Disconnect;
 pub use properties::Property;
-pub use publication::{OwnedResponseTarget, Publication};
+pub use publication::{OwnedResponseTarget, Publication, ToPayload};
 pub use reason_codes::ReasonCode;
+pub use types::{Properties, RetainHandling, SubscriptionOptions, TopicFilter};
 pub use will::Will;
 
 #[cfg(feature = "fuzzing")]
@@ -47,12 +45,6 @@ pub const MQTT_INSECURE_DEFAULT_PORT: u16 = 1883;
 
 /// Default port number for encrypted MQTT traffic.
 pub const MQTT_SECURE_DEFAULT_PORT: u16 = 8883;
-
-/// Fixed-capacity owned MQTT topic storage used by durable configuration.
-pub const TOPIC_CAPACITY: usize = 128;
-
-/// Fixed-capacity owned MQTT topic string.
-pub type TopicString = heapless::String<TOPIC_CAPACITY>;
 
 /// The quality-of-service for an MQTT message.
 #[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive, PartialOrd, Ord)]
@@ -86,6 +78,9 @@ pub enum ConfigError {
     /// The configured client identifier exceeds the internal fixed-capacity storage.
     #[error("provided client ID is too long")]
     ClientIdTooLong,
+    /// The configured topic exceeds the internal fixed-capacity storage.
+    #[error("provided topic is too long")]
+    TopicTooLong,
     /// One configuration setting was specified more than once.
     #[error("configuration was specified more than once")]
     DuplicateConfig,

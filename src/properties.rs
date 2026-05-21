@@ -77,23 +77,23 @@ pub enum Property<'a> {
     /// Message expiry interval in seconds.
     MessageExpiryInterval(u32),
     /// Content type of the application payload.
-    ContentType(Utf8String<'a>),
+    ContentType(&'a str),
     /// Response topic for request/reply patterns.
-    ResponseTopic(Utf8String<'a>),
+    ResponseTopic(&'a str),
     /// Correlation data for request/reply patterns.
-    CorrelationData(BinaryData<'a>),
+    CorrelationData(&'a [u8]),
     /// Subscription identifier.
-    SubscriptionIdentifier(Varint),
+    SubscriptionIdentifier(u32),
     /// Session expiry interval in seconds.
     SessionExpiryInterval(u32),
     /// Client identifier assigned by the broker.
-    AssignedClientIdentifier(Utf8String<'a>),
+    AssignedClientIdentifier(&'a str),
     /// Broker-advertised keepalive.
     ServerKeepAlive(u16),
     /// Authentication method name.
-    AuthenticationMethod(Utf8String<'a>),
+    AuthenticationMethod(&'a str),
     /// Authentication data bytes.
-    AuthenticationData(BinaryData<'a>),
+    AuthenticationData(&'a [u8]),
     /// Whether problem information is requested.
     RequestProblemInformation(u8),
     /// Delay before publishing the will, in seconds.
@@ -101,11 +101,11 @@ pub enum Property<'a> {
     /// Whether response information is requested.
     RequestResponseInformation(u8),
     /// Broker response information.
-    ResponseInformation(Utf8String<'a>),
+    ResponseInformation(&'a str),
     /// Alternate broker reference.
-    ServerReference(Utf8String<'a>),
+    ServerReference(&'a str),
     /// Human-readable reason string.
-    ReasonString(Utf8String<'a>),
+    ReasonString(&'a str),
     /// Maximum concurrent QoS 1/2 receives.
     ReceiveMaximum(u16),
     /// Maximum supported topic alias.
@@ -117,7 +117,7 @@ pub enum Property<'a> {
     /// Whether retained messages are supported.
     RetainAvailable(u8),
     /// User-defined key/value property.
-    UserProperty(Utf8String<'a>, Utf8String<'a>),
+    UserProperty(&'a str, &'a str),
     /// Maximum packet size in bytes.
     MaximumPacketSize(u32),
     /// Whether wildcard subscriptions are supported.
@@ -133,7 +133,7 @@ struct UserPropertyVisitor<'a> {
 }
 
 impl<'a, 'de: 'a> serde::de::Visitor<'de> for UserPropertyVisitor<'a> {
-    type Value = (Utf8String<'a>, Utf8String<'a>);
+    type Value = (&'a str, &'a str);
 
     fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(formatter, "UserProperty")
@@ -147,7 +147,9 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for UserPropertyVisitor<'a> {
         let value = seq
             .next_element()?
             .ok_or_else(|| A::Error::custom("No value present"))?;
-        Ok((key, value))
+        let key: Utf8String<'a> = key;
+        let value: Utf8String<'a> = value;
+        Ok((key.0, value.0))
     }
 }
 
@@ -170,7 +172,8 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
 
         let property = match field {
             PropertyIdentifier::ResponseTopic => {
-                Property::ResponseTopic(variant.newtype_variant()?)
+                let value: Utf8String<'a> = variant.newtype_variant()?;
+                Property::ResponseTopic(value.0)
             }
             PropertyIdentifier::PayloadFormatIndicator => {
                 Property::PayloadFormatIndicator(variant.newtype_variant()?)
@@ -178,27 +181,35 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
             PropertyIdentifier::MessageExpiryInterval => {
                 Property::MessageExpiryInterval(variant.newtype_variant()?)
             }
-            PropertyIdentifier::ContentType => Property::ContentType(variant.newtype_variant()?),
+            PropertyIdentifier::ContentType => {
+                let value: Utf8String<'a> = variant.newtype_variant()?;
+                Property::ContentType(value.0)
+            }
             PropertyIdentifier::CorrelationData => {
-                Property::CorrelationData(variant.newtype_variant()?)
+                let value: BinaryData<'a> = variant.newtype_variant()?;
+                Property::CorrelationData(value.0)
             }
             PropertyIdentifier::SubscriptionIdentifier => {
-                Property::SubscriptionIdentifier(variant.newtype_variant()?)
+                let value: Varint = variant.newtype_variant()?;
+                Property::SubscriptionIdentifier(value.0)
             }
             PropertyIdentifier::SessionExpiryInterval => {
                 Property::SessionExpiryInterval(variant.newtype_variant()?)
             }
             PropertyIdentifier::AssignedClientIdentifier => {
-                Property::AssignedClientIdentifier(variant.newtype_variant()?)
+                let value: Utf8String<'a> = variant.newtype_variant()?;
+                Property::AssignedClientIdentifier(value.0)
             }
             PropertyIdentifier::ServerKeepAlive => {
                 Property::ServerKeepAlive(variant.newtype_variant()?)
             }
             PropertyIdentifier::AuthenticationMethod => {
-                Property::AuthenticationMethod(variant.newtype_variant()?)
+                let value: Utf8String<'a> = variant.newtype_variant()?;
+                Property::AuthenticationMethod(value.0)
             }
             PropertyIdentifier::AuthenticationData => {
-                Property::AuthenticationData(variant.newtype_variant()?)
+                let value: BinaryData<'a> = variant.newtype_variant()?;
+                Property::AuthenticationData(value.0)
             }
             PropertyIdentifier::RequestProblemInformation => {
                 Property::RequestProblemInformation(variant.newtype_variant()?)
@@ -210,12 +221,17 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
                 Property::RequestResponseInformation(variant.newtype_variant()?)
             }
             PropertyIdentifier::ResponseInformation => {
-                Property::ResponseInformation(variant.newtype_variant()?)
+                let value: Utf8String<'a> = variant.newtype_variant()?;
+                Property::ResponseInformation(value.0)
             }
             PropertyIdentifier::ServerReference => {
-                Property::ServerReference(variant.newtype_variant()?)
+                let value: Utf8String<'a> = variant.newtype_variant()?;
+                Property::ServerReference(value.0)
             }
-            PropertyIdentifier::ReasonString => Property::ReasonString(variant.newtype_variant()?),
+            PropertyIdentifier::ReasonString => {
+                let value: Utf8String<'a> = variant.newtype_variant()?;
+                Property::ReasonString(value.0)
+            }
             PropertyIdentifier::ReceiveMaximum => {
                 Property::ReceiveMaximum(variant.newtype_variant()?)
             }
@@ -280,29 +296,41 @@ impl serde::Serialize for Property<'_> {
         match self {
             Property::PayloadFormatIndicator(value) => serializer.serialize_element(value)?,
             Property::MessageExpiryInterval(value) => serializer.serialize_element(value)?,
-            Property::ContentType(content_type) => serializer.serialize_element(content_type)?,
-            Property::ResponseTopic(topic) => serializer.serialize_element(topic)?,
-            Property::CorrelationData(data) => serializer.serialize_element(data)?,
-            Property::SubscriptionIdentifier(data) => serializer.serialize_element(data)?,
+            Property::ContentType(content_type) => {
+                serializer.serialize_element(&Utf8String(content_type))?;
+            }
+            Property::ResponseTopic(topic) => serializer.serialize_element(&Utf8String(topic))?,
+            Property::CorrelationData(data) => serializer.serialize_element(&BinaryData(data))?,
+            Property::SubscriptionIdentifier(data) => {
+                serializer.serialize_element(&Varint(*data))?
+            }
             Property::SessionExpiryInterval(data) => serializer.serialize_element(data)?,
-            Property::AssignedClientIdentifier(data) => serializer.serialize_element(data)?,
+            Property::AssignedClientIdentifier(data) => {
+                serializer.serialize_element(&Utf8String(data))?;
+            }
             Property::ServerKeepAlive(data) => serializer.serialize_element(data)?,
-            Property::AuthenticationMethod(data) => serializer.serialize_element(data)?,
-            Property::AuthenticationData(data) => serializer.serialize_element(data)?,
+            Property::AuthenticationMethod(data) => {
+                serializer.serialize_element(&Utf8String(data))?
+            }
+            Property::AuthenticationData(data) => {
+                serializer.serialize_element(&BinaryData(data))?
+            }
             Property::RequestProblemInformation(data) => serializer.serialize_element(data)?,
             Property::WillDelayInterval(data) => serializer.serialize_element(data)?,
             Property::RequestResponseInformation(data) => serializer.serialize_element(data)?,
-            Property::ResponseInformation(data) => serializer.serialize_element(data)?,
-            Property::ServerReference(data) => serializer.serialize_element(data)?,
-            Property::ReasonString(data) => serializer.serialize_element(data)?,
+            Property::ResponseInformation(data) => {
+                serializer.serialize_element(&Utf8String(data))?
+            }
+            Property::ServerReference(data) => serializer.serialize_element(&Utf8String(data))?,
+            Property::ReasonString(data) => serializer.serialize_element(&Utf8String(data))?,
             Property::ReceiveMaximum(data) => serializer.serialize_element(data)?,
             Property::TopicAliasMaximum(data) => serializer.serialize_element(data)?,
             Property::TopicAlias(data) => serializer.serialize_element(data)?,
             Property::MaximumQoS(data) => serializer.serialize_element(data)?,
             Property::RetainAvailable(data) => serializer.serialize_element(data)?,
             Property::UserProperty(key, value) => {
-                serializer.serialize_element(key)?;
-                serializer.serialize_element(value)?;
+                serializer.serialize_element(&Utf8String(key))?;
+                serializer.serialize_element(&Utf8String(value))?;
             }
             Property::MaximumPacketSize(data) => serializer.serialize_element(data)?,
             Property::WildcardSubscriptionAvailable(data) => serializer.serialize_element(data)?,
@@ -361,7 +389,7 @@ impl<'a> From<&Property<'a>> for PropertyIdentifier {
 impl Property<'_> {
     pub(crate) fn size(&self) -> usize {
         let identifier: PropertyIdentifier = self.into();
-        let identifier_length = Varint(identifier as u32).len();
+        let identifier_length = Varint(identifier as u32).encoded_len();
 
         match self {
             Property::ContentType(data)
@@ -370,14 +398,14 @@ impl Property<'_> {
             | Property::ResponseInformation(data)
             | Property::ServerReference(data)
             | Property::ReasonString(data)
-            | Property::AssignedClientIdentifier(data) => data.0.len() + 2 + identifier_length,
+            | Property::AssignedClientIdentifier(data) => data.len() + 2 + identifier_length,
             Property::UserProperty(key, value) => {
-                (value.0.len() + 2) + (key.0.len() + 2) + identifier_length
+                (value.len() + 2) + (key.len() + 2) + identifier_length
             }
             Property::CorrelationData(data) | Property::AuthenticationData(data) => {
-                data.0.len() + 2 + identifier_length
+                data.len() + 2 + identifier_length
             }
-            Property::SubscriptionIdentifier(id) => id.len() + identifier_length,
+            Property::SubscriptionIdentifier(id) => Varint(*id).encoded_len() + identifier_length,
 
             Property::MessageExpiryInterval(_)
             | Property::SessionExpiryInterval(_)

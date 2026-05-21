@@ -116,7 +116,7 @@ impl<'a, P> Publication<'a, P> {
             payload,
             qos: QoS::AtMostOnce,
             topic,
-            properties: Properties::Slice(&[]),
+            properties: Properties::from_slice(&[]),
             retain: Retain::NotRetained,
         }
     }

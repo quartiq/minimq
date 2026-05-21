@@ -8,8 +8,7 @@ use crate::{
     properties::Property,
     publication::Publication,
     ser::MqttSerializer,
-    types::{BinaryData, Properties, TopicFilter, Utf8String},
-    varint::Varint,
+    types::{Properties, TopicFilter, Utf8String},
 };
 
 /// Parse one inbound packet buffer.
@@ -50,22 +49,19 @@ fn fuzz_qos(qos: u8) -> QoS {
 }
 
 static EMPTY_PROPERTIES: [Property<'static>; 0] = [];
-static PUBLISH_RESPONSE_TOPIC: [Property<'static>; 1] = [Property::ResponseTopic(Utf8String("r"))];
-static PUBLISH_USER_PROPERTY: [Property<'static>; 1] =
-    [Property::UserProperty(Utf8String("k"), Utf8String("v"))];
-static PUBLISH_CONTENT_TYPE: [Property<'static>; 1] = [Property::ContentType(Utf8String("t"))];
-static SUBSCRIBE_ID: [Property<'static>; 1] = [Property::SubscriptionIdentifier(Varint(1))];
-static SHARED_USER_PROPERTY: [Property<'static>; 1] =
-    [Property::UserProperty(Utf8String("a"), Utf8String("b"))];
+static PUBLISH_RESPONSE_TOPIC: [Property<'static>; 1] = [Property::ResponseTopic("r")];
+static PUBLISH_USER_PROPERTY: [Property<'static>; 1] = [Property::UserProperty("k", "v")];
+static PUBLISH_CONTENT_TYPE: [Property<'static>; 1] = [Property::ContentType("t")];
+static SUBSCRIBE_ID: [Property<'static>; 1] = [Property::SubscriptionIdentifier(1)];
+static SHARED_USER_PROPERTY: [Property<'static>; 1] = [Property::UserProperty("a", "b")];
 static CONNECT_SESSION: [Property<'static>; 1] = [Property::SessionExpiryInterval(1)];
 static CONNECT_LIMITS: [Property<'static>; 3] = [
     Property::ReceiveMaximum(2),
     Property::MaximumPacketSize(32),
     Property::RequestProblemInformation(1),
 ];
-static REASON_STRING: [Property<'static>; 1] = [Property::ReasonString(Utf8String("r"))];
-static REASON_USER_PROPERTY: [Property<'static>; 1] =
-    [Property::UserProperty(Utf8String("x"), Utf8String("y"))];
+static REASON_STRING: [Property<'static>; 1] = [Property::ReasonString("r")];
+static REASON_USER_PROPERTY: [Property<'static>; 1] = [Property::UserProperty("x", "y")];
 
 fn publish_properties(sel: u8) -> &'static [Property<'static>] {
     match sel & 0b11 {
@@ -128,7 +124,7 @@ pub fn encode_packet(
             }
             publication = publication.properties(publish_properties(aux));
             if aux & 0b100 != 0 {
-                publication = publication.correlate(BinaryData(b"id").0);
+                publication = publication.correlate(b"id");
             }
 
             let header = PublishHeader {
@@ -148,7 +144,7 @@ pub fn encode_packet(
                 &Subscribe {
                     packet_id: 1,
                     dup: retain,
-                    properties: Properties::Slice(subscribe_properties(aux)),
+                    properties: Properties::from_slice(subscribe_properties(aux)),
                     topics: &topics,
                 },
             );
@@ -160,7 +156,7 @@ pub fn encode_packet(
                 &Unsubscribe {
                     packet_id: 1,
                     dup: retain,
-                    properties: Properties::Slice(generic_properties(aux)),
+                    properties: Properties::from_slice(generic_properties(aux)),
                     topics: &topics,
                 },
             );
@@ -170,7 +166,7 @@ pub fn encode_packet(
                 buf,
                 &Connect {
                     keepalive: u16::from(aux),
-                    properties: Properties::Slice(connect_properties(aux >> 4)),
+                    properties: Properties::from_slice(connect_properties(aux >> 4)),
                     client_id: Utf8String(topic),
                     auth: None,
                     will: None,

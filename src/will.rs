@@ -1,8 +1,12 @@
 use crate::{
-    ConfigError, QoS, Retain, TopicString,
+    ConfigError, QoS, Retain,
     properties::{Property, PropertyIdentifier},
     types::{BinaryData, Properties, Utf8String},
 };
+use heapless::String;
+
+const TOPIC_CAPACITY: usize = 128;
+type TopicString = String<TOPIC_CAPACITY>;
 
 fn validate_will_properties(properties: &[Property<'_>]) -> Result<(), ConfigError> {
     for property in properties {
@@ -31,15 +35,16 @@ pub struct Will<'a> {
 }
 
 impl<'a> Will<'a> {
-    /// Construct a will from owned fixed-capacity topic storage.
+    /// Construct a will.
     ///
     /// Only MQTT v5 properties valid on will messages are accepted.
     pub fn new(
-        topic: TopicString,
+        topic: &str,
         data: &'a [u8],
         properties: &'a [Property<'a>],
     ) -> Result<Self, ConfigError> {
         validate_will_properties(properties)?;
+        let topic = topic.try_into().map_err(|_| ConfigError::TopicTooLong)?;
 
         Ok(Self {
             topic,
@@ -76,7 +81,7 @@ impl serde::Serialize for Will<'_> {
         use serde::ser::SerializeStruct;
 
         let mut item = serializer.serialize_struct("Will", 0)?;
-        item.serialize_field("properties", &Properties::Slice(self.properties))?;
+        item.serialize_field("properties", &Properties::from_slice(self.properties))?;
         item.serialize_field("topic", &Utf8String(self.topic.as_str()))?;
         item.serialize_field("data", &BinaryData(self.data))?;
         item.end()

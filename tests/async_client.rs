@@ -4,8 +4,7 @@ use embassy_time::{Duration, with_timeout};
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use minimq::{
     Buffers, ConfigBuilder, ConnectEvent, Disconnect, Error, InboundPublish, Op, PeerError,
-    Property, PubError, Publication, QoS, ReasonCode, ResourceError, Session,
-    types::{BinaryData, Properties, TopicFilter},
+    PubError, Publication, QoS, ReasonCode, ResourceError, Session, TopicFilter,
 };
 use std::{cell::RefCell, collections::VecDeque, future::poll_fn, rc::Rc, task::Poll};
 use support::{block_on, init_host_logging, poll_once};
@@ -1644,14 +1643,7 @@ fn inbound_publish_exposes_response_helpers() {
         let reply = message.reply("ok").unwrap().qos(QoS::AtLeastOnce);
         let follow_up = owned_via_message.publication("next");
 
-        let response = match reply.properties_ref() {
-            Properties::CorrelatedSlice { correlation, .. } => correlation,
-            _ => panic!("reply should preserve correlation data"),
-        };
-        assert!(matches!(
-            response,
-            Property::CorrelationData(BinaryData(b"abc"))
-        ));
+        assert_eq!(reply.properties_ref().correlation_data(), Some(&b"abc"[..]));
         assert_eq!(owned_via_message.topic(), "reply/topic");
         let _ = follow_up;
     });

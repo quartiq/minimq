@@ -49,7 +49,7 @@ where
 
     /// Send a `SUBSCRIBE`.
     ///
-    /// Call this after [`connect`](Self::connect). A resumed [`ConnectEvent::Reconnected`]
+    /// Call this after [`connect`](Self::connect). A resumed [`crate::ConnectEvent::Reconnected`]
     /// already kept broker-side subscriptions.
     ///
     /// Returns an operation handle that can be checked with [`Session::status`](Self::status).
@@ -73,7 +73,7 @@ where
         let (offset, len) = self.data.outbound.encode_packet(&Subscribe {
             packet_id,
             dup: false,
-            properties: Properties::Slice(properties),
+            properties: Properties::from_slice(properties),
             topics,
         })?;
         self.runtime.require_packet_size(len)?;
@@ -115,7 +115,7 @@ where
         let (offset, len) = self.data.outbound.encode_packet(&Unsubscribe {
             packet_id,
             dup: false,
-            properties: Properties::Slice(properties),
+            properties: Properties::from_slice(properties),
             topics,
         })?;
         self.runtime.require_packet_size(len)?;

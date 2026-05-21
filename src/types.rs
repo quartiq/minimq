@@ -8,29 +8,42 @@ use serde::{Deserialize, Serialize};
 
 /// MQTT property collection attached to a packet.
 ///
-/// Application code usually receives this from inbound packets or passes a borrowed slice when
-/// publishing or subscribing.
+/// Application code usually receives this from inbound packets or passes borrowed property slices
+/// to packet builders. The storage representation is intentionally opaque: properties may be
+/// borrowed decoded values, borrowed encoded broker data, or a small synthetic view.
 #[derive(Debug, PartialEq)]
-pub enum Properties<'a> {
-    /// Borrowed property slice.
+pub struct Properties<'a> {
+    inner: PropertiesData<'a>,
+}
+
+#[derive(Debug, PartialEq)]
+enum PropertiesData<'a> {
     Slice(&'a [Property<'a>]),
-    /// Borrowed encoded property block received from the broker.
     DataBlock(&'a [u8]),
-    /// Borrowed property slice with synthetic correlation data prepended.
     CorrelatedSlice {
-        /// Correlation data to expose first.
         correlation: Property<'a>,
-        /// Remaining borrowed properties.
         properties: &'a [Property<'a>],
     },
 }
 
 impl Properties<'_> {
+    /// Return an empty property collection.
+    pub const fn empty() -> Self {
+        Self::from_slice(&[])
+    }
+
+    /// Borrow a decoded property slice.
+    pub const fn from_slice<'a>(properties: &'a [Property<'a>]) -> Properties<'a> {
+        Properties {
+            inner: PropertiesData::Slice(properties),
+        }
+    }
+
     /// Return the encoded MQTT property block size in bytes.
     pub fn size(&self) -> usize {
-        match self {
-            Properties::Slice(props) => props.iter().map(|prop| prop.size()).sum(),
-            Properties::CorrelatedSlice {
+        match &self.inner {
+            PropertiesData::Slice(props) => props.iter().map(|prop| prop.size()).sum(),
+            PropertiesData::CorrelatedSlice {
                 correlation,
                 properties,
             } => properties
@@ -38,56 +51,102 @@ impl Properties<'_> {
                 .chain([correlation.clone()].iter())
                 .map(|prop| prop.size())
                 .sum(),
-            Properties::DataBlock(block) => block.len(),
+            PropertiesData::DataBlock(block) => block.len(),
         }
     }
 }
 
 impl<'a> Properties<'a> {
+    pub(crate) const fn data_block(data: &'a [u8]) -> Self {
+        Self {
+            inner: PropertiesData::DataBlock(data),
+        }
+    }
+
     /// Iterate over properties.
-    pub fn iter(&'a self) -> PropertiesIter<'a> {
-        self.into_iter()
+    pub fn iter(&'a self) -> impl Iterator<Item = Result<Property<'a>, PeerError>> + 'a {
+        self.iter_inner()
     }
 
     /// Return the first `ResponseTopic` property, if present.
     pub fn response_topic(&'a self) -> Option<&'a str> {
-        self.iter().response_topic()
+        self.iter().find_map(|prop| match prop {
+            Ok(crate::Property::ResponseTopic(topic)) => Some(topic),
+            _ => None,
+        })
     }
 
     /// Return the first `CorrelationData` property, if present.
     pub fn correlation_data(&'a self) -> Option<&'a [u8]> {
-        self.iter().correlation_data()
+        self.iter().find_map(|prop| match prop {
+            Ok(crate::Property::CorrelationData(data)) => Some(data),
+            _ => None,
+        })
     }
 
     pub(crate) fn with_properties(self, properties: &'a [Property<'a>]) -> Self {
-        match self {
-            Self::CorrelatedSlice { correlation, .. } => Self::CorrelatedSlice {
-                correlation,
-                properties,
+        match self.inner {
+            PropertiesData::CorrelatedSlice { correlation, .. } => Self {
+                inner: PropertiesData::CorrelatedSlice {
+                    correlation,
+                    properties,
+                },
             },
-            Self::Slice(_) | Self::DataBlock(_) => Self::Slice(properties),
+            PropertiesData::Slice(_) | PropertiesData::DataBlock(_) => Self::from_slice(properties),
         }
     }
 
     pub(crate) fn with_correlation(self, data: &'a [u8]) -> Self {
-        let correlation = Property::CorrelationData(BinaryData(data));
-        match self {
-            Self::Slice(properties) | Self::CorrelatedSlice { properties, .. } => {
-                Self::CorrelatedSlice {
+        let correlation = Property::CorrelationData(data);
+        match self.inner {
+            PropertiesData::Slice(properties)
+            | PropertiesData::CorrelatedSlice { properties, .. } => Self {
+                inner: PropertiesData::CorrelatedSlice {
                     correlation,
                     properties,
-                }
-            }
-            Self::DataBlock(_) => Self::CorrelatedSlice {
+                },
+            },
+            PropertiesData::DataBlock(_) => Self {
+                inner: PropertiesData::CorrelatedSlice {
+                    correlation,
+                    properties: &[],
+                },
+            },
+        }
+    }
+
+    pub(crate) fn iter_concrete(&'a self) -> PropertiesIter<'a> {
+        self.iter_inner()
+    }
+
+    fn iter_inner(&'a self) -> PropertiesIter<'a> {
+        match &self.inner {
+            PropertiesData::DataBlock(data) => PropertiesIter {
+                inner: PropertiesIterInner::DataBlock {
+                    props: data,
+                    index: 0,
+                },
+            },
+            PropertiesData::Slice(props) => PropertiesIter {
+                inner: PropertiesIterInner::Slice { props, index: 0 },
+            },
+            PropertiesData::CorrelatedSlice {
                 correlation,
-                properties: &[],
+                properties,
+            } => PropertiesIter {
+                inner: PropertiesIterInner::Correlated {
+                    correlation: correlation.clone(),
+                    yielded_correlation: false,
+                    props: properties,
+                    index: 0,
+                },
             },
         }
     }
 }
 
 /// Iterator over decoded MQTT properties.
-pub struct PropertiesIter<'a> {
+pub(crate) struct PropertiesIter<'a> {
     inner: PropertiesIterInner<'a>,
 }
 
@@ -106,24 +165,6 @@ enum PropertiesIterInner<'a> {
         props: &'a [Property<'a>],
         index: usize,
     },
-}
-
-impl<'a> PropertiesIter<'a> {
-    /// Return the first `ResponseTopic` property in the remaining iterator.
-    pub fn response_topic(&mut self) -> Option<&'a str> {
-        self.find_map(|prop| match prop {
-            Ok(crate::Property::ResponseTopic(topic)) => Some(topic.0),
-            _ => None,
-        })
-    }
-
-    /// Return the first `CorrelationData` property in the remaining iterator.
-    pub fn correlation_data(&mut self) -> Option<&'a [u8]> {
-        self.find_map(|prop| match prop {
-            Ok(crate::Property::CorrelationData(data)) => Some(data.0),
-            _ => None,
-        })
-    }
 }
 
 impl<'a> core::iter::Iterator for PropertiesIter<'a> {
@@ -166,53 +207,23 @@ impl<'a> core::iter::Iterator for PropertiesIter<'a> {
     }
 }
 
-impl<'a> core::iter::IntoIterator for &'a Properties<'a> {
-    type Item = Result<Property<'a>, PeerError>;
-    type IntoIter = PropertiesIter<'a>;
-
-    fn into_iter(self) -> PropertiesIter<'a> {
-        match self {
-            Properties::DataBlock(data) => PropertiesIter {
-                inner: PropertiesIterInner::DataBlock {
-                    props: data,
-                    index: 0,
-                },
-            },
-            Properties::Slice(props) => PropertiesIter {
-                inner: PropertiesIterInner::Slice { props, index: 0 },
-            },
-            Properties::CorrelatedSlice {
-                correlation,
-                properties,
-            } => PropertiesIter {
-                inner: PropertiesIterInner::Correlated {
-                    correlation: correlation.clone(),
-                    yielded_correlation: false,
-                    props: properties,
-                    index: 0,
-                },
-            },
-        }
-    }
-}
-
 impl serde::Serialize for Properties<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut item = serializer.serialize_struct("Properties", 0)?;
         item.serialize_field("_len", &Varint(self.size() as u32))?;
 
-        match self {
-            Properties::Slice(props) => {
+        match &self.inner {
+            PropertiesData::Slice(props) => {
                 item.serialize_field("_props", props)?;
             }
-            Properties::CorrelatedSlice {
+            PropertiesData::CorrelatedSlice {
                 correlation,
                 properties,
             } => {
                 item.serialize_field("_correlation", &correlation)?;
                 item.serialize_field("_props", properties)?;
             }
-            Properties::DataBlock(block) => {
+            PropertiesData::DataBlock(block) => {
                 item.serialize_field("_data", block)?;
             }
         }
@@ -232,7 +243,7 @@ impl<'de> serde::de::Visitor<'de> for PropertiesVisitor {
 
     fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
         let data = seq.next_element()?;
-        Ok(Properties::DataBlock(data.unwrap_or(&[])))
+        Ok(Properties::data_block(data.unwrap_or(&[])))
     }
 }
 
@@ -244,7 +255,7 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Properties<'a> {
 
 /// MQTT binary data field.
 #[derive(defmt::Format, Copy, Clone, Debug, PartialEq)]
-pub struct BinaryData<'a>(pub &'a [u8]);
+pub(crate) struct BinaryData<'a>(pub(crate) &'a [u8]);
 
 impl serde::Serialize for BinaryData<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -281,8 +292,8 @@ mod tests {
     #[test]
     fn iterate_slice_properties() {
         let props = [Property::ReceiveMaximum(2), Property::MaximumQoS(1)];
-        let properties = Properties::Slice(&props);
-        let values: HVec<_, 4> = (&properties).into_iter().collect();
+        let properties = Properties::from_slice(&props);
+        let values: HVec<_, 4> = properties.iter().collect();
         let expected: HVec<_, 4> =
             HVec::from_slice(&[Ok(props[0].clone()), Ok(props[1].clone())]).unwrap();
         assert_eq!(values, expected);
@@ -291,12 +302,9 @@ mod tests {
     #[test]
     fn iterate_correlated_properties() {
         let props = [Property::ReceiveMaximum(2)];
-        let correlation = Property::CorrelationData(BinaryData(b"abc"));
-        let properties = Properties::CorrelatedSlice {
-            correlation: correlation.clone(),
-            properties: &props,
-        };
-        let values: HVec<_, 4> = (&properties).into_iter().collect();
+        let correlation = Property::CorrelationData(b"abc");
+        let properties = Properties::from_slice(&props).with_correlation(b"abc");
+        let values: HVec<_, 4> = properties.iter().collect();
         let expected: HVec<_, 4> =
             HVec::from_slice(&[Ok(correlation), Ok(props[0].clone())]).unwrap();
         assert_eq!(values, expected);
@@ -344,7 +352,7 @@ impl<'a> Auth<'a> {
 
 /// MQTT UTF-8 string field.
 #[derive(defmt::Format, Copy, Clone, Debug, PartialEq)]
-pub struct Utf8String<'a>(pub &'a str);
+pub(crate) struct Utf8String<'a>(pub(crate) &'a str);
 
 impl serde::Serialize for Utf8String<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -463,7 +471,7 @@ impl<'a> TopicFilter<'a> {
     /// Construct a topic filter with default subscription options.
     ///
     /// ```rust
-    /// use minimq::types::{SubscriptionOptions, TopicFilter};
+    /// use minimq::{SubscriptionOptions, TopicFilter};
     ///
     /// let filter = TopicFilter::new("demo/in").options(SubscriptionOptions::default());
     /// let _ = filter;

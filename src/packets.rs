@@ -241,7 +241,7 @@ impl<'a> Disconnect<'a> {
         if self.reason_code.is_none() {
             self.reason_code = Some(ReasonCode::Success);
         }
-        self.properties = Some(Properties::Slice(properties));
+        self.properties = Some(Properties::from_slice(properties));
         self
     }
 
@@ -300,7 +300,7 @@ impl<'a> Reason<'a> {
         Self {
             reason: Some(ReasonData {
                 code,
-                _properties: Some(Properties::Slice(properties)),
+                _properties: Some(Properties::from_slice(properties)),
             }),
         }
     }
@@ -343,7 +343,7 @@ mod tests {
             qos: QoS::AtMostOnce,
             packet_id: None,
             dup: false,
-            properties: Properties::Slice(&[]),
+            properties: Properties::from_slice(&[]),
             retain: Retain::NotRetained,
             topic: Utf8String("ABC"),
         };
@@ -371,7 +371,7 @@ mod tests {
             topic: Utf8String("ABC"),
             packet_id: Some(0xBEEF),
             dup: false,
-            properties: Properties::Slice(&[]),
+            properties: Properties::from_slice(&[]),
             retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
@@ -398,7 +398,7 @@ mod tests {
             topic: Utf8String("ABC"),
             packet_id: Some(0xBEEF),
             dup: true,
-            properties: Properties::Slice(&[]),
+            properties: Properties::from_slice(&[]),
             retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
@@ -423,7 +423,7 @@ mod tests {
         let subscribe = crate::packets::Subscribe {
             packet_id: 16,
             dup: false,
-            properties: Properties::Slice(&[]),
+            properties: Properties::from_slice(&[]),
             topics: &[TopicFilter::new("ABC")],
         };
 
@@ -446,7 +446,7 @@ mod tests {
         let unsubscribe = crate::packets::Unsubscribe {
             packet_id: 16,
             dup: false,
-            properties: Properties::Slice(&[]),
+            properties: Properties::from_slice(&[]),
             topics: &["ABC"],
         };
 
@@ -472,7 +472,7 @@ mod tests {
             topic: Utf8String("ABC"),
             packet_id: None,
             dup: false,
-            properties: Properties::Slice(&[Property::ResponseTopic(Utf8String("A"))]),
+            properties: Properties::from_slice(&[Property::ResponseTopic("A")]),
             retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
@@ -499,10 +499,7 @@ mod tests {
             topic: Utf8String("ABC"),
             packet_id: None,
             dup: false,
-            properties: Properties::Slice(&[Property::UserProperty(
-                Utf8String("A"),
-                Utf8String("B"),
-            )]),
+            properties: Properties::from_slice(&[Property::UserProperty("A", "B")]),
             retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
@@ -531,7 +528,7 @@ mod tests {
             auth: None,
             will: None,
             keepalive: 10,
-            properties: Properties::Slice(&[]),
+            properties: Properties::from_slice(&[]),
             clean_start: true,
         };
 
@@ -569,14 +566,14 @@ mod tests {
         ];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let will = crate::will::Will::new("EFG".try_into().unwrap(), &[0xAB, 0xCD], &[])
+        let will = crate::will::Will::new("EFG", &[0xAB, 0xCD], &[])
             .unwrap()
             .qos(crate::QoS::AtMostOnce);
 
         let connect = crate::packets::Connect {
             clean_start: true,
             keepalive: 10,
-            properties: Properties::Slice(&[]),
+            properties: Properties::from_slice(&[]),
             client_id: Utf8String("ABC"),
             auth: None,
             will: Some(will),

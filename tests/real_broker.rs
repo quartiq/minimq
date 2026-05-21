@@ -6,8 +6,8 @@ use core::task::Poll;
 use embassy_time::{Duration, with_timeout};
 use embedded_io_async::{ErrorType, Read, Write};
 use minimq::{
-    Buffers, ConfigBuilder, ConnectEvent, Error, Publication, QoS, Session,
-    types::{SubscriptionOptions, TopicFilter},
+    Buffers, ConfigBuilder, ConnectEvent, Error, Publication, QoS, Session, SubscriptionOptions,
+    TopicFilter,
 };
 use std::{
     net::SocketAddr,
