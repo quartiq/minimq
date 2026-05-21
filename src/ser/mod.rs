@@ -31,7 +31,6 @@ use crate::{
     message_types::{ControlPacket, MessageType},
     packets::PublishHeader,
 };
-use bit_field::BitField;
 use serde::Serialize;
 
 /// The maximum size of the MQTT fixed header in bytes. This accounts for the header byte and the
@@ -39,7 +38,8 @@ use serde::Serialize;
 pub(crate) const MAX_FIXED_HEADER_SIZE: usize = 5;
 
 /// Errors that result from the serialization process
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub(crate) enum Error {
     /// The provided memory buffer did not have enough space to serialize into.
@@ -183,7 +183,7 @@ impl<'a> MqttSerializer<'a> {
             .copy_from_slice(remaining_len);
 
         // Write the header
-        let header: u8 = *0u8.set_bits(4..8, typ as u8).set_bits(0..4, flags);
+        let header = ((typ as u8) << 4) | (flags & 0x0F);
         self.buf[MAX_FIXED_HEADER_SIZE - remaining_len.len() - 1] = header;
 
         let offset = MAX_FIXED_HEADER_SIZE - remaining_len.len() - 1;

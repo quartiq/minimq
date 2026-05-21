@@ -4,7 +4,6 @@ use crate::{
     types::{Auth, BinaryData, TopicFilter, Utf8String},
     will::Will,
 };
-use bit_field::BitField;
 use serde::{Deserialize, Serialize};
 
 use serde::ser::SerializeStruct;
@@ -23,19 +22,23 @@ pub(crate) struct Connect<'a> {
 impl serde::Serialize for Connect<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut flags: u8 = 0;
-        flags.set_bit(1, self.clean_start);
+        if self.clean_start {
+            flags |= 1 << 1;
+        }
 
         if let Some(will) = &self.will {
             // Update the flags for the will parameters. Indicate that the will is present, the QoS of
             // the will message, and whether or not the will message should be retained.
-            flags.set_bit(2, true);
-            flags.set_bits(3..=4, will.qos_level() as u8);
-            flags.set_bit(5, will.retained_flag() == Retain::Retained);
+            flags |= 1 << 2;
+            flags |= (will.qos_level() as u8) << 3;
+            if will.retained_flag() == Retain::Retained {
+                flags |= 1 << 5;
+            }
         }
 
         if self.auth.is_some() {
-            flags.set_bit(6, true);
-            flags.set_bit(7, true);
+            flags |= 1 << 6;
+            flags |= 1 << 7;
         }
 
         let mut item = serializer.serialize_struct("Connect", 0)?;

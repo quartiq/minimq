@@ -10,7 +10,8 @@ use num_enum::TryFromPrimitive;
 use serde::Deserialize;
 use serde::ser::{SerializeSeq, SerializeStruct};
 
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, TryFromPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u32)]
 pub(crate) enum PropertyIdentifier {
     Invalid = u32::MAX,
@@ -73,7 +74,8 @@ impl<'de> serde::de::Deserialize<'de> for PropertyIdentifier {
 }
 
 /// All of the possible properties that MQTT version 5 supports.
-#[derive(defmt::Format, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Property<'a> {
     /// Payload format indicator.
     PayloadFormatIndicator(u8),

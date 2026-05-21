@@ -18,6 +18,19 @@ enum FlushedPacket {
     Retained(u16),
 }
 
+struct WriteStep<'a> {
+    packet: FlushedPacket,
+    bytes: &'a [u8],
+    written: usize,
+    len: usize,
+}
+
+enum PreparedStep<'a> {
+    Write(WriteStep<'a>),
+    Flush(FlushedPacket),
+    Done,
+}
+
 #[derive(Copy, Clone)]
 enum Progress {
     Idle,
@@ -247,40 +260,30 @@ where
         debug_assert!(found, "completed outbound packet no longer tracked");
     }
 
+    fn set_written(&mut self, packet: FlushedPacket, written: usize, len: usize) {
+        let found = match packet {
+            FlushedPacket::Control(action) => {
+                self.data.outbound.set_control_written(action, written, len)
+            }
+            FlushedPacket::Release(packet_id) => self
+                .data
+                .outbound
+                .set_release_written(packet_id, written, len),
+            FlushedPacket::Retained(packet_id) => self
+                .data
+                .outbound
+                .set_retained_written(packet_id, written, len),
+        };
+        debug_assert!(found, "outbound packet no longer tracked");
+    }
+
     async fn perform_outbound_step(
         &mut self,
         step: OutboundStep,
         now: Instant,
     ) -> Result<bool, Error<IO::Error>> {
-        macro_rules! write_or_disconnect {
-            ($res:expr, $write_failed:literal) => {
-                match $res {
-                    Ok(0) => {
-                        error!("transport write returned zero bytes for non-empty buffer");
-                        return Err(Error::WriteZero);
-                    }
-                    Ok(count) => count,
-                    Err(err) => {
-                        warn!($write_failed, err.kind());
-                        self.handle_disconnect();
-                        return Err(Error::Transport(err));
-                    }
-                }
-            };
-        }
-
-        macro_rules! flush_or_disconnect {
-            ($res:expr, $flush_failed:literal) => {
-                if let Err(err) = $res {
-                    warn!($flush_failed, err.kind());
-                    self.handle_disconnect();
-                    return Err(Error::Transport(err));
-                }
-            };
-        }
-
         let mut small_buf = [0u8; CONTROL_PACKET_LEN];
-        match step {
+        let prepared = match step {
             OutboundStep::Control(step) => match step.state {
                 SendState::Write { written } => {
                     trace!(
@@ -296,40 +299,18 @@ where
                         step.action,
                         self.runtime.maximum_packet_size,
                     )?;
-                    let res = {
-                        let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
-                        connection.write(&packet[written..]).await
-                    };
-                    let count = write_or_disconnect!(res, "Control packet write failed: {}");
-                    let found = self.data.outbound.set_control_written(
-                        step.action,
-                        written + count,
-                        packet.len(),
-                    );
-                    debug_assert!(found, "control packet no longer tracked");
-                    if written + count < packet.len() {
-                        return Ok(true);
-                    }
-                    trace!("Flushing control packet {}", step.action);
-                    let res = {
-                        let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
-                        connection.flush().await
-                    };
-                    flush_or_disconnect!(res, "Control packet flush failed: {}");
-                    self.complete_flush(FlushedPacket::Control(step.action), now);
-                    Ok(true)
+                    PreparedStep::Write(WriteStep {
+                        packet: FlushedPacket::Control(step.action),
+                        bytes: packet,
+                        written,
+                        len: packet.len(),
+                    })
                 }
                 SendState::Flush => {
                     trace!("Flushing control packet {}", step.action);
-                    let res = {
-                        let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
-                        connection.flush().await
-                    };
-                    flush_or_disconnect!(res, "Control packet flush failed: {}");
-                    self.complete_flush(FlushedPacket::Control(step.action), now);
-                    Ok(true)
+                    PreparedStep::Flush(FlushedPacket::Control(step.action))
                 }
-                SendState::Sent => Ok(false),
+                SendState::Sent => PreparedStep::Done,
             },
             OutboundStep::Release(step) => match step.state {
                 SendState::Write { written } => {
@@ -347,40 +328,18 @@ where
                         step.reason,
                         self.runtime.maximum_packet_size,
                     )?;
-                    let res = {
-                        let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
-                        connection.write(&packet[written..]).await
-                    };
-                    let count = write_or_disconnect!(res, "PUBREL write failed: {}");
-                    let found = self.data.outbound.set_release_written(
-                        step.packet_id,
-                        written + count,
-                        packet.len(),
-                    );
-                    debug_assert!(found, "PUBREL packet no longer tracked");
-                    if written + count < packet.len() {
-                        return Ok(true);
-                    }
-                    trace!("Flushing PUBREL packet packet_id={=u16}", step.packet_id);
-                    let res = {
-                        let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
-                        connection.flush().await
-                    };
-                    flush_or_disconnect!(res, "PUBREL flush failed: {}");
-                    self.complete_flush(FlushedPacket::Release(step.packet_id), now);
-                    Ok(true)
+                    PreparedStep::Write(WriteStep {
+                        packet: FlushedPacket::Release(step.packet_id),
+                        bytes: packet,
+                        written,
+                        len: packet.len(),
+                    })
                 }
                 SendState::Flush => {
                     trace!("Flushing PUBREL packet packet_id={=u16}", step.packet_id);
-                    let res = {
-                        let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
-                        connection.flush().await
-                    };
-                    flush_or_disconnect!(res, "PUBREL flush failed: {}");
-                    self.complete_flush(FlushedPacket::Release(step.packet_id), now);
-                    Ok(true)
+                    PreparedStep::Flush(FlushedPacket::Release(step.packet_id))
                 }
-                SendState::Sent => Ok(false),
+                SendState::Sent => PreparedStep::Done,
             },
             OutboundStep::Retained(step) => match step.state {
                 SendState::Write { written } => {
@@ -396,43 +355,74 @@ where
                         self.data.outbound.pending_release_len()
                     );
                     self.runtime.require_packet_size(step.len)?;
-                    let res = {
-                        let packet = self.data.outbound.retained_packet(step.offset, step.len);
-                        let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
-                        connection.write(&packet[written..]).await
-                    };
-                    let count = write_or_disconnect!(res, "Retained packet write failed: {}");
-                    let found = self.data.outbound.set_retained_written(
-                        step.packet_id,
-                        written + count,
-                        step.len,
-                    );
-                    debug_assert!(found, "retained packet no longer tracked");
-                    if written + count < step.len {
-                        return Ok(true);
-                    }
-                    debug!("Flushing retained packet packet_id={=u16}", step.packet_id);
-                    let res = {
-                        let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
-                        connection.flush().await
-                    };
-                    flush_or_disconnect!(res, "Retained packet flush failed: {}");
-                    self.complete_flush(FlushedPacket::Retained(step.packet_id), now);
-                    Ok(true)
+                    PreparedStep::Write(WriteStep {
+                        packet: FlushedPacket::Retained(step.packet_id),
+                        bytes: self.data.outbound.retained_packet(step.offset, step.len),
+                        written,
+                        len: step.len,
+                    })
                 }
                 SendState::Flush => {
                     debug!("Flushing retained packet packet_id={=u16}", step.packet_id);
-                    let res = {
-                        let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
-                        connection.flush().await
-                    };
-                    flush_or_disconnect!(res, "Retained packet flush failed: {}");
-                    self.complete_flush(FlushedPacket::Retained(step.packet_id), now);
-                    Ok(true)
+                    PreparedStep::Flush(FlushedPacket::Retained(step.packet_id))
                 }
-                SendState::Sent => Ok(false),
+                SendState::Sent => PreparedStep::Done,
             },
+        };
+
+        let packet = match prepared {
+            PreparedStep::Write(packet) => packet,
+            PreparedStep::Flush(packet) => {
+                self.flush_current(packet, now).await?;
+                return Ok(true);
+            }
+            PreparedStep::Done => return Ok(false),
+        };
+
+        let WriteStep {
+            packet,
+            bytes,
+            written,
+            len,
+        } = packet;
+        let count = {
+            let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
+            write_current(connection, &bytes[written..]).await
+        };
+        let count = match count {
+            Ok(count) => count,
+            Err(Error::Transport(err)) => {
+                warn!("Outbound packet write failed: {}", err.kind());
+                self.handle_disconnect();
+                return Err(Error::Transport(err));
+            }
+            Err(err) => return Err(err),
+        };
+        let written = written + count;
+        self.set_written(packet, written, len);
+        if written < len {
+            return Ok(true);
         }
+        self.flush_current(packet, now).await?;
+        Ok(true)
+    }
+
+    async fn flush_current(
+        &mut self,
+        packet: FlushedPacket,
+        now: Instant,
+    ) -> Result<(), Error<IO::Error>> {
+        let res = {
+            let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
+            connection.flush().await
+        };
+        if let Err(err) = res {
+            warn!("Outbound packet flush failed: {}", err.kind());
+            self.handle_disconnect();
+            return Err(Error::Transport(err));
+        }
+        self.complete_flush(packet, now);
+        Ok(())
     }
 
     pub(super) fn handle_disconnect(&mut self) {
@@ -458,5 +448,16 @@ where
             };
             self.perform_outbound_step(step, Instant::now()).await?;
         }
+    }
+}
+
+async fn write_current<C: Io>(connection: &mut C, bytes: &[u8]) -> Result<usize, Error<C::Error>> {
+    match connection.write(bytes).await {
+        Ok(0) => {
+            error!("transport write returned zero bytes for non-empty buffer");
+            Err(Error::WriteZero)
+        }
+        Ok(count) => Ok(count),
+        Err(err) => Err(Error::Transport(err)),
     }
 }

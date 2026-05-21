@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MQTT wire wrappers are no longer public.
 * Reject MQTT properties that are invalid for the requested outbound packet kind.
 * Let `Will::new()` take a topic string directly and keep fixed-capacity topic storage internal.
+* Allow `defmt` to be disabled.
 
 ## [0.11.2](https://github.com/quartiq/minimq/compare/v0.11.1...v0.11.2) - 2026-05-21
 

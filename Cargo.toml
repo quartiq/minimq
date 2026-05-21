@@ -18,15 +18,21 @@ license = "MIT"
 rust-version = "1.85.0"
 
 [features]
+default = ["defmt"]
+defmt = [
+    "dep:defmt",
+    "heapless/defmt",
+    "embedded-io-async/defmt",
+    "embassy-time/defmt",
+]
 fuzzing = []
 
 [dependencies]
-bit_field = "0.10.0"
-defmt = "1.0.1"
+defmt = { version = "1.0.1", optional = true }
 num_enum = { version = "0.7", default-features = false }
-heapless = { version = "0.9.1", features = ["defmt"] }
-embedded-io-async = { version = "0.7", features = ["defmt"] }
-embassy-time = { version = "0.5.1", features = ["defmt"] }
+heapless = "0.9.1"
+embedded-io-async = "0.7"
+embassy-time = "0.5.1"
 serde = { version = "1", features = ["derive"], default-features = false }
 thiserror = { version = "2", default-features = false }
 

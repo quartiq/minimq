@@ -11,7 +11,8 @@ pub(super) const MAX_RETAINED: usize = 8;
 pub(super) const MAX_PENDING_CONTROL: usize = 8;
 pub(super) const MAX_PENDING_RELEASE: usize = 8;
 
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(super) enum ControlAction {
     PubAck { packet_id: u16, reason: ReasonCode },
     PubRec { packet_id: u16, reason: ReasonCode },
@@ -207,7 +208,7 @@ impl<'a> Outbound<'a> {
         else {
             return false;
         };
-        self.retained.swap_remove(position);
+        self.retained.remove(position);
         self.compact();
         true
     }
@@ -456,7 +457,6 @@ impl<'a> Outbound<'a> {
 
     fn compact(&mut self) {
         let previous_used = self.used;
-        self.retained.sort_unstable_by_key(|entry| entry.offset);
 
         let mut cursor = 0;
         let mut moved = 0;

@@ -5,10 +5,10 @@ use crate::{
         PublishHeader, SubAck, Subscribe, UnsubAck, Unsubscribe,
     },
 };
-use bit_field::BitField;
 use num_enum::TryFromPrimitive;
 
-#[derive(defmt::Format, Copy, Clone, Debug, TryFromPrimitive)]
+#[derive(Copy, Clone, Debug, TryFromPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub(crate) enum MessageType {
     Connect = 1,
@@ -45,9 +45,14 @@ impl ControlPacket for ConnAck<'_> {
 
 impl PublishHeader<'_> {
     pub(crate) fn fixed_header_flags(&self) -> u8 {
-        *0u8.set_bits(1..=2, self.qos as u8)
-            .set_bit(0, self.retain == Retain::Retained)
-            .set_bit(3, self.dup)
+        let mut flags = (self.qos as u8) << 1;
+        if self.retain == Retain::Retained {
+            flags |= 1;
+        }
+        if self.dup {
+            flags |= 1 << 3;
+        }
+        flags
     }
 }
 

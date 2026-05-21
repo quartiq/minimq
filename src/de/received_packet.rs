@@ -8,7 +8,6 @@ use crate::{
 use super::deserializer::MqttDeserializer;
 use crate::{trace, warn};
 
-use bit_field::BitField;
 use core::convert::TryFrom;
 use serde::Deserialize;
 
@@ -104,9 +103,9 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
 
         let fixed_header: u8 = next_required(&mut seq, "Missing fixed header")?;
         let _length: Varint = next_required(&mut seq, "Missing remaining length")?;
-        let packet_type = MessageType::try_from(fixed_header.get_bits(4..=7))
+        let packet_type = MessageType::try_from(fixed_header >> 4)
             .map_err(|_| A::Error::custom("Invalid MQTT control packet type"))?;
-        let flags = fixed_header.get_bits(0..=3);
+        let flags = fixed_header & 0x0F;
         trace!(
             "Received fixed header: type={} flags={=u8:#b} remaining_len={}",
             packet_type, flags, _length
@@ -138,7 +137,7 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
                 ReceivedPacket::ConnAck(next_required(&mut seq, "Missing CONNACK")?)
             }
             MessageType::Publish => {
-                let qos = QoS::try_from(fixed_header.get_bits(1..=2))
+                let qos = QoS::try_from((fixed_header >> 1) & 0b11)
                     .map_err(|_| A::Error::custom("Bad QoS field"))?;
 
                 let topic = next_required(&mut seq, "Missing PUBLISH topic")?;
@@ -155,12 +154,12 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
                     packet_id,
                     properties,
                     payload: &[],
-                    retain: if fixed_header.get_bit(0) {
+                    retain: if fixed_header & 1 != 0 {
                         Retain::Retained
                     } else {
                         Retain::NotRetained
                     },
-                    dup: fixed_header.get_bit(3),
+                    dup: fixed_header & (1 << 3) != 0,
                     qos,
                 };
 

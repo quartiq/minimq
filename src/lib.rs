@@ -32,7 +32,29 @@ use ser::Error as SerError;
 
 use num_enum::TryFromPrimitive;
 
+#[cfg(feature = "defmt")]
 pub(crate) use defmt::{debug, error, info, trace, warn};
+
+#[cfg(not(feature = "defmt"))]
+macro_rules! log_ignore {
+    ($message:literal $(, $arg:expr)* $(,)?) => {
+        {
+            let _ = $message;
+            $(let _ = &$arg;)*
+        }
+    };
+}
+
+#[cfg(not(feature = "defmt"))]
+pub(crate) use log_ignore as debug;
+#[cfg(not(feature = "defmt"))]
+pub(crate) use log_ignore as error;
+#[cfg(not(feature = "defmt"))]
+pub(crate) use log_ignore as info;
+#[cfg(not(feature = "defmt"))]
+pub(crate) use log_ignore as trace;
+#[cfg(not(feature = "defmt"))]
+pub(crate) use log_ignore as warn;
 
 /// Session error type for a specific transport.
 pub type SessionError<IO> = Error<<IO as embedded_io_async::ErrorType>::Error>;
@@ -47,7 +69,8 @@ pub const MQTT_INSECURE_DEFAULT_PORT: u16 = 1883;
 pub const MQTT_SECURE_DEFAULT_PORT: u16 = 8883;
 
 /// The quality-of-service for an MQTT message.
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive, PartialOrd, Ord)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum QoS {
     /// Deliver at most once. No acknowledgment or retry.
@@ -59,7 +82,8 @@ pub enum QoS {
 }
 
 /// The retained status for an MQTT message.
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum Retain {
     /// Do not retain the message on the broker.
@@ -69,7 +93,8 @@ pub enum Retain {
 }
 
 /// Configuration errors detected before a session is created.
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum ConfigError {
     /// The requested RX split does not fit in the provided backing buffer.
@@ -90,7 +115,8 @@ pub enum ConfigError {
 }
 
 /// Failures caused by broker behavior or invalid inbound MQTT data.
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum PeerError {
     /// The broker explicitly rejected the operation with an MQTT reason code.
@@ -102,7 +128,8 @@ pub enum PeerError {
 }
 
 /// Local capacity and sizing failures.
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum ResourceError {
     /// Local fixed-capacity storage or packet scratch space was too small.
@@ -215,7 +242,8 @@ impl<E> From<ResourceError> for Error<E> {
     }
 }
 
-#[derive(defmt::Format, Debug, Clone, PartialEq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum ProtocolError {
     /// The broker sent a packet that is invalid in the current protocol state.
     #[error("received an unexpected MQTT packet")]

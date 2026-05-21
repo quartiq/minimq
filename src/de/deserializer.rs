@@ -39,7 +39,8 @@ use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 use crate::varint::read_mqtt_u32_varint;
 
 /// Errors returned while decoding MQTT packets.
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub(crate) enum Error {
     /// A custom deserialization error occurred.

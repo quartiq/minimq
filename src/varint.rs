@@ -2,7 +2,8 @@ use serde::ser::SerializeSeq;
 
 pub(crate) const MQTT_VARINT_MAX: u32 = 0x0FFF_FFFF;
 
-#[derive(defmt::Format, Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) struct Varint(pub(crate) u32);
 
 impl Varint {
