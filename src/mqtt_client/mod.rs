@@ -4,9 +4,8 @@ mod session;
 pub use session::Session;
 
 use crate::{
-    QoS, ResourceError, Retain,
+    Properties, QoS, ResourceError, Retain,
     publication::{OwnedResponseTarget, Publication, ResponseTarget},
-    types::Properties,
 };
 use embedded_io_async::{ErrorType, Read, Write};
 

@@ -93,10 +93,10 @@ where
 
     /// Return whether the session currently has the local capacity to attempt a
     /// publish at the requested QoS.
-    pub fn can_publish(&mut self, qos: QoS) -> bool {
+    pub fn can_publish(&self, qos: QoS) -> bool {
         self.connection.is_some()
             && if qos == QoS::AtMostOnce {
-                self.data.outbound.scratch_space().len() >= MAX_FIXED_HEADER_SIZE
+                self.data.outbound.scratch_len() >= MAX_FIXED_HEADER_SIZE
             } else {
                 self.runtime.send_quota != 0 && self.data.outbound.can_retain()
             }

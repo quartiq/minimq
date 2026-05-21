@@ -4,7 +4,7 @@ use embassy_time::{Duration, with_timeout};
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use minimq::{
     Buffers, ConfigBuilder, ConnectEvent, Disconnect, Error, InboundPublish, Op, PeerError,
-    PubError, Publication, QoS, ReasonCode, ResourceError, Session, TopicFilter,
+    Property, PubError, Publication, QoS, ReasonCode, ResourceError, Session, TopicFilter,
 };
 use std::{cell::RefCell, collections::VecDeque, future::poll_fn, rc::Rc, task::Poll};
 use support::{block_on, init_host_logging, poll_once};
@@ -1253,6 +1253,32 @@ fn disconnect_uses_dedicated_control_storage_when_tx_arena_is_full() {
 
     assert!(!session.is_connected());
     assert_eq!(inspect.tx().last().unwrap(), &disconnect_req());
+}
+
+#[test]
+fn outbound_operations_reject_invalid_property_contexts() {
+    let connection = MockConnection::default();
+    connection.clone().push_rx(&connack());
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    let publish_props = [Property::ServerReference("server")];
+    assert_eq!(
+        block_on(session.publish(Publication::bytes("data", b"x").properties(&publish_props))),
+        Err(PubError::Session(Error::InvalidRequest))
+    );
+
+    let subscribe_props = [Property::ResponseTopic("reply")];
+    assert_eq!(
+        block_on(session.subscribe(&[TopicFilter::new("data")], &subscribe_props)),
+        Err(Error::InvalidRequest)
+    );
+
+    let disconnect_props = [Property::PayloadFormatIndicator(1)];
+    assert_eq!(
+        block_on(session.disconnect_with(Disconnect::success().with_properties(&disconnect_props))),
+        Err(Error::InvalidRequest)
+    );
 }
 
 #[test]

@@ -4,9 +4,10 @@ use embedded_io_async::Error as _;
 use crate::mqtt_client::OpKind;
 use crate::mqtt_client::outbound::{CONTROL_PACKET_LEN, write_all};
 use crate::packets::{Disconnect, PublishHeader, Subscribe, Unsubscribe};
+use crate::properties::{Properties, PropertyContext};
 use crate::publication::{Publication, ToPayload};
 use crate::ser::MqttSerializer;
-use crate::types::{Properties, TopicFilter, Utf8String};
+use crate::types::{TopicFilter, Utf8String};
 use crate::{Error, Op, Property, PubError, QoS, ResourceError, debug, info, warn};
 
 use super::{Io, Session};
@@ -35,6 +36,11 @@ where
             return Ok(());
         }
         info!("Graceful disconnect requested");
+        if let Some(properties) = disconnect.properties()
+            && !properties.valid_for(PropertyContext::Disconnect)
+        {
+            return Err(Error::InvalidRequest);
+        }
         let mut buffer = [0u8; CONTROL_PACKET_LEN];
         let packet = MqttSerializer::to_buffer(&mut buffer, &disconnect)?;
         self.runtime.require_packet_size(packet.len())?;
@@ -64,6 +70,9 @@ where
             return Err(Error::Disconnected);
         }
         if topics.is_empty() {
+            return Err(Error::InvalidRequest);
+        }
+        if !Properties::from_slice(properties).valid_for(PropertyContext::Subscribe) {
             return Err(Error::InvalidRequest);
         }
         self.flush_outbound().await?;
@@ -106,6 +115,9 @@ where
             return Err(Error::Disconnected);
         }
         if topics.is_empty() {
+            return Err(Error::InvalidRequest);
+        }
+        if !Properties::from_slice(properties).valid_for(PropertyContext::Unsubscribe) {
             return Err(Error::InvalidRequest);
         }
         self.flush_outbound().await?;
@@ -164,6 +176,9 @@ where
             payload,
             retain,
         } = publication;
+        if !properties.valid_for(PropertyContext::Publish) {
+            return Err(Error::InvalidRequest.into());
+        }
         let qos = match self.runtime.max_qos {
             Some(max_qos) if self.downgrade_qos && qos > max_qos => max_qos,
             _ => qos,

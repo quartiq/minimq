@@ -1,7 +1,7 @@
 use crate::{
     ConfigError, QoS, Retain,
-    properties::{Property, PropertyIdentifier},
-    types::{BinaryData, Properties, Utf8String},
+    properties::{Properties, Property, PropertyContext},
+    types::{BinaryData, Utf8String},
 };
 use heapless::String;
 
@@ -10,15 +10,8 @@ type TopicString = String<TOPIC_CAPACITY>;
 
 fn validate_will_properties(properties: &[Property<'_>]) -> Result<(), ConfigError> {
     for property in properties {
-        match property.into() {
-            PropertyIdentifier::WillDelayInterval
-            | PropertyIdentifier::PayloadFormatIndicator
-            | PropertyIdentifier::MessageExpiryInterval
-            | PropertyIdentifier::ContentType
-            | PropertyIdentifier::ResponseTopic
-            | PropertyIdentifier::CorrelationData
-            | PropertyIdentifier::UserProperty => {}
-            _ => return Err(ConfigError::InvalidConfig),
+        if !property.is_valid_for(PropertyContext::Will) {
+            return Err(ConfigError::InvalidConfig);
         }
     }
     Ok(())

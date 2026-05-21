@@ -1,7 +1,7 @@
 use crate::{
-    Property, QoS, Retain,
+    Properties, Property, QoS, Retain,
     reason_codes::ReasonCode,
-    types::{Auth, BinaryData, Properties, TopicFilter, Utf8String},
+    types::{Auth, BinaryData, TopicFilter, Utf8String},
     will::Will,
 };
 use bit_field::BitField;
@@ -323,10 +323,10 @@ struct ReasonData<'a> {
 #[cfg(test)]
 mod tests {
     use super::Disconnect;
-    use crate::properties::Property;
+    use crate::properties::{Properties, Property};
     use crate::reason_codes::ReasonCode;
     use crate::ser::MqttSerializer;
-    use crate::types::{Properties, TopicFilter, Utf8String};
+    use crate::types::{TopicFilter, Utf8String};
     use crate::{QoS, Retain};
 
     #[test]

@@ -336,11 +336,11 @@ impl serde::Serializer for &mut MqttSerializer<'_> {
     }
 
     fn serialize_char(self, _v: char) -> Result<Self::Ok, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn serialize_unit(self) -> Result<(), Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn serialize_unit_variant(
@@ -349,7 +349,7 @@ impl serde::Serializer for &mut MqttSerializer<'_> {
         _variant_index: u32,
         _variant: &'static str,
     ) -> Result<(), Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn serialize_newtype_variant<T: ?Sized + Serialize>(
@@ -359,7 +359,7 @@ impl serde::Serializer for &mut MqttSerializer<'_> {
         _variant: &'static str,
         _value: &T,
     ) -> Result<(), Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn serialize_tuple_struct(
@@ -367,7 +367,7 @@ impl serde::Serializer for &mut MqttSerializer<'_> {
         _name: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleStruct, Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn serialize_tuple_variant(
@@ -377,11 +377,11 @@ impl serde::Serializer for &mut MqttSerializer<'_> {
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant, Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn serialize_struct_variant(
@@ -391,19 +391,19 @@ impl serde::Serializer for &mut MqttSerializer<'_> {
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStructVariant, Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn collect_str<T: ?Sized>(self, _value: &T) -> Result<Self::Ok, Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn serialize_f32(self, _v: f32) -> Result<Self::Ok, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn serialize_f64(self, _v: f64) -> Result<Self::Ok, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 }
 
@@ -455,11 +455,11 @@ impl serde::ser::SerializeTupleStruct for &mut MqttSerializer<'_> {
     type Error = Error;
 
     fn serialize_field<T: ?Sized + Serialize>(&mut self, _value: &T) -> Result<(), Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn end(self) -> Result<(), Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 }
 
@@ -468,11 +468,11 @@ impl serde::ser::SerializeTupleVariant for &mut MqttSerializer<'_> {
     type Error = Error;
 
     fn serialize_field<T: ?Sized + Serialize>(&mut self, _value: &T) -> Result<(), Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn end(self) -> Result<(), Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 }
 
@@ -481,15 +481,15 @@ impl serde::ser::SerializeMap for &mut MqttSerializer<'_> {
     type Error = Error;
 
     fn serialize_key<T: ?Sized + Serialize>(&mut self, _key: &T) -> Result<(), Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn serialize_value<T: ?Sized + Serialize>(&mut self, _value: &T) -> Result<(), Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn end(self) -> Result<(), Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 }
 
@@ -502,11 +502,11 @@ impl serde::ser::SerializeStructVariant for &mut MqttSerializer<'_> {
         _key: &'static str,
         _value: &T,
     ) -> Result<(), Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn end(self) -> Result<(), Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 }
 

@@ -166,10 +166,17 @@ impl<'a> Outbound<'a> {
         MAX_RETAINED.min(MAX_PENDING_RELEASE) as u16
     }
 
-    pub(super) fn can_retain(&mut self) -> bool {
-        self.compact();
+    fn used_after_compact(&self) -> usize {
+        self.retained.iter().map(|entry| entry.len).sum()
+    }
+
+    pub(super) fn scratch_len(&self) -> usize {
+        self.buf.len().saturating_sub(self.used_after_compact())
+    }
+
+    pub(super) fn can_retain(&self) -> bool {
         self.retained.len() < self.retained.capacity()
-            && self.buf.len().saturating_sub(self.used) >= MAX_FIXED_HEADER_SIZE
+            && self.scratch_len() >= MAX_FIXED_HEADER_SIZE
     }
 
     pub(super) fn scratch_space(&mut self) -> &mut [u8] {
@@ -331,65 +338,94 @@ impl<'a> Outbound<'a> {
         action: ControlAction,
         written: usize,
         len: usize,
-    ) {
+    ) -> bool {
         if let Some(entry) = self
             .pending_control
             .iter_mut()
             .find(|entry| entry.action == action)
         {
             entry.state.set_written(written, len);
+            true
+        } else {
+            false
         }
     }
 
-    pub(super) fn flush_control(&mut self, action: ControlAction) {
-        if let Some(entry) = self
+    pub(super) fn flush_control(&mut self, action: ControlAction) -> bool {
+        let found = if let Some(entry) = self
             .pending_control
             .iter_mut()
             .find(|entry| entry.action == action)
         {
             entry.state = SendState::Sent;
-        }
+            true
+        } else {
+            false
+        };
         self.pending_control
             .retain(|entry| entry.state != SendState::Sent);
+        found
     }
 
-    pub(super) fn set_retained_written(&mut self, packet_id: u16, written: usize, len: usize) {
+    pub(super) fn set_retained_written(
+        &mut self,
+        packet_id: u16,
+        written: usize,
+        len: usize,
+    ) -> bool {
         if let Some(entry) = self
             .retained
             .iter_mut()
             .find(|entry| entry.packet_id == packet_id)
         {
             entry.state.set_written(written, len);
+            true
+        } else {
+            false
         }
     }
 
-    pub(super) fn flush_retained(&mut self, packet_id: u16) {
+    pub(super) fn flush_retained(&mut self, packet_id: u16) -> bool {
         if let Some(entry) = self
             .retained
             .iter_mut()
             .find(|entry| entry.packet_id == packet_id)
         {
             entry.state = SendState::Sent;
+            true
+        } else {
+            false
         }
     }
 
-    pub(super) fn set_release_written(&mut self, packet_id: u16, written: usize, len: usize) {
+    pub(super) fn set_release_written(
+        &mut self,
+        packet_id: u16,
+        written: usize,
+        len: usize,
+    ) -> bool {
         if let Some(entry) = self
             .pending_release
             .iter_mut()
             .find(|entry| entry.packet_id == packet_id)
         {
             entry.state.set_written(written, len);
+            true
+        } else {
+            false
         }
     }
 
-    pub(super) fn flush_release(&mut self, packet_id: u16) {
+    pub(super) fn flush_release(&mut self, packet_id: u16) -> bool {
         if let Some(entry) = self
             .pending_release
             .iter_mut()
             .find(|entry| entry.packet_id == packet_id)
         {
             entry.state = SendState::Sent;
+            true
+        } else {
+            false
         }
     }
 
@@ -572,9 +608,10 @@ pub(super) async fn write_all<C: Io>(
 mod tests {
     use super::{ControlAction, Outbound, OutboundStep, SendState};
     use crate::{
+        Properties,
         packets::Subscribe,
         publication::Publication,
-        types::{Properties, TopicFilter, Utf8String},
+        types::{TopicFilter, Utf8String},
     };
 
     #[test]

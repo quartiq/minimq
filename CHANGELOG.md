@@ -15,9 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   codec storage variants.
 * Make `Property` string, binary, and subscription identifier variants use plain Rust types; the
   MQTT wire wrappers are no longer public.
+* Reject MQTT properties that are invalid for the requested outbound packet kind.
 * Let `Will::new()` take a topic string directly and keep fixed-capacity topic storage internal.
 
-## [0.11.2](https://github.com/quartiq/minimq/compare/v0.11.1..v0.11.2) - 2026-05-21
+## [0.11.2](https://github.com/quartiq/minimq/compare/v0.11.1...v0.11.2) - 2026-05-21
 
 ## Added
 
@@ -25,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   properties.
 * rx/tx max packet sizes getters
 
-## [0.11.0](https://github.com/quartiq/minimq/compare/v0.10.0..v0.11.0) - 2026-05-05
+## [0.11.0](https://github.com/quartiq/minimq/compare/v0.10.0...v0.11.0) - 2026-05-05
 
 ## Changed
 
@@ -64,7 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Tiny outbound buffers now fail with `InsufficientMemory` during serialization instead of
   panicking.
 
-## [0.10.0](https://github.com/quartiq/minimq/compare/v0.9.0..v0.10.0) - 2025-01-27
+## [0.10.0](https://github.com/quartiq/minimq/compare/v0.9.0...v0.10.0) - 2025-01-27
 
 ## Changed
 

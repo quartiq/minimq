@@ -5,10 +5,10 @@ use crate::{
         Connect, Disconnect, PingReq, PubAck, PubComp, PubRec, PubRel, PublishHeader, Reason,
         Subscribe, Unsubscribe,
     },
-    properties::Property,
+    properties::{Properties, Property},
     publication::Publication,
     ser::MqttSerializer,
-    types::{Properties, TopicFilter, Utf8String},
+    types::{TopicFilter, Utf8String},
 };
 
 /// Parse one inbound packet buffer.

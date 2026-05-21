@@ -3,8 +3,8 @@ use embedded_io_async::Error as _;
 
 use crate::de::PacketReader;
 use crate::mqtt_client::outbound::{
-    ControlAction, OutboundStep, SendState, check_control_packet_size, serialize_control_packet,
-    serialize_pubrel,
+    CONTROL_PACKET_LEN, ControlAction, OutboundStep, SendState, check_control_packet_size,
+    serialize_control_packet, serialize_pubrel,
 };
 use crate::{Error, InboundPublish, debug, error, trace, warn};
 
@@ -239,11 +239,12 @@ where
             self.runtime.ping_timeout = Some(now + Duration::from_millis(ROUND_TRIP_TIMEOUT_MS));
         }
         self.runtime.note_outbound_activity(now);
-        match packet {
+        let found = match packet {
             FlushedPacket::Control(action) => self.data.outbound.flush_control(action),
             FlushedPacket::Release(packet_id) => self.data.outbound.flush_release(packet_id),
             FlushedPacket::Retained(packet_id) => self.data.outbound.flush_retained(packet_id),
-        }
+        };
+        debug_assert!(found, "completed outbound packet no longer tracked");
     }
 
     async fn perform_outbound_step(
@@ -278,7 +279,7 @@ where
             };
         }
 
-        let mut small_buf = [0u8; 9];
+        let mut small_buf = [0u8; CONTROL_PACKET_LEN];
         match step {
             OutboundStep::Control(step) => match step.state {
                 SendState::Write { written } => {
@@ -300,11 +301,12 @@ where
                         connection.write(&packet[written..]).await
                     };
                     let count = write_or_disconnect!(res, "Control packet write failed: {}");
-                    self.data.outbound.set_control_written(
+                    let found = self.data.outbound.set_control_written(
                         step.action,
                         written + count,
                         packet.len(),
                     );
+                    debug_assert!(found, "control packet no longer tracked");
                     if written + count < packet.len() {
                         return Ok(true);
                     }
@@ -350,11 +352,12 @@ where
                         connection.write(&packet[written..]).await
                     };
                     let count = write_or_disconnect!(res, "PUBREL write failed: {}");
-                    self.data.outbound.set_release_written(
+                    let found = self.data.outbound.set_release_written(
                         step.packet_id,
                         written + count,
                         packet.len(),
                     );
+                    debug_assert!(found, "PUBREL packet no longer tracked");
                     if written + count < packet.len() {
                         return Ok(true);
                     }
@@ -399,11 +402,12 @@ where
                         connection.write(&packet[written..]).await
                     };
                     let count = write_or_disconnect!(res, "Retained packet write failed: {}");
-                    self.data.outbound.set_retained_written(
+                    let found = self.data.outbound.set_retained_written(
                         step.packet_id,
                         written + count,
                         step.len,
                     );
+                    debug_assert!(found, "retained packet no longer tracked");
                     if written + count < step.len {
                         return Ok(true);
                     }

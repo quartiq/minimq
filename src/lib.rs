@@ -17,10 +17,10 @@ mod will;
 pub use config::{Buffers, ConfigBuilder};
 pub use mqtt_client::{ConnectEvent, InboundPublish, Io, Op, OpStatus, Session};
 pub use packets::Disconnect;
-pub use properties::Property;
+pub use properties::{Properties, Property};
 pub use publication::{OwnedResponseTarget, Publication, ToPayload};
 pub use reason_codes::ReasonCode;
-pub use types::{Properties, RetainHandling, SubscriptionOptions, TopicFilter};
+pub use types::{RetainHandling, SubscriptionOptions, TopicFilter};
 pub use will::Will;
 
 #[cfg(feature = "fuzzing")]

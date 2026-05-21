@@ -1,5 +1,4 @@
-use crate::properties::Property;
-use crate::types::Properties;
+use crate::properties::{Properties, Property};
 use crate::{QoS, ResourceError, Retain};
 use heapless::{String, Vec};
 
