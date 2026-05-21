@@ -41,7 +41,7 @@ use crate::varint::read_mqtt_u32_varint;
 /// Errors returned while decoding MQTT packets.
 #[derive(defmt::Format, Debug, Copy, Clone, PartialEq)]
 #[non_exhaustive]
-pub enum Error {
+pub(crate) enum Error {
     /// A custom deserialization error occurred.
     Custom,
 
@@ -84,7 +84,7 @@ impl core::fmt::Display for Error {
 }
 
 /// Deserializes a byte buffer into an MQTT control packet.
-pub struct MqttDeserializer<'a> {
+pub(crate) struct MqttDeserializer<'a> {
     buf: &'a [u8],
     index: usize,
     next_pending_length: Option<usize>,
@@ -92,7 +92,7 @@ pub struct MqttDeserializer<'a> {
 
 impl<'a> MqttDeserializer<'a> {
     /// Construct a deserializer from a provided data buffer.
-    pub fn new(buf: &'a [u8]) -> Self {
+    pub(crate) fn new(buf: &'a [u8]) -> Self {
         Self {
             buf,
             index: 0,
@@ -104,12 +104,12 @@ impl<'a> MqttDeserializer<'a> {
     ///
     /// # Args
     /// * `len` - The known length of the next binary data blob.
-    pub fn set_next_pending_length(&mut self, len: usize) {
+    pub(crate) fn set_next_pending_length(&mut self, len: usize) {
         self.next_pending_length.replace(len);
     }
 
     /// Attempt to take N bytes from the buffer.
-    pub fn try_take_n(&mut self, n: usize) -> Result<&'a [u8], Error> {
+    pub(crate) fn try_take_n(&mut self, n: usize) -> Result<&'a [u8], Error> {
         if self.len() < n {
             return Err(Error::InsufficientData);
         }
@@ -120,7 +120,7 @@ impl<'a> MqttDeserializer<'a> {
     }
 
     /// Pop a single byte from the data buffer.
-    pub fn pop(&mut self) -> Result<u8, Error> {
+    pub(crate) fn pop(&mut self) -> Result<u8, Error> {
         if self.len() == 0 {
             return Err(Error::InsufficientData);
         }
@@ -131,22 +131,22 @@ impl<'a> MqttDeserializer<'a> {
     }
 
     /// Read a 16-bit integer from the data buffer.
-    pub fn read_u16(&mut self) -> Result<u16, Error> {
+    pub(crate) fn read_u16(&mut self) -> Result<u16, Error> {
         Ok(u16::from_be_bytes([self.pop()?, self.pop()?]))
     }
 
     /// Read the number of remaining bytes in the data buffer.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.buf.len() - self.index
     }
 
     /// Read a variable-length integer from the data buffer.
-    pub fn read_varint(&mut self) -> Result<u32, Error> {
+    pub(crate) fn read_varint(&mut self) -> Result<u32, Error> {
         read_mqtt_u32_varint(|| self.pop(), || Error::BadVarint)
     }
 
     /// Determine the number of bytes that were deserialized.
-    pub fn deserialized_bytes(&self) -> usize {
+    pub(crate) fn deserialized_bytes(&self) -> usize {
         self.index
     }
 
@@ -154,7 +154,7 @@ impl<'a> MqttDeserializer<'a> {
     ///
     /// # Note
     /// This is intended to be used after deserialization has completed.
-    pub fn remainder(&self) -> &'a [u8] {
+    pub(crate) fn remainder(&self) -> &'a [u8] {
         &self.buf[self.index..]
     }
 }

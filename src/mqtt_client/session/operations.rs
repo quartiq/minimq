@@ -1,11 +1,14 @@
 use embassy_time::Instant;
 use embedded_io_async::Error as _;
 
-use crate::packets::{DisconnectReq, PublishHeader, Subscribe, Unsubscribe};
-use crate::types::{Properties, TopicFilter};
+use crate::mqtt_client::OpKind;
+use crate::mqtt_client::outbound::{CONTROL_PACKET_LEN, write_all};
+use crate::packets::{Disconnect, PublishHeader, Subscribe, Unsubscribe};
+use crate::publication::{Publication, ToPayload};
+use crate::ser::MqttSerializer;
+use crate::types::{Properties, TopicFilter, Utf8String};
 use crate::{Error, Op, Property, PubError, QoS, ResourceError, debug, info, warn};
 
-use super::super::outbound::write_packet;
 use super::{Io, Session};
 
 impl<'buf, IO> Session<'buf, IO>
@@ -16,12 +19,30 @@ where
     ///
     /// Cancel-safe if the underlying transport write/flush futures are cancel-safe.
     pub async fn disconnect(&mut self) -> Result<(), Error<IO::Error>> {
-        let Some(connection) = self.connection.as_mut() else {
+        self.disconnect_with(Disconnect::success()).await
+    }
+
+    /// Close the current MQTT transport with a caller-specified `DISCONNECT`.
+    ///
+    /// Use [`Disconnect::with_will`] to ask the broker to publish the configured Will immediately.
+    ///
+    /// Cancel-safe if the underlying transport write/flush futures are cancel-safe.
+    pub async fn disconnect_with(
+        &mut self,
+        disconnect: Disconnect<'_>,
+    ) -> Result<(), Error<IO::Error>> {
+        if self.connection.is_none() {
             return Ok(());
-        };
+        }
         info!("Graceful disconnect requested");
-        let mut buffer = [0u8; 9];
-        let result = write_packet(&mut buffer, connection, &DisconnectReq).await;
+        let mut buffer = [0u8; CONTROL_PACKET_LEN];
+        let packet = MqttSerializer::to_buffer(&mut buffer, &disconnect)?;
+        self.runtime.require_packet_size(packet.len())?;
+        let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
+        let result = match write_all(connection, packet).await {
+            Ok(()) => connection.flush().await.map_err(Error::Transport),
+            Err(err) => Err(err),
+        };
         self.handle_disconnect();
         result
     }
@@ -65,7 +86,7 @@ where
         );
         self.flush_outbound().await?;
         Ok(Op::new(
-            super::super::OpKind::Subscribe,
+            OpKind::Subscribe,
             packet_id,
             self.data.generation(),
         ))
@@ -107,7 +128,7 @@ where
         );
         self.flush_outbound().await?;
         Ok(Op::new(
-            super::super::OpKind::Unsubscribe,
+            OpKind::Unsubscribe,
             packet_id,
             self.data.generation(),
         ))
@@ -126,17 +147,17 @@ where
     /// returns `None`.
     pub async fn publish<P>(
         &mut self,
-        publication: crate::publication::Publication<'_, P>,
+        publication: Publication<'_, P>,
     ) -> Result<Option<Op>, PubError<P::Error, IO::Error>>
     where
-        P: crate::publication::ToPayload,
+        P: ToPayload,
     {
         if self.connection.is_none() {
             return Err(Error::Disconnected.into());
         }
         self.flush_outbound().await?;
 
-        let crate::publication::Publication {
+        let Publication {
             topic,
             properties,
             qos,
@@ -149,7 +170,7 @@ where
         };
         let packet_id = (qos > QoS::AtMostOnce).then(|| self.data.next_packet_id());
         let header = PublishHeader {
-            topic: crate::types::Utf8String(topic),
+            topic: Utf8String(topic),
             packet_id,
             properties,
             retain,
@@ -180,22 +201,19 @@ where
             );
             self.flush_outbound().await?;
             let kind = if qos == QoS::ExactlyOnce {
-                super::super::OpKind::PublishExactlyOnce
+                OpKind::PublishExactlyOnce
             } else {
-                super::super::OpKind::PublishAtLeastOnce
+                OpKind::PublishAtLeastOnce
             };
             return Ok(Some(Op::new(kind, packet_id, self.data.generation())));
         }
 
-        let packet = crate::ser::MqttSerializer::pub_to_buffer(
-            self.data.outbound.scratch_space(),
-            &header,
-            payload,
-        )?;
+        let packet =
+            MqttSerializer::pub_to_buffer(self.data.outbound.scratch_space(), &header, payload)?;
         self.runtime.require_packet_size(packet.len())?;
         debug!("Sending QoS0 PUBLISH len={=usize}", packet.len());
         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
-        if let Err(err) = crate::mqtt_client::outbound::write_all(connection, packet).await {
+        if let Err(err) = write_all(connection, packet).await {
             if matches!(err, Error::WriteZero) {
                 return Err(err.into());
             }

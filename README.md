@@ -14,6 +14,7 @@ The main API is [`Session`].
 
 - [`Buffers`]: caller-owned RX/TX memory
 - [`ConfigBuilder`]: session configuration
+- [`Disconnect`]: graceful disconnect options
 - [`Io`]: transport boundary for an established byte stream
 - [`Session`]: the client you drive
 - [`InboundPublish`]: output of [`Session::recv()`]

@@ -1,12 +1,12 @@
-use crate::packets::PublishHeader;
-use crate::packets::{PingReq, PubAck, PubComp, PubRec, PubRel};
-use crate::ser::MAX_FIXED_HEADER_SIZE;
+use crate::packets::{PingReq, PubAck, PubComp, PubRec, PubRel, PublishHeader};
+use crate::publication::ToPayload;
+use crate::ser::{MAX_FIXED_HEADER_SIZE, MqttSerializer};
 use crate::{Error, ProtocolError, PubError, ReasonCode, ResourceError, error, trace};
 use heapless::Vec;
 
 use super::Io;
 
-const CONTROL_PACKET_LEN: usize = 9;
+pub(super) const CONTROL_PACKET_LEN: usize = 9;
 pub(super) const MAX_RETAINED: usize = 8;
 pub(super) const MAX_PENDING_CONTROL: usize = 8;
 pub(super) const MAX_PENDING_RELEASE: usize = 8;
@@ -249,18 +249,15 @@ impl<'a> Outbound<'a> {
         }
     }
 
-    pub(super) fn encode_publish<P: crate::publication::ToPayload, E>(
+    pub(super) fn encode_publish<P: ToPayload, E>(
         &mut self,
         header: &PublishHeader<'_>,
         payload: P,
     ) -> Result<(usize, usize), PubError<P::Error, E>> {
         self.compact();
         let start = self.used;
-        let (offset, packet) = crate::ser::MqttSerializer::pub_to_buffer_meta(
-            &mut self.buf[start..],
-            header,
-            payload,
-        )?;
+        let (offset, packet) =
+            MqttSerializer::pub_to_buffer_meta(&mut self.buf[start..], header, payload)?;
         Ok((start + offset, packet.len()))
     }
 
@@ -270,8 +267,7 @@ impl<'a> Outbound<'a> {
     {
         self.compact();
         let start = self.used;
-        let (offset, packet) =
-            crate::ser::MqttSerializer::to_buffer_meta(&mut self.buf[start..], packet)?;
+        let (offset, packet) = MqttSerializer::to_buffer_meta(&mut self.buf[start..], packet)?;
         Ok((start + offset, packet.len()))
     }
 
@@ -465,28 +461,28 @@ pub(super) fn serialize_control_packet<E>(
 
 fn encode_control_packet(buffer: &mut [u8], packet: ControlAction) -> Result<&[u8], ProtocolError> {
     Ok(match packet {
-        ControlAction::PubAck { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
+        ControlAction::PubAck { packet_id, reason } => MqttSerializer::to_buffer(
             buffer,
             &PubAck {
-                packet_identifier: packet_id,
+                packet_id,
                 reason: reason.into(),
             },
         ),
-        ControlAction::PubRec { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
+        ControlAction::PubRec { packet_id, reason } => MqttSerializer::to_buffer(
             buffer,
             &PubRec {
                 packet_id,
                 reason: reason.into(),
             },
         ),
-        ControlAction::PubComp { packet_id, reason } => crate::ser::MqttSerializer::to_buffer(
+        ControlAction::PubComp { packet_id, reason } => MqttSerializer::to_buffer(
             buffer,
             &PubComp {
                 packet_id,
                 reason: reason.into(),
             },
         ),
-        ControlAction::PingReq => crate::ser::MqttSerializer::to_buffer(buffer, &PingReq),
+        ControlAction::PingReq => MqttSerializer::to_buffer(buffer, &PingReq),
     }?)
 }
 
@@ -534,7 +530,7 @@ fn encode_pubrel(
     packet_id: u16,
     reason: ReasonCode,
 ) -> Result<&[u8], ProtocolError> {
-    Ok(crate::ser::MqttSerializer::to_buffer(
+    Ok(MqttSerializer::to_buffer(
         buffer,
         &PubRel {
             packet_id,
@@ -551,7 +547,7 @@ pub(super) async fn write_packet<C: Io, T>(
 where
     T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
 {
-    let bytes = crate::ser::MqttSerializer::to_buffer(buffer, packet)?;
+    let bytes = MqttSerializer::to_buffer(buffer, packet)?;
     write_all(connection, bytes).await?;
     connection.flush().await.map_err(Error::Transport)?;
     Ok(())
@@ -578,7 +574,7 @@ mod tests {
     use crate::{
         packets::Subscribe,
         publication::Publication,
-        types::{Properties, TopicFilter},
+        types::{Properties, TopicFilter, Utf8String},
     };
 
     #[test]
@@ -619,7 +615,7 @@ mod tests {
 
         let publication = Publication::bytes("a", b"x");
         let header = crate::packets::PublishHeader {
-            topic: crate::types::Utf8String(publication.topic),
+            topic: Utf8String(publication.topic),
             packet_id: None,
             properties: publication.properties,
             retain: publication.retain,

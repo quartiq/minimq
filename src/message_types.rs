@@ -1,8 +1,8 @@
 use crate::{
     Retain,
     packets::{
-        ConnAck, Connect, Disconnect, DisconnectReq, PingReq, PingResp, PubAck, PubComp, PubRec,
-        PubRel, PublishHeader, SubAck, Subscribe, UnsubAck, Unsubscribe,
+        ConnAck, Connect, Disconnect, PingReq, PingResp, PubAck, PubComp, PubRec, PubRel,
+        PublishHeader, SubAck, Subscribe, UnsubAck, Unsubscribe,
     },
 };
 use bit_field::BitField;
@@ -10,7 +10,7 @@ use num_enum::TryFromPrimitive;
 
 #[derive(defmt::Format, Copy, Clone, Debug, TryFromPrimitive)]
 #[repr(u8)]
-pub enum MessageType {
+pub(crate) enum MessageType {
     Connect = 1,
     ConnAck = 2,
     Publish = 3,
@@ -28,7 +28,7 @@ pub enum MessageType {
     Auth = 15,
 }
 
-pub trait ControlPacket {
+pub(crate) trait ControlPacket {
     const MESSAGE_TYPE: MessageType;
     fn fixed_header_flags(&self) -> u8 {
         0u8
@@ -44,9 +44,10 @@ impl ControlPacket for ConnAck<'_> {
 }
 
 impl PublishHeader<'_> {
-    pub fn fixed_header_flags(&self) -> u8 {
+    pub(crate) fn fixed_header_flags(&self) -> u8 {
         *0u8.set_bits(1..=2, self.qos as u8)
             .set_bit(0, self.retain == Retain::Retained)
+            .set_bit(3, self.dup)
     }
 }
 
@@ -100,9 +101,5 @@ impl ControlPacket for PingResp {
 }
 
 impl ControlPacket for Disconnect<'_> {
-    const MESSAGE_TYPE: MessageType = MessageType::Disconnect;
-}
-
-impl ControlPacket for DisconnectReq {
     const MESSAGE_TYPE: MessageType = MessageType::Disconnect;
 }

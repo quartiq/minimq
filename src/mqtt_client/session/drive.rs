@@ -2,12 +2,12 @@ use embassy_time::{Duration, Instant, with_deadline};
 use embedded_io_async::Error as _;
 
 use crate::de::PacketReader;
-use crate::{Error, InboundPublish, debug, error, trace, warn};
-
-use super::super::outbound::{
+use crate::mqtt_client::outbound::{
     ControlAction, OutboundStep, SendState, check_control_packet_size, serialize_control_packet,
     serialize_pubrel,
 };
+use crate::{Error, InboundPublish, debug, error, trace, warn};
+
 use super::state::ROUND_TRIP_TIMEOUT_MS;
 use super::{Io, Session};
 

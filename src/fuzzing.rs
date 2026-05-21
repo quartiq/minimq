@@ -2,8 +2,8 @@ use crate::{
     QoS, ReasonCode,
     de::{PacketReader, received_packet::ReceivedPacket},
     packets::{
-        Connect, DisconnectReq, PingReq, PubAck, PubComp, PubRec, PubRel, Reason, Subscribe,
-        Unsubscribe,
+        Connect, Disconnect, PingReq, PubAck, PubComp, PubRec, PubRel, PublishHeader, Reason,
+        Subscribe, Unsubscribe,
     },
     properties::Property,
     publication::Publication,
@@ -131,8 +131,8 @@ pub fn encode_packet(
                 publication = publication.correlate(BinaryData(b"id").0);
             }
 
-            let header = crate::packets::PublishHeader {
-                topic: crate::types::Utf8String(publication.topic),
+            let header = PublishHeader {
+                topic: Utf8String(publication.topic),
                 packet_id: (publication.qos > QoS::AtMostOnce).then_some(1),
                 properties: publication.properties,
                 retain: publication.retain,
@@ -191,7 +191,7 @@ pub fn encode_packet(
             let _ = MqttSerializer::to_buffer(
                 buf,
                 &PubAck {
-                    packet_identifier: 1,
+                    packet_id: 1,
                     reason: reason(aux),
                 },
             );
@@ -215,7 +215,7 @@ pub fn encode_packet(
             );
         }
         _ => {
-            let _ = MqttSerializer::to_buffer(buf, &DisconnectReq);
+            let _ = MqttSerializer::to_buffer(buf, &Disconnect::success());
         }
     }
 }

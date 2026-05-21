@@ -19,6 +19,7 @@ mod will;
 
 pub use config::{Buffers, ConfigBuilder};
 pub use mqtt_client::{ConnectEvent, InboundPublish, Io, Op, OpStatus, Session};
+pub use packets::Disconnect;
 pub use properties::Property;
 pub use publication::{OwnedResponseTarget, Publication};
 pub use reason_codes::ReasonCode;
