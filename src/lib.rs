@@ -15,7 +15,7 @@ mod varint;
 mod will;
 
 pub use config::{Buffers, ConfigBuilder};
-pub use mqtt_client::{ConnectEvent, InboundPublish, Io, Op, OpStatus, Session};
+pub use mqtt_client::{ConnectEvent, InboundPublish, Io, Op, Session};
 pub use packets::Disconnect;
 pub use properties::{Properties, Property};
 pub use publication::{OwnedResponseTarget, Publication, ToPayload};
@@ -85,7 +85,7 @@ pub enum QoS {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
-pub enum Retain {
+pub(crate) enum Retain {
     /// Do not retain the message on the broker.
     NotRetained = 0,
     /// Ask the broker to retain the message.

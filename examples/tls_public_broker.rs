@@ -5,7 +5,7 @@
 
 use embedded_io_adapters::tokio_1::FromTokio;
 use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
-use minimq::{ConfigBuilder, OpStatus, Publication, QoS, Session, TopicFilter};
+use minimq::{ConfigBuilder, Publication, QoS, Session, TopicFilter};
 use std::error::Error as StdError;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
@@ -57,7 +57,7 @@ async fn run() -> Result<(), Box<dyn StdError>> {
     let sub = subscriber
         .subscribe(&[TopicFilter::new(&topic)], &[])
         .await?;
-    while subscriber.status(&sub) == OpStatus::Pending {
+    while subscriber.is_pending(&sub) {
         subscriber.poll().await?;
     }
 
@@ -72,7 +72,7 @@ async fn run() -> Result<(), Box<dyn StdError>> {
         .publish(Publication::new(&topic, payload).qos(QoS::AtLeastOnce))
         .await?
         .unwrap();
-    while publisher.status(&pub_) == OpStatus::Pending {
+    while publisher.is_pending(&pub_) {
         publisher.poll().await?;
     }
 

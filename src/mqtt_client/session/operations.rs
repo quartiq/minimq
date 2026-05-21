@@ -58,7 +58,9 @@ where
     /// Call this after [`connect`](Self::connect). A resumed [`crate::ConnectEvent::Reconnected`]
     /// already kept broker-side subscriptions.
     ///
-    /// Returns an operation handle that can be checked with [`Session::status`](Self::status).
+    /// Returns an operation handle that can be checked with [`Session::is_pending`](Self::is_pending),
+    /// [`Session::is_complete`](Self::is_complete), or
+    /// [`Session::is_invalidated`](Self::is_invalidated).
     ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
     pub async fn subscribe(
@@ -103,7 +105,9 @@ where
 
     /// Send an `UNSUBSCRIBE`.
     ///
-    /// Returns an operation handle that can be checked with [`Session::status`](Self::status).
+    /// Returns an operation handle that can be checked with [`Session::is_pending`](Self::is_pending),
+    /// [`Session::is_complete`](Self::is_complete), or
+    /// [`Session::is_invalidated`](Self::is_invalidated).
     ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
     pub async fn unsubscribe(
@@ -151,7 +155,8 @@ where
     /// QoS 1 and 2 retain the encoded packet in the session TX buffer until broker ack and are
     /// cancel-safe if the underlying transport I/O futures are cancel-safe.
     /// They return `Some(Op)` so the caller can check completion with
-    /// [`Session::status`](Self::status).
+    /// [`Session::is_pending`](Self::is_pending), [`Session::is_complete`](Self::is_complete),
+    /// or [`Session::is_invalidated`](Self::is_invalidated).
     ///
     /// QoS 0 bypasses retained outbound state, encodes into temporary TX scratch space, and writes
     /// directly to the transport. It therefore does not consume replay/in-flight slots and only
