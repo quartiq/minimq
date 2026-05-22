@@ -5,8 +5,7 @@ use crate::{
     wire::MessageType,
 };
 
-use super::deserializer::MqttDeserializer;
-use crate::{trace, warn};
+use crate::{de::MqttDeserializer, trace, warn};
 
 use core::convert::TryFrom;
 use serde::Deserialize;
@@ -21,7 +20,6 @@ pub(crate) enum ReceivedPacket<'a> {
     PubRel(PubRel<'a>),
     PubRec(PubRec<'a>),
     PubComp(PubComp<'a>),
-    #[allow(dead_code)]
     Disconnect(Disconnect<'a>),
     PingResp,
 }

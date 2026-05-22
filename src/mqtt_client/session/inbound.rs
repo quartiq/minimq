@@ -1,6 +1,6 @@
 use core::convert::Infallible;
 
-use crate::de::received_packet::ReceivedPacket;
+use crate::de::ReceivedPacket;
 use crate::mqtt_client::outbound::{ControlAction, check_control_packet_size, check_pubrel_size};
 use crate::{
     Error, InboundPublish, PeerError, ProtocolError, QoS, ReasonCode, ResourceError, debug, info,
@@ -187,8 +187,11 @@ impl<'a> SessionData<'a> {
                 }
                 return Ok(true);
             }
-            ReceivedPacket::Disconnect(_) => {
-                info!("Received broker DISCONNECT");
+            ReceivedPacket::Disconnect(disconnect) => {
+                info!(
+                    "Received broker DISCONNECT reason={}",
+                    disconnect.reason_code()
+                );
                 return Err(Error::Disconnected);
             }
         }

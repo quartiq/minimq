@@ -525,7 +525,7 @@ fn encode_control_packet(buffer: &mut [u8], packet: ControlAction) -> Result<&[u
 
 fn require_packet_size(maximum_packet_size: Option<u32>, len: usize) -> Result<(), ProtocolError> {
     if maximum_packet_size.is_some_and(|max| len > max as usize) {
-        return Err(ProtocolError::Failed(ReasonCode::PacketTooLarge));
+        return Err(ProtocolError::PacketTooLarge);
     }
     Ok(())
 }

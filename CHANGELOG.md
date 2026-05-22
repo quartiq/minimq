@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Session::is_complete()`, and `Session::is_invalidated()`.
 * Replace public inbound retain enum exposure with `InboundPublish::retained()`.
 * Remove the `Publication::properties_ref()` builder-state accessor.
+* Remove broad `SessionError` and `PublishError` type aliases.
 * Allow `defmt` to be disabled.
 
 ## [0.11.2](https://github.com/quartiq/minimq/compare/v0.11.1...v0.11.2) - 2026-05-21

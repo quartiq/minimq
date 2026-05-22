@@ -2,7 +2,7 @@ use embassy_time::{Duration, Instant};
 use embedded_io_async::Error as _;
 use heapless::String;
 
-use crate::de::received_packet::ReceivedPacket;
+use crate::de::ReceivedPacket;
 use crate::mqtt_client::ConnectEvent;
 use crate::mqtt_client::outbound::write_packet;
 use crate::packets::Connect;
@@ -98,8 +98,11 @@ where
         };
         let ack = match packet {
             ReceivedPacket::ConnAck(ack) => ack,
-            ReceivedPacket::Disconnect(_) => {
-                info!("Received broker DISCONNECT during CONNECT");
+            ReceivedPacket::Disconnect(disconnect) => {
+                info!(
+                    "Received broker DISCONNECT during CONNECT reason={}",
+                    disconnect.reason_code()
+                );
                 self.handle_disconnect();
                 return Err(Error::Disconnected);
             }

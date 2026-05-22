@@ -14,7 +14,6 @@ pub(crate) struct Connect<'a> {
     pub(crate) keepalive: u16,
     pub(crate) properties: Properties<'a>,
     pub(crate) client_id: Utf8String<'a>,
-    #[allow(dead_code)]
     pub(crate) auth: Option<Auth<'a>>,
     pub(crate) will: Option<Will<'a>>,
     pub(crate) clean_start: bool,
@@ -151,10 +150,6 @@ impl serde::Serialize for TopicFilters<'_> {
 #[derive(Debug, Serialize)]
 pub(crate) struct PingReq;
 
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-pub(crate) struct PingResp;
-
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct PubAck<'a> {
     pub(crate) packet_id: u16,
@@ -162,22 +157,20 @@ pub(crate) struct PubAck<'a> {
     pub(crate) reason: Reason<'a>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct SubAck<'a> {
     pub(crate) packet_id: u16,
-    #[serde(borrow)]
-    pub(crate) properties: Properties<'a>,
+    #[serde(borrow, rename = "properties")]
+    pub(crate) _properties: Properties<'a>,
     #[serde(skip)]
     pub(crate) codes: &'a [u8],
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct UnsubAck<'a> {
     pub(crate) packet_id: u16,
-    #[serde(borrow)]
-    pub(crate) properties: Properties<'a>,
+    #[serde(borrow, rename = "properties")]
+    pub(crate) _properties: Properties<'a>,
     #[serde(skip)]
     pub(crate) codes: &'a [u8],
 }
@@ -289,7 +282,7 @@ impl From<ReasonCode> for Reason<'_> {
         Self {
             reason: Some(ReasonData {
                 code,
-                properties: None,
+                _properties: None,
             }),
         }
     }
@@ -301,7 +294,7 @@ impl<'a> Reason<'a> {
         Self {
             reason: Some(ReasonData {
                 code,
-                properties: Some(Properties::from_slice(properties)),
+                _properties: Some(Properties::from_slice(properties)),
             }),
         }
     }
@@ -317,9 +310,8 @@ impl<'a> Reason<'a> {
 #[derive(Debug, Deserialize, Serialize)]
 struct ReasonData<'a> {
     pub code: ReasonCode,
-    #[serde(borrow)]
-    #[allow(dead_code)]
-    pub properties: Option<Properties<'a>>,
+    #[serde(borrow, rename = "properties")]
+    pub _properties: Option<Properties<'a>>,
 }
 
 #[cfg(test)]
@@ -661,7 +653,7 @@ mod tests {
             reason: Reason {
                 reason: Some(ReasonData {
                     code: ReasonCode::Success,
-                    properties: None,
+                    _properties: None,
                 }),
             },
         };
@@ -688,7 +680,7 @@ mod tests {
             reason: Reason {
                 reason: Some(ReasonData {
                     code: ReasonCode::Success,
-                    properties: None,
+                    _properties: None,
                 }),
             },
         };

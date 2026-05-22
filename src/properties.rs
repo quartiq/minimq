@@ -1,6 +1,6 @@
 use crate::{
     PeerError,
-    de::deserializer::MqttDeserializer,
+    de::MqttDeserializer,
     trace,
     varint::{MQTT_VARINT_MAX, Varint},
     wire::{BinaryData, Utf8String},
@@ -215,12 +215,12 @@ enum PropertiesData<'a> {
 }
 
 impl Properties<'_> {
-    /// Return an empty property collection.
+    /// Return an empty decoded property collection for outbound packet builders.
     pub const fn empty() -> Self {
         Self::from_slice(&[])
     }
 
-    /// Borrow a decoded property slice.
+    /// Borrow decoded MQTT properties for outbound packet builders.
     pub const fn from_slice<'a>(properties: &'a [Property<'a>]) -> Properties<'a> {
         Properties {
             inner: PropertiesData::Slice(properties),
@@ -251,12 +251,15 @@ impl<'a> Properties<'a> {
         }
     }
 
-    /// Iterate over properties.
+    /// Iterate over decoded properties.
+    ///
+    /// Inbound encoded properties are decoded lazily and may yield a [`PeerError`] if the broker
+    /// sent malformed property data.
     pub fn iter(&'a self) -> impl Iterator<Item = Result<Property<'a>, PeerError>> + 'a {
         self.iter_inner()
     }
 
-    /// Return the first `ResponseTopic` property, if present.
+    /// Return the first `ResponseTopic` property, if present and valid.
     pub fn response_topic(&'a self) -> Option<&'a str> {
         self.iter().find_map(|prop| match prop {
             Ok(Property::ResponseTopic(topic)) => Some(topic),
@@ -264,7 +267,7 @@ impl<'a> Properties<'a> {
         })
     }
 
-    /// Return the first `CorrelationData` property, if present.
+    /// Return the first `CorrelationData` property, if present and valid.
     pub fn correlation_data(&'a self) -> Option<&'a [u8]> {
         self.iter().find_map(|prop| match prop {
             Ok(Property::CorrelationData(data)) => Some(data),
