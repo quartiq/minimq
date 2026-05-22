@@ -230,7 +230,7 @@ mod tests {
     fn will_does_not_consume_tx_buffer() {
         let mut rx = [0; 10];
         let mut tx = [0; 20];
-        let will = Will::new("topic".try_into().unwrap(), b"x", &[]).unwrap();
+        let will = Will::new("topic", b"x", &[]).unwrap();
         let (buffers, _, _, _, _, _, _) = ConfigBuilder::new(Buffers {
             rx: &mut rx,
             tx: &mut tx,

@@ -1,6 +1,7 @@
 use crate::packets::{PingReq, PubAck, PubComp, PubRec, PubRel, PublishHeader};
 use crate::publication::ToPayload;
 use crate::ser::{MAX_FIXED_HEADER_SIZE, MqttSerializer};
+use crate::wire::ControlPacket;
 use crate::{Error, ProtocolError, PubError, ReasonCode, ResourceError, error, trace};
 use heapless::Vec;
 
@@ -11,7 +12,8 @@ pub(super) const MAX_RETAINED: usize = 8;
 pub(super) const MAX_PENDING_CONTROL: usize = 8;
 pub(super) const MAX_PENDING_RELEASE: usize = 8;
 
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(super) enum ControlAction {
     PubAck { packet_id: u16, reason: ReasonCode },
     PubRec { packet_id: u16, reason: ReasonCode },
@@ -166,10 +168,17 @@ impl<'a> Outbound<'a> {
         MAX_RETAINED.min(MAX_PENDING_RELEASE) as u16
     }
 
-    pub(super) fn can_retain(&mut self) -> bool {
-        self.compact();
+    fn used_after_compact(&self) -> usize {
+        self.retained.iter().map(|entry| entry.len).sum()
+    }
+
+    pub(super) fn scratch_len(&self) -> usize {
+        self.buf.len().saturating_sub(self.used_after_compact())
+    }
+
+    pub(super) fn can_retain(&self) -> bool {
         self.retained.len() < self.retained.capacity()
-            && self.buf.len().saturating_sub(self.used) >= MAX_FIXED_HEADER_SIZE
+            && self.scratch_len() >= MAX_FIXED_HEADER_SIZE
     }
 
     pub(super) fn scratch_space(&mut self) -> &mut [u8] {
@@ -200,7 +209,7 @@ impl<'a> Outbound<'a> {
         else {
             return false;
         };
-        self.retained.swap_remove(position);
+        self.retained.remove(position);
         self.compact();
         true
     }
@@ -257,17 +266,17 @@ impl<'a> Outbound<'a> {
         self.compact();
         let start = self.used;
         let (offset, packet) =
-            MqttSerializer::pub_to_buffer_meta(&mut self.buf[start..], header, payload)?;
+            MqttSerializer::encode_publish_with_offset(&mut self.buf[start..], header, payload)?;
         Ok((start + offset, packet.len()))
     }
 
     pub(super) fn encode_packet<T>(&mut self, packet: &T) -> Result<(usize, usize), ProtocolError>
     where
-        T: serde::Serialize + crate::message_types::ControlPacket,
+        T: serde::Serialize + ControlPacket,
     {
         self.compact();
         let start = self.used;
-        let (offset, packet) = MqttSerializer::to_buffer_meta(&mut self.buf[start..], packet)?;
+        let (offset, packet) = MqttSerializer::encode_with_offset(&mut self.buf[start..], packet)?;
         Ok((start + offset, packet.len()))
     }
 
@@ -331,65 +340,94 @@ impl<'a> Outbound<'a> {
         action: ControlAction,
         written: usize,
         len: usize,
-    ) {
+    ) -> bool {
         if let Some(entry) = self
             .pending_control
             .iter_mut()
             .find(|entry| entry.action == action)
         {
             entry.state.set_written(written, len);
+            true
+        } else {
+            false
         }
     }
 
-    pub(super) fn flush_control(&mut self, action: ControlAction) {
-        if let Some(entry) = self
+    pub(super) fn flush_control(&mut self, action: ControlAction) -> bool {
+        let found = if let Some(entry) = self
             .pending_control
             .iter_mut()
             .find(|entry| entry.action == action)
         {
             entry.state = SendState::Sent;
-        }
+            true
+        } else {
+            false
+        };
         self.pending_control
             .retain(|entry| entry.state != SendState::Sent);
+        found
     }
 
-    pub(super) fn set_retained_written(&mut self, packet_id: u16, written: usize, len: usize) {
+    pub(super) fn set_retained_written(
+        &mut self,
+        packet_id: u16,
+        written: usize,
+        len: usize,
+    ) -> bool {
         if let Some(entry) = self
             .retained
             .iter_mut()
             .find(|entry| entry.packet_id == packet_id)
         {
             entry.state.set_written(written, len);
+            true
+        } else {
+            false
         }
     }
 
-    pub(super) fn flush_retained(&mut self, packet_id: u16) {
+    pub(super) fn flush_retained(&mut self, packet_id: u16) -> bool {
         if let Some(entry) = self
             .retained
             .iter_mut()
             .find(|entry| entry.packet_id == packet_id)
         {
             entry.state = SendState::Sent;
+            true
+        } else {
+            false
         }
     }
 
-    pub(super) fn set_release_written(&mut self, packet_id: u16, written: usize, len: usize) {
+    pub(super) fn set_release_written(
+        &mut self,
+        packet_id: u16,
+        written: usize,
+        len: usize,
+    ) -> bool {
         if let Some(entry) = self
             .pending_release
             .iter_mut()
             .find(|entry| entry.packet_id == packet_id)
         {
             entry.state.set_written(written, len);
+            true
+        } else {
+            false
         }
     }
 
-    pub(super) fn flush_release(&mut self, packet_id: u16) {
+    pub(super) fn flush_release(&mut self, packet_id: u16) -> bool {
         if let Some(entry) = self
             .pending_release
             .iter_mut()
             .find(|entry| entry.packet_id == packet_id)
         {
             entry.state = SendState::Sent;
+            true
+        } else {
+            false
         }
     }
 
@@ -420,7 +458,6 @@ impl<'a> Outbound<'a> {
 
     fn compact(&mut self) {
         let previous_used = self.used;
-        self.retained.sort_unstable_by_key(|entry| entry.offset);
 
         let mut cursor = 0;
         let mut moved = 0;
@@ -461,28 +498,28 @@ pub(super) fn serialize_control_packet<E>(
 
 fn encode_control_packet(buffer: &mut [u8], packet: ControlAction) -> Result<&[u8], ProtocolError> {
     Ok(match packet {
-        ControlAction::PubAck { packet_id, reason } => MqttSerializer::to_buffer(
+        ControlAction::PubAck { packet_id, reason } => MqttSerializer::encode(
             buffer,
             &PubAck {
                 packet_id,
                 reason: reason.into(),
             },
         ),
-        ControlAction::PubRec { packet_id, reason } => MqttSerializer::to_buffer(
+        ControlAction::PubRec { packet_id, reason } => MqttSerializer::encode(
             buffer,
             &PubRec {
                 packet_id,
                 reason: reason.into(),
             },
         ),
-        ControlAction::PubComp { packet_id, reason } => MqttSerializer::to_buffer(
+        ControlAction::PubComp { packet_id, reason } => MqttSerializer::encode(
             buffer,
             &PubComp {
                 packet_id,
                 reason: reason.into(),
             },
         ),
-        ControlAction::PingReq => MqttSerializer::to_buffer(buffer, &PingReq),
+        ControlAction::PingReq => MqttSerializer::encode(buffer, &PingReq),
     }?)
 }
 
@@ -530,7 +567,7 @@ fn encode_pubrel(
     packet_id: u16,
     reason: ReasonCode,
 ) -> Result<&[u8], ProtocolError> {
-    Ok(MqttSerializer::to_buffer(
+    Ok(MqttSerializer::encode(
         buffer,
         &PubRel {
             packet_id,
@@ -545,9 +582,9 @@ pub(super) async fn write_packet<C: Io, T>(
     packet: &T,
 ) -> Result<(), Error<C::Error>>
 where
-    T: serde::Serialize + crate::message_types::ControlPacket + core::fmt::Debug,
+    T: serde::Serialize + ControlPacket + core::fmt::Debug,
 {
-    let bytes = MqttSerializer::to_buffer(buffer, packet)?;
+    let bytes = MqttSerializer::encode(buffer, packet)?;
     write_all(connection, bytes).await?;
     connection.flush().await.map_err(Error::Transport)?;
     Ok(())
@@ -572,9 +609,8 @@ pub(super) async fn write_all<C: Io>(
 mod tests {
     use super::{ControlAction, Outbound, OutboundStep, SendState};
     use crate::{
-        packets::Subscribe,
-        publication::Publication,
-        types::{Properties, TopicFilter, Utf8String},
+        Properties, packets::Subscribe, publication::Publication, types::TopicFilter,
+        wire::Utf8String,
     };
 
     #[test]
@@ -588,7 +624,7 @@ mod tests {
             .encode_packet(&Subscribe {
                 packet_id: 16,
                 dup: false,
-                properties: Properties::Slice(&[]),
+                properties: Properties::from_slice(&[]),
                 topics: &[TopicFilter::new("ABC")],
             })
             .unwrap();

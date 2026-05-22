@@ -10,10 +10,11 @@ mod tests;
 use crate::de::PacketReader;
 use crate::ser::MAX_FIXED_HEADER_SIZE;
 use crate::types::Auth;
-use crate::{ConfigBuilder, Op, OpStatus, QoS, Will};
+use crate::{ConfigBuilder, Op, QoS, Will};
 use heapless::String;
 
 use super::Io;
+use super::OpStatus;
 
 use state::{RuntimeState, SessionData};
 
@@ -93,10 +94,10 @@ where
 
     /// Return whether the session currently has the local capacity to attempt a
     /// publish at the requested QoS.
-    pub fn can_publish(&mut self, qos: QoS) -> bool {
+    pub fn can_publish(&self, qos: QoS) -> bool {
         self.connection.is_some()
             && if qos == QoS::AtMostOnce {
-                self.data.outbound.scratch_space().len() >= MAX_FIXED_HEADER_SIZE
+                self.data.outbound.scratch_len() >= MAX_FIXED_HEADER_SIZE
             } else {
                 self.runtime.send_quota != 0 && self.data.outbound.can_retain()
             }
@@ -108,8 +109,7 @@ where
         self.data.outbound.is_quiescent()
     }
 
-    /// Return the local completion state of one previously accepted outbound operation.
-    pub fn status(&self, op: &Op) -> OpStatus {
+    fn status(&self, op: &Op) -> OpStatus {
         if op.generation != self.data.generation() {
             return OpStatus::Invalidated;
         }
@@ -129,5 +129,20 @@ where
         } else {
             OpStatus::Complete
         }
+    }
+
+    /// Return whether the operation still has local in-flight state.
+    pub fn is_pending(&self, op: &Op) -> bool {
+        self.status(op) == OpStatus::Pending
+    }
+
+    /// Return whether the operation completed in the current session generation.
+    pub fn is_complete(&self, op: &Op) -> bool {
+        self.status(op) == OpStatus::Complete
+    }
+
+    /// Return whether the local session state that could complete this operation was discarded.
+    pub fn is_invalidated(&self, op: &Op) -> bool {
+        self.status(op) == OpStatus::Invalidated
     }
 }

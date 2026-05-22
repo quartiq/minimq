@@ -6,6 +6,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [UNRELEASED](https://github.com/quartiq/minimq/compare/v0.11.2..HEAD) - DATE
+
+## Changed
+
+* Narrow the public API around root exports and hide implementation modules.
+* Make MQTT property storage opaque; callers iterate/query properties instead of matching internal
+  codec storage variants.
+* Make `Property` string, binary, and subscription identifier variants use plain Rust types; the
+  MQTT wire wrappers are no longer public.
+* Reject MQTT properties that are invalid for the requested outbound packet kind.
+* Let `Will::new()` take a topic string directly and keep fixed-capacity topic storage internal.
+* Replace public operation status enum matching with `Session::is_pending()`,
+  `Session::is_complete()`, and `Session::is_invalidated()`.
+* Replace public inbound retain enum exposure with `InboundPublish::retained()`.
+* Allow `defmt` to be disabled.
+
 ## [0.11.2](https://github.com/quartiq/minimq/compare/v0.11.1...v0.11.2) - 2026-05-21
 
 ## Added

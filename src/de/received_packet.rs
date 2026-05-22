@@ -1,14 +1,13 @@
 use crate::{
     ProtocolError, QoS, Retain,
-    message_types::MessageType,
     packets::{ConnAck, Disconnect, PubAck, PubComp, PubRec, PubRel, Publish, SubAck, UnsubAck},
     varint::Varint,
+    wire::MessageType,
 };
 
 use super::deserializer::MqttDeserializer;
 use crate::{trace, warn};
 
-use bit_field::BitField;
 use core::convert::TryFrom;
 use serde::Deserialize;
 
@@ -82,6 +81,16 @@ impl<'a> ReceivedPacket<'a> {
 
 struct ControlPacketVisitor;
 
+fn next_required<'de, A, T>(seq: &mut A, field: &'static str) -> Result<T, A::Error>
+where
+    A: serde::de::SeqAccess<'de>,
+    T: Deserialize<'de>,
+{
+    use serde::de::Error;
+
+    seq.next_element()?.ok_or_else(|| A::Error::custom(field))
+}
+
 impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
     type Value = ReceivedPacket<'de>;
 
@@ -92,14 +101,11 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
         use serde::de::Error;
 
-        // Note(unwraps): These unwraps should never fail - the next_element() function should be
-        // always providing us some new element or an error that we return based on our
-        // deserialization implementation.
-        let fixed_header: u8 = seq.next_element()?.unwrap();
-        let _length: Varint = seq.next_element()?.unwrap();
-        let packet_type = MessageType::try_from(fixed_header.get_bits(4..=7))
+        let fixed_header: u8 = next_required(&mut seq, "Missing fixed header")?;
+        let _length: Varint = next_required(&mut seq, "Missing remaining length")?;
+        let packet_type = MessageType::try_from(fixed_header >> 4)
             .map_err(|_| A::Error::custom("Invalid MQTT control packet type"))?;
-        let flags = fixed_header.get_bits(0..=3);
+        let flags = fixed_header & 0x0F;
         trace!(
             "Received fixed header: type={} flags={=u8:#b} remaining_len={}",
             packet_type, flags, _length
@@ -127,44 +133,60 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
         }
 
         let packet = match packet_type {
-            MessageType::ConnAck => ReceivedPacket::ConnAck(seq.next_element()?.unwrap()),
+            MessageType::ConnAck => {
+                ReceivedPacket::ConnAck(next_required(&mut seq, "Missing CONNACK")?)
+            }
             MessageType::Publish => {
-                let qos = QoS::try_from(fixed_header.get_bits(1..=2))
+                let qos = QoS::try_from((fixed_header >> 1) & 0b11)
                     .map_err(|_| A::Error::custom("Bad QoS field"))?;
 
-                let topic = seq.next_element()?.unwrap();
+                let topic = next_required(&mut seq, "Missing PUBLISH topic")?;
                 let packet_id = if qos > QoS::AtMostOnce {
-                    Some(seq.next_element()?.unwrap())
+                    Some(next_required(&mut seq, "Missing PUBLISH packet id")?)
                 } else {
                     None
                 };
 
-                let properties = seq.next_element()?.unwrap();
+                let properties = next_required(&mut seq, "Missing PUBLISH properties")?;
 
                 let publish: Publish<'_, &[u8]> = Publish {
                     topic,
                     packet_id,
                     properties,
                     payload: &[],
-                    retain: if fixed_header.get_bit(0) {
+                    retain: if fixed_header & 1 != 0 {
                         Retain::Retained
                     } else {
                         Retain::NotRetained
                     },
-                    dup: fixed_header.get_bit(3),
+                    dup: fixed_header & (1 << 3) != 0,
                     qos,
                 };
 
                 ReceivedPacket::Publish(publish)
             }
-            MessageType::PubAck => ReceivedPacket::PubAck(seq.next_element()?.unwrap()),
-            MessageType::SubAck => ReceivedPacket::SubAck(seq.next_element()?.unwrap()),
-            MessageType::UnsubAck => ReceivedPacket::UnsubAck(seq.next_element()?.unwrap()),
+            MessageType::PubAck => {
+                ReceivedPacket::PubAck(next_required(&mut seq, "Missing PUBACK")?)
+            }
+            MessageType::SubAck => {
+                ReceivedPacket::SubAck(next_required(&mut seq, "Missing SUBACK")?)
+            }
+            MessageType::UnsubAck => {
+                ReceivedPacket::UnsubAck(next_required(&mut seq, "Missing UNSUBACK")?)
+            }
             MessageType::PingResp => ReceivedPacket::PingResp,
-            MessageType::PubRec => ReceivedPacket::PubRec(seq.next_element()?.unwrap()),
-            MessageType::PubRel => ReceivedPacket::PubRel(seq.next_element()?.unwrap()),
-            MessageType::PubComp => ReceivedPacket::PubComp(seq.next_element()?.unwrap()),
-            MessageType::Disconnect => ReceivedPacket::Disconnect(seq.next_element()?.unwrap()),
+            MessageType::PubRec => {
+                ReceivedPacket::PubRec(next_required(&mut seq, "Missing PUBREC")?)
+            }
+            MessageType::PubRel => {
+                ReceivedPacket::PubRel(next_required(&mut seq, "Missing PUBREL")?)
+            }
+            MessageType::PubComp => {
+                ReceivedPacket::PubComp(next_required(&mut seq, "Missing PUBCOMP")?)
+            }
+            MessageType::Disconnect => {
+                ReceivedPacket::Disconnect(next_required(&mut seq, "Missing DISCONNECT")?)
+            }
             _ => return Err(A::Error::custom("Unsupported message type")),
         };
 

@@ -4,9 +4,8 @@ mod session;
 pub use session::Session;
 
 use crate::{
-    QoS, ResourceError, Retain,
+    Properties, QoS, ResourceError, Retain,
     publication::{OwnedResponseTarget, Publication, ResponseTarget},
-    types::Properties,
 };
 use embedded_io_async::{ErrorType, Read, Write};
 
@@ -45,10 +44,8 @@ impl Op {
     }
 }
 
-/// Completion state of a previously accepted outbound operation.
-#[must_use = "inspect the returned status before deciding how to proceed"]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum OpStatus {
+pub(crate) enum OpStatus {
     /// The operation is still present in local in-flight state.
     Pending,
     /// The operation is no longer pending in this session generation.
@@ -101,9 +98,9 @@ impl<'a> InboundPublish<'a> {
         &self.properties
     }
 
-    /// Return the inbound retain flag.
-    pub const fn retain(&self) -> Retain {
-        self.retain
+    /// Return whether the broker marked this message as retained.
+    pub const fn retained(&self) -> bool {
+        matches!(self.retain, Retain::Retained)
     }
 
     /// Return the inbound QoS level.

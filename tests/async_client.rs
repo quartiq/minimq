@@ -4,8 +4,7 @@ use embassy_time::{Duration, with_timeout};
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use minimq::{
     Buffers, ConfigBuilder, ConnectEvent, Disconnect, Error, InboundPublish, Op, PeerError,
-    Property, PubError, Publication, QoS, ReasonCode, ResourceError, Session,
-    types::{BinaryData, Properties, TopicFilter},
+    Property, PubError, Publication, QoS, ReasonCode, ResourceError, Session, TopicFilter,
 };
 use std::{cell::RefCell, collections::VecDeque, future::poll_fn, rc::Rc, task::Poll};
 use support::{block_on, init_host_logging, poll_once};
@@ -1257,6 +1256,32 @@ fn disconnect_uses_dedicated_control_storage_when_tx_arena_is_full() {
 }
 
 #[test]
+fn outbound_operations_reject_invalid_property_contexts() {
+    let connection = MockConnection::default();
+    connection.clone().push_rx(&connack());
+    let connector = MockConnector::new(connection);
+    let mut session = connected_session(&connector);
+
+    let publish_props = [Property::ServerReference("server")];
+    assert_eq!(
+        block_on(session.publish(Publication::bytes("data", b"x").properties(&publish_props))),
+        Err(PubError::Session(Error::InvalidRequest))
+    );
+
+    let subscribe_props = [Property::ResponseTopic("reply")];
+    assert_eq!(
+        block_on(session.subscribe(&[TopicFilter::new("data")], &subscribe_props)),
+        Err(Error::InvalidRequest)
+    );
+
+    let disconnect_props = [Property::PayloadFormatIndicator(1)];
+    assert_eq!(
+        block_on(session.disconnect_with(Disconnect::success().with_properties(&disconnect_props))),
+        Err(Error::InvalidRequest)
+    );
+}
+
+#[test]
 fn disconnect_survives_cancellation_during_pending_write() {
     let mut connection = MockConnection::default();
     let mut inspect = connection.clone();
@@ -1644,14 +1669,7 @@ fn inbound_publish_exposes_response_helpers() {
         let reply = message.reply("ok").unwrap().qos(QoS::AtLeastOnce);
         let follow_up = owned_via_message.publication("next");
 
-        let response = match reply.properties_ref() {
-            Properties::CorrelatedSlice { correlation, .. } => correlation,
-            _ => panic!("reply should preserve correlation data"),
-        };
-        assert!(matches!(
-            response,
-            Property::CorrelationData(BinaryData(b"abc"))
-        ));
+        assert_eq!(reply.properties_ref().correlation_data(), Some(&b"abc"[..]));
         assert_eq!(owned_via_message.topic(), "reply/topic");
         let _ = follow_up;
     });

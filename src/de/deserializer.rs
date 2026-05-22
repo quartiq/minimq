@@ -1,7 +1,8 @@
-//! Custom MQTT message deserializer
+//! MQTT packet deserializer.
 //!
 //! # Design
-//! This deserializer handles deserializing MQTT packets. It assumes the following:
+//! This is a narrow serde deserializer for MQTT wire fields. Packet structs describe field order;
+//! private wire helpers describe MQTT-specific field encodings.
 //!
 //! ### Integers
 //! All unsigned integers are transmitted in a fixed-width, big-endian notation.
@@ -39,7 +40,8 @@ use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 use crate::varint::read_mqtt_u32_varint;
 
 /// Errors returned while decoding MQTT packets.
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub(crate) enum Error {
     /// A custom deserialization error occurred.
@@ -87,7 +89,7 @@ impl core::fmt::Display for Error {
 pub(crate) struct MqttDeserializer<'a> {
     buf: &'a [u8],
     index: usize,
-    next_pending_length: Option<usize>,
+    next_bytes_len: Option<usize>,
 }
 
 impl<'a> MqttDeserializer<'a> {
@@ -96,16 +98,13 @@ impl<'a> MqttDeserializer<'a> {
         Self {
             buf,
             index: 0,
-            next_pending_length: None,
+            next_bytes_len: None,
         }
     }
 
-    /// Override the next binary bytes read with some pre-determined size.
-    ///
-    /// # Args
-    /// * `len` - The known length of the next binary data blob.
-    pub(crate) fn set_next_pending_length(&mut self, len: usize) {
-        self.next_pending_length.replace(len);
+    /// Override the next binary field length.
+    pub(crate) fn set_next_bytes_len(&mut self, len: usize) {
+        self.next_bytes_len.replace(len);
     }
 
     /// Attempt to take N bytes from the buffer.
@@ -207,7 +206,7 @@ impl<'de> serde::de::Deserializer<'de> for &'_ mut MqttDeserializer<'de> {
     }
 
     fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let length = match self.next_pending_length.take() {
+        let length = match self.next_bytes_len.take() {
             Some(length) => length,
             None => self.read_u16()? as usize,
         };
@@ -235,7 +234,7 @@ impl<'de> serde::de::Deserializer<'de> for &'_ mut MqttDeserializer<'de> {
 
         // If the properties are read as a binary blob, we already know the size and we don't
         // want to read a u16-prefixed size.
-        self.set_next_pending_length(length);
+        self.set_next_bytes_len(length);
 
         visitor.visit_seq(SeqAccess {
             deserializer: self,
@@ -288,7 +287,7 @@ impl<'de> serde::de::Deserializer<'de> for &'_ mut MqttDeserializer<'de> {
         _name: &'static str,
         _visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn deserialize_newtype_struct<V: Visitor<'de>>(
@@ -296,49 +295,50 @@ impl<'de> serde::de::Deserializer<'de> for &'_ mut MqttDeserializer<'de> {
         _name: &'static str,
         _visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn deserialize_map<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn deserialize_identifier<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn deserialize_unit<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn deserialize_ignored_any<V: Visitor<'de>>(
         self,
         _visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn deserialize_f32<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn deserialize_f64<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn deserialize_char<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn deserialize_i64<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn deserialize_u64<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
+
     fn deserialize_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 }
 
@@ -393,7 +393,7 @@ impl<'a, 'de: 'a> serde::de::SeqAccess<'de> for SeqAccess<'a, 'de> {
                 .ok_or(Error::InsufficientData)?;
 
             // Since some data was just read, we no longer know the size of the binary data block.
-            self.deserializer.next_pending_length.take();
+            self.deserializer.next_bytes_len.take();
 
             Ok(Some(data))
         } else {
@@ -410,7 +410,7 @@ impl<'de> serde::de::VariantAccess<'de> for &'_ mut MqttDeserializer<'de> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<(), Error> {
-        unimplemented!()
+        Err(Error::Custom)
     }
 
     fn newtype_variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<V::Value, Error> {

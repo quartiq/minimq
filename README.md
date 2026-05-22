@@ -43,7 +43,7 @@ The main API is [`Session`].
 # }
 # async fn open_io(_addr: SocketAddr) -> Result<MyIo, io::Error> { todo!() }
 use core::net::SocketAddr;
-use minimq::{Buffers, ConfigBuilder, ConnectEvent, Error, Session, types::TopicFilter};
+use minimq::{Buffers, ConfigBuilder, ConnectEvent, Error, Session, TopicFilter};
 
 async fn run() {
     let rx = &mut [0u8; 256];

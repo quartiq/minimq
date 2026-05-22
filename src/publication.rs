@@ -1,5 +1,4 @@
-use crate::properties::Property;
-use crate::types::Properties;
+use crate::properties::{Properties, Property};
 use crate::{QoS, ResourceError, Retain};
 use heapless::{String, Vec};
 
@@ -116,7 +115,7 @@ impl<'a, P> Publication<'a, P> {
             payload,
             qos: QoS::AtMostOnce,
             topic,
-            properties: Properties::Slice(&[]),
+            properties: Properties::from_slice(&[]),
             retain: Retain::NotRetained,
         }
     }

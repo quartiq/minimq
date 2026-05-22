@@ -2,9 +2,8 @@ use crate::PeerError;
 use num_enum::{FromPrimitive, IntoPrimitive};
 
 /// MQTTv5-defined codes that may be returned in response to control packets.
-#[derive(
-    defmt::Format, PartialEq, Eq, PartialOrd, Copy, Clone, Debug, FromPrimitive, IntoPrimitive,
-)]
+#[derive(PartialEq, Eq, PartialOrd, Copy, Clone, Debug, FromPrimitive, IntoPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum ReasonCode {
     /// Success.

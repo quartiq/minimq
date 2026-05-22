@@ -5,7 +5,8 @@ use crate::de::received_packet::ReceivedPacket;
 use crate::mqtt_client::ConnectEvent;
 use crate::mqtt_client::outbound::write_packet;
 use crate::packets::Connect;
-use crate::types::{Properties, Utf8String};
+use crate::properties::Properties;
+use crate::wire::Utf8String;
 use crate::{Error, PeerError, Property, QoS, debug, info, warn};
 
 use super::drive::fill_packet_reader;
@@ -64,7 +65,7 @@ where
                 connection,
                 &Connect {
                     keepalive,
-                    properties: Properties::Slice(&properties),
+                    properties: Properties::from_slice(&properties),
                     client_id: Utf8String(client_id.as_str()),
                     auth,
                     will,
@@ -128,7 +129,7 @@ where
         let mut keepalive_interval = self.runtime.keepalive_interval;
         let mut assigned_client_id = None;
 
-        for property in ack.properties.into_iter() {
+        for property in ack.properties.iter_decoded() {
             match match property {
                 Ok(property) => property,
                 Err(err) => {
@@ -138,7 +139,7 @@ where
             } {
                 Property::MaximumPacketSize(size) => maximum_packet_size = Some(size),
                 Property::AssignedClientIdentifier(id) => {
-                    assigned_client_id = Some(match id.0.try_into() {
+                    assigned_client_id = Some(match id.try_into() {
                         Ok(client_id) => client_id,
                         Err(_) => {
                             self.handle_disconnect();

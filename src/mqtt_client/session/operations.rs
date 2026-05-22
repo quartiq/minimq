@@ -4,9 +4,11 @@ use embedded_io_async::Error as _;
 use crate::mqtt_client::OpKind;
 use crate::mqtt_client::outbound::{CONTROL_PACKET_LEN, write_all};
 use crate::packets::{Disconnect, PublishHeader, Subscribe, Unsubscribe};
+use crate::properties::{Properties, PropertyContext};
 use crate::publication::{Publication, ToPayload};
 use crate::ser::MqttSerializer;
-use crate::types::{Properties, TopicFilter, Utf8String};
+use crate::types::TopicFilter;
+use crate::wire::Utf8String;
 use crate::{Error, Op, Property, PubError, QoS, ResourceError, debug, info, warn};
 
 use super::{Io, Session};
@@ -35,8 +37,13 @@ where
             return Ok(());
         }
         info!("Graceful disconnect requested");
+        if let Some(properties) = disconnect.properties()
+            && !properties.valid_for(PropertyContext::Disconnect)
+        {
+            return Err(Error::InvalidRequest);
+        }
         let mut buffer = [0u8; CONTROL_PACKET_LEN];
-        let packet = MqttSerializer::to_buffer(&mut buffer, &disconnect)?;
+        let packet = MqttSerializer::encode(&mut buffer, &disconnect)?;
         self.runtime.require_packet_size(packet.len())?;
         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
         let result = match write_all(connection, packet).await {
@@ -49,10 +56,12 @@ where
 
     /// Send a `SUBSCRIBE`.
     ///
-    /// Call this after [`connect`](Self::connect). A resumed [`ConnectEvent::Reconnected`]
+    /// Call this after [`connect`](Self::connect). A resumed [`crate::ConnectEvent::Reconnected`]
     /// already kept broker-side subscriptions.
     ///
-    /// Returns an operation handle that can be checked with [`Session::status`](Self::status).
+    /// Returns an operation handle that can be checked with [`Session::is_pending`](Self::is_pending),
+    /// [`Session::is_complete`](Self::is_complete), or
+    /// [`Session::is_invalidated`](Self::is_invalidated).
     ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
     pub async fn subscribe(
@@ -66,6 +75,9 @@ where
         if topics.is_empty() {
             return Err(Error::InvalidRequest);
         }
+        if !Properties::from_slice(properties).valid_for(PropertyContext::Subscribe) {
+            return Err(Error::InvalidRequest);
+        }
         self.flush_outbound().await?;
         self.require_retained_slot()?;
 
@@ -73,7 +85,7 @@ where
         let (offset, len) = self.data.outbound.encode_packet(&Subscribe {
             packet_id,
             dup: false,
-            properties: Properties::Slice(properties),
+            properties: Properties::from_slice(properties),
             topics,
         })?;
         self.runtime.require_packet_size(len)?;
@@ -94,7 +106,9 @@ where
 
     /// Send an `UNSUBSCRIBE`.
     ///
-    /// Returns an operation handle that can be checked with [`Session::status`](Self::status).
+    /// Returns an operation handle that can be checked with [`Session::is_pending`](Self::is_pending),
+    /// [`Session::is_complete`](Self::is_complete), or
+    /// [`Session::is_invalidated`](Self::is_invalidated).
     ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
     pub async fn unsubscribe(
@@ -108,6 +122,9 @@ where
         if topics.is_empty() {
             return Err(Error::InvalidRequest);
         }
+        if !Properties::from_slice(properties).valid_for(PropertyContext::Unsubscribe) {
+            return Err(Error::InvalidRequest);
+        }
         self.flush_outbound().await?;
         self.require_retained_slot()?;
 
@@ -115,7 +132,7 @@ where
         let (offset, len) = self.data.outbound.encode_packet(&Unsubscribe {
             packet_id,
             dup: false,
-            properties: Properties::Slice(properties),
+            properties: Properties::from_slice(properties),
             topics,
         })?;
         self.runtime.require_packet_size(len)?;
@@ -139,7 +156,8 @@ where
     /// QoS 1 and 2 retain the encoded packet in the session TX buffer until broker ack and are
     /// cancel-safe if the underlying transport I/O futures are cancel-safe.
     /// They return `Some(Op)` so the caller can check completion with
-    /// [`Session::status`](Self::status).
+    /// [`Session::is_pending`](Self::is_pending), [`Session::is_complete`](Self::is_complete),
+    /// or [`Session::is_invalidated`](Self::is_invalidated).
     ///
     /// QoS 0 bypasses retained outbound state, encodes into temporary TX scratch space, and writes
     /// directly to the transport. It therefore does not consume replay/in-flight slots and only
@@ -164,6 +182,9 @@ where
             payload,
             retain,
         } = publication;
+        if !properties.valid_for(PropertyContext::Publish) {
+            return Err(Error::InvalidRequest.into());
+        }
         let qos = match self.runtime.max_qos {
             Some(max_qos) if self.downgrade_qos && qos > max_qos => max_qos,
             _ => qos,
@@ -209,7 +230,7 @@ where
         }
 
         let packet =
-            MqttSerializer::pub_to_buffer(self.data.outbound.scratch_space(), &header, payload)?;
+            MqttSerializer::encode_publish(self.data.outbound.scratch_space(), &header, payload)?;
         self.runtime.require_packet_size(packet.len())?;
         debug!("Sending QoS0 PUBLISH len={=usize}", packet.len());
         let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;

@@ -1,28 +1,26 @@
 #![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
 
-/// Session configuration and caller-owned buffers.
-pub mod config;
+mod config;
 mod de;
-mod message_types;
 mod mqtt_client;
 mod packets;
 mod properties;
-/// Outbound publish builders and payload adapters.
-pub mod publication;
+mod publication;
 mod reason_codes;
 mod ser;
-/// MQTT-specific value types used by the public API.
-pub mod types;
+mod types;
 mod varint;
 mod will;
+mod wire;
 
 pub use config::{Buffers, ConfigBuilder};
-pub use mqtt_client::{ConnectEvent, InboundPublish, Io, Op, OpStatus, Session};
+pub use mqtt_client::{ConnectEvent, InboundPublish, Io, Op, Session};
 pub use packets::Disconnect;
-pub use properties::Property;
-pub use publication::{OwnedResponseTarget, Publication};
+pub use properties::{Properties, Property};
+pub use publication::{OwnedResponseTarget, Publication, ToPayload};
 pub use reason_codes::ReasonCode;
+pub use types::{RetainHandling, SubscriptionOptions, TopicFilter};
 pub use will::Will;
 
 #[cfg(feature = "fuzzing")]
@@ -34,7 +32,29 @@ use ser::Error as SerError;
 
 use num_enum::TryFromPrimitive;
 
+#[cfg(feature = "defmt")]
 pub(crate) use defmt::{debug, error, info, trace, warn};
+
+#[cfg(not(feature = "defmt"))]
+macro_rules! discard_log {
+    ($message:literal $(, $arg:expr)* $(,)?) => {
+        {
+            let _ = $message;
+            $(let _ = &$arg;)*
+        }
+    };
+}
+
+#[cfg(not(feature = "defmt"))]
+pub(crate) use discard_log as debug;
+#[cfg(not(feature = "defmt"))]
+pub(crate) use discard_log as error;
+#[cfg(not(feature = "defmt"))]
+pub(crate) use discard_log as info;
+#[cfg(not(feature = "defmt"))]
+pub(crate) use discard_log as trace;
+#[cfg(not(feature = "defmt"))]
+pub(crate) use discard_log as warn;
 
 /// Session error type for a specific transport.
 pub type SessionError<IO> = Error<<IO as embedded_io_async::ErrorType>::Error>;
@@ -48,14 +68,9 @@ pub const MQTT_INSECURE_DEFAULT_PORT: u16 = 1883;
 /// Default port number for encrypted MQTT traffic.
 pub const MQTT_SECURE_DEFAULT_PORT: u16 = 8883;
 
-/// Fixed-capacity owned MQTT topic storage used by durable configuration.
-pub const TOPIC_CAPACITY: usize = 128;
-
-/// Fixed-capacity owned MQTT topic string.
-pub type TopicString = heapless::String<TOPIC_CAPACITY>;
-
 /// The quality-of-service for an MQTT message.
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive, PartialOrd, Ord)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum QoS {
     /// Deliver at most once. No acknowledgment or retry.
@@ -67,9 +82,10 @@ pub enum QoS {
 }
 
 /// The retained status for an MQTT message.
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
-pub enum Retain {
+pub(crate) enum Retain {
     /// Do not retain the message on the broker.
     NotRetained = 0,
     /// Ask the broker to retain the message.
@@ -77,7 +93,8 @@ pub enum Retain {
 }
 
 /// Configuration errors detected before a session is created.
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum ConfigError {
     /// The requested RX split does not fit in the provided backing buffer.
@@ -86,6 +103,9 @@ pub enum ConfigError {
     /// The configured client identifier exceeds the internal fixed-capacity storage.
     #[error("provided client ID is too long")]
     ClientIdTooLong,
+    /// The configured topic exceeds the internal fixed-capacity storage.
+    #[error("provided topic is too long")]
+    TopicTooLong,
     /// One configuration setting was specified more than once.
     #[error("configuration was specified more than once")]
     DuplicateConfig,
@@ -95,7 +115,8 @@ pub enum ConfigError {
 }
 
 /// Failures caused by broker behavior or invalid inbound MQTT data.
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum PeerError {
     /// The broker explicitly rejected the operation with an MQTT reason code.
@@ -107,7 +128,8 @@ pub enum PeerError {
 }
 
 /// Local capacity and sizing failures.
-#[derive(defmt::Format, Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum ResourceError {
     /// Local fixed-capacity storage or packet scratch space was too small.
@@ -220,7 +242,8 @@ impl<E> From<ResourceError> for Error<E> {
     }
 }
 
-#[derive(defmt::Format, Debug, Clone, PartialEq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum ProtocolError {
     /// The broker sent a packet that is invalid in the current protocol state.
     #[error("received an unexpected MQTT packet")]
