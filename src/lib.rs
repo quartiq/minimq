@@ -28,7 +28,7 @@ pub use will::Will;
 pub mod fuzzing;
 
 use de::Error as DeError;
-use ser::Error as SerError;
+use ser::{Error as SerError, PubError as SerPubError};
 
 use num_enum::TryFromPrimitive;
 
@@ -55,12 +55,6 @@ pub(crate) use discard_log as info;
 pub(crate) use discard_log as trace;
 #[cfg(not(feature = "defmt"))]
 pub(crate) use discard_log as warn;
-
-/// Session error type for a specific transport.
-pub type SessionError<IO> = Error<<IO as embedded_io_async::ErrorType>::Error>;
-
-/// Publish error type for a specific transport and payload serializer.
-pub type PublishError<IO, P> = PubError<P, <IO as embedded_io_async::ErrorType>::Error>;
 
 /// Default port number for unencrypted MQTT traffic.
 pub const MQTT_INSECURE_DEFAULT_PORT: u16 = 1883;
@@ -144,26 +138,28 @@ pub enum ResourceError {
 }
 
 /// Error returned from [`Session::publish`](crate::Session::publish).
+///
+/// `P` is the payload serialization error and `T` is the transport error.
 #[derive(Debug, PartialEq, thiserror::Error)]
-pub enum PubError<P, E> {
+pub enum PubError<P, T> {
     /// Session, transport, peer, or local resource failure.
     #[error(transparent)]
-    Session(#[from] Error<E>),
+    Session(#[from] Error<T>),
     /// Payload serialization failed before the packet was sent.
     #[error("payload serialization failed")]
     Payload(P),
 }
 
-impl<P, E> From<crate::ser::PubError<P>> for PubError<P, E> {
-    fn from(e: crate::ser::PubError<P>) -> Self {
+impl<P, T> From<SerPubError<P>> for PubError<P, T> {
+    fn from(e: SerPubError<P>) -> Self {
         match e {
-            crate::ser::PubError::Payload(e) => Self::Payload(e),
-            crate::ser::PubError::Encode(e) => Self::Session(Error::from(e)),
+            SerPubError::Payload(e) => Self::Payload(e),
+            SerPubError::Encode(e) => Self::Session(Error::from(e)),
         }
     }
 }
 
-impl<P, E> From<ProtocolError> for PubError<P, E> {
+impl<P, T> From<ProtocolError> for PubError<P, T> {
     fn from(err: ProtocolError) -> Self {
         Self::Session(err.into())
     }
@@ -205,26 +201,23 @@ impl<E> From<ProtocolError> for Error<E> {
             ProtocolError::InflightMetadataExhausted => {
                 Self::Resource(ResourceError::InflightExhausted)
             }
-            ProtocolError::Failed(code) => match code {
-                ReasonCode::PacketTooLarge => Self::Resource(ResourceError::PacketTooLarge),
-                code => Self::Peer(PeerError::Rejected(code)),
-            },
+            ProtocolError::PacketTooLarge => Self::Resource(ResourceError::PacketTooLarge),
             ProtocolError::Encode(err) => Self::from(err),
         }
     }
 }
 
-impl<E> From<crate::ser::Error> for Error<E> {
-    fn from(err: crate::ser::Error) -> Self {
+impl<E> From<SerError> for Error<E> {
+    fn from(err: SerError) -> Self {
         match err {
-            crate::ser::Error::InsufficientMemory => Self::Resource(ResourceError::BufferTooSmall),
-            crate::ser::Error::Custom => Self::InvalidRequest,
+            SerError::InsufficientMemory => Self::Resource(ResourceError::BufferTooSmall),
+            SerError::Custom => Self::InvalidRequest,
         }
     }
 }
 
-impl<E> From<crate::de::Error> for Error<E> {
-    fn from(err: crate::de::Error) -> Self {
+impl<E> From<DeError> for Error<E> {
+    fn from(err: DeError) -> Self {
         let _ = err;
         Self::Peer(PeerError::InvalidPacket)
     }
@@ -254,21 +247,15 @@ pub(crate) enum ProtocolError {
     /// Internal tracking space for in-flight packet metadata was exhausted.
     #[error("in-flight metadata capacity exhausted")]
     InflightMetadataExhausted,
-    /// The broker rejected the operation with an MQTT reason code.
-    #[error("broker returned failure reason {0:?}")]
-    Failed(ReasonCode),
+    /// A required MQTT response exceeds the negotiated packet size limit.
+    #[error("required packet is too large")]
+    PacketTooLarge,
     /// Packet encoding failed.
     #[error(transparent)]
     Encode(#[from] SerError),
     /// Packet decoding failed.
     #[error(transparent)]
     Deserialization(#[from] DeError),
-}
-
-impl From<ReasonCode> for ProtocolError {
-    fn from(code: ReasonCode) -> Self {
-        Self::Failed(code)
-    }
 }
 
 #[cfg(test)]

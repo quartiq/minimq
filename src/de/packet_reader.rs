@@ -1,4 +1,4 @@
-use super::received_packet::ReceivedPacket;
+use super::ReceivedPacket;
 use crate::ProtocolError as Error;
 use crate::{trace, warn};
 

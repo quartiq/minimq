@@ -191,7 +191,8 @@ impl<'a> ConfigBuilder<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Buffers, ConfigBuilder};
+    use crate::{ConfigError, Will};
 
     #[test]
     fn split_buffer() {

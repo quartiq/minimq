@@ -120,11 +120,6 @@ impl<'a, P> Publication<'a, P> {
         }
     }
 
-    /// Return the current MQTT v5 property set for this publish.
-    pub fn properties_ref(&self) -> &Properties<'a> {
-        &self.properties
-    }
-
     /// Set the requested publish QoS.
     pub fn qos(mut self, qos: QoS) -> Self {
         self.qos = qos;

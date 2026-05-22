@@ -19,9 +19,11 @@
 //! * Structs
 //!
 //! Other types are explicitly not implemented and there is no plan to implement them.
-use crate::varint::VarintBuffer;
 use crate::{
     packets::PublishHeader,
+    publication::ToPayload,
+    trace,
+    varint::{VarintBuffer, write_mqtt_u32_varint},
     wire::{ControlPacket, MessageType},
 };
 use serde::Serialize;
@@ -52,7 +54,7 @@ impl serde::ser::StdError for Error {}
 
 impl serde::ser::Error for Error {
     fn custom<T: core::fmt::Display>(_msg: T) -> Self {
-        crate::trace!("Serialization error");
+        trace!("Serialization error");
         Error::Custom
     }
 }
@@ -78,7 +80,7 @@ pub(crate) struct MqttSerializer<'a> {
 
 impl<'a> MqttSerializer<'a> {
     /// Construct a serializer over one packet buffer.
-    pub(crate) fn new(buf: &'a mut [u8]) -> Self {
+    fn new(buf: &'a mut [u8]) -> Self {
         Self {
             buf,
             index: MAX_FIXED_HEADER_SIZE,
@@ -96,7 +98,7 @@ impl<'a> MqttSerializer<'a> {
         Ok((offset, packet))
     }
 
-    pub(crate) fn encode_publish_with_offset<P: crate::publication::ToPayload>(
+    pub(crate) fn encode_publish_with_offset<P: ToPayload>(
         buf: &'a mut [u8],
         header: &PublishHeader<'_>,
         payload: P,
@@ -118,7 +120,7 @@ impl<'a> MqttSerializer<'a> {
         Ok((offset, packet))
     }
 
-    pub(crate) fn encode_publish<P: crate::publication::ToPayload>(
+    pub(crate) fn encode_publish<P: ToPayload>(
         buf: &'a mut [u8],
         header: &PublishHeader<'_>,
         payload: P,
@@ -144,15 +146,14 @@ impl<'a> MqttSerializer<'a> {
     ///
     /// # Returns
     /// A slice representing the serialized packet.
-    pub(crate) fn finalize(self, typ: MessageType, flags: u8) -> Result<(usize, &'a [u8]), Error> {
+    fn finalize(self, typ: MessageType, flags: u8) -> Result<(usize, &'a [u8]), Error> {
         let len = self
             .index
             .checked_sub(MAX_FIXED_HEADER_SIZE)
             .ok_or(Error::InsufficientMemory)?;
 
         let mut buffer = VarintBuffer::new();
-        crate::varint::write_mqtt_u32_varint(len as u32, &mut buffer)
-            .map_err(|_| Error::InsufficientMemory)?;
+        write_mqtt_u32_varint(len as u32, &mut buffer).map_err(|_| Error::InsufficientMemory)?;
         let remaining_len = buffer.as_slice();
         if self.buf.len() < MAX_FIXED_HEADER_SIZE {
             return Err(Error::InsufficientMemory);
@@ -171,8 +172,8 @@ impl<'a> MqttSerializer<'a> {
     }
 
     /// Write data into the packet.
-    pub(crate) fn push_bytes(&mut self, data: &[u8]) -> Result<(), Error> {
-        crate::trace!("Serializer pushed {=usize} bytes", data.len());
+    fn push_bytes(&mut self, data: &[u8]) -> Result<(), Error> {
+        trace!("Serializer pushed {=usize} bytes", data.len());
         if self.buf.len().saturating_sub(self.index) < data.len() {
             return Err(Error::InsufficientMemory);
         }
@@ -184,7 +185,7 @@ impl<'a> MqttSerializer<'a> {
     }
 
     /// Push a byte to the tail of the packet.
-    pub(crate) fn push(&mut self, byte: u8) -> Result<(), Error> {
+    fn push(&mut self, byte: u8) -> Result<(), Error> {
         if self.buf.len().saturating_sub(self.index) < 1 {
             return Err(Error::InsufficientMemory);
         }
@@ -198,13 +199,13 @@ impl<'a> MqttSerializer<'a> {
     ///
     /// # Note
     /// You must call `commit` after serializing.
-    pub(crate) fn remainder(&mut self) -> &mut [u8] {
+    fn remainder(&mut self) -> &mut [u8] {
         let start = self.index.min(self.buf.len());
         &mut self.buf[start..]
     }
 
     /// Commit previously-serialized data into the buffer.
-    pub(crate) fn commit(&mut self, len: usize) -> Result<(), Error> {
+    fn commit(&mut self, len: usize) -> Result<(), Error> {
         if self.buf.len().saturating_sub(self.index) < len {
             return Err(Error::InsufficientMemory);
         }
@@ -483,16 +484,17 @@ impl serde::ser::SerializeStructVariant for &mut MqttSerializer<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, MqttSerializer};
+    use super::{Error, MAX_FIXED_HEADER_SIZE, MqttSerializer};
     use crate::{
         packets::{PingReq, PublishHeader},
         publication::Publication,
+        ser::PubError,
         wire::Utf8String,
     };
 
     #[test]
     fn control_packet_encode_rejects_buffers_smaller_than_fixed_header() {
-        for len in 0..super::MAX_FIXED_HEADER_SIZE {
+        for len in 0..MAX_FIXED_HEADER_SIZE {
             let mut buf = vec![0u8; len];
             let result = MqttSerializer::encode(&mut buf, &PingReq);
             assert!(matches!(result, Err(Error::InsufficientMemory)));
@@ -501,7 +503,7 @@ mod tests {
 
     #[test]
     fn publish_encode_rejects_buffers_smaller_than_fixed_header() {
-        for len in 0..super::MAX_FIXED_HEADER_SIZE {
+        for len in 0..MAX_FIXED_HEADER_SIZE {
             let mut buf = vec![0u8; len];
             let publication = Publication::bytes("a", b"x");
             let header = PublishHeader {
@@ -515,7 +517,7 @@ mod tests {
             let result = MqttSerializer::encode_publish(&mut buf, &header, publication.payload);
             assert!(matches!(
                 result,
-                Err(crate::ser::PubError::Encode(Error::InsufficientMemory))
+                Err(PubError::Encode(Error::InsufficientMemory))
             ));
         }
     }

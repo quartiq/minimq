@@ -3,8 +3,8 @@
 use crate::{
     Retain,
     packets::{
-        ConnAck, Connect, Disconnect, PingReq, PingResp, PubAck, PubComp, PubRec, PubRel,
-        PublishHeader, SubAck, Subscribe, UnsubAck, Unsubscribe,
+        ConnAck, Connect, Disconnect, PingReq, PubAck, PubComp, PubRec, PubRel, PublishHeader,
+        SubAck, Subscribe, UnsubAck, Unsubscribe,
     },
 };
 use num_enum::TryFromPrimitive;
@@ -186,10 +186,6 @@ impl ControlPacket for UnsubAck<'_> {
 
 impl ControlPacket for PingReq {
     const MESSAGE_TYPE: MessageType = MessageType::PingReq;
-}
-
-impl ControlPacket for PingResp {
-    const MESSAGE_TYPE: MessageType = MessageType::PingResp;
 }
 
 impl ControlPacket for Disconnect<'_> {

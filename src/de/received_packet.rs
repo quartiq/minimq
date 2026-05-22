@@ -5,8 +5,7 @@ use crate::{
     wire::MessageType,
 };
 
-use super::deserializer::MqttDeserializer;
-use crate::{trace, warn};
+use crate::{de::MqttDeserializer, trace, warn};
 
 use core::convert::TryFrom;
 use serde::Deserialize;
@@ -21,7 +20,6 @@ pub(crate) enum ReceivedPacket<'a> {
     PubRel(PubRel<'a>),
     PubRec(PubRec<'a>),
     PubComp(PubComp<'a>),
-    #[allow(dead_code)]
     Disconnect(Disconnect<'a>),
     PingResp,
 }
@@ -206,10 +204,12 @@ impl<'de> Deserialize<'de> for ReceivedPacket<'de> {
 mod test {
     use super::ReceivedPacket;
     use crate::reason_codes::ReasonCode;
+    use crate::tests::init_host_logging;
+    use crate::{DeError, ProtocolError};
 
     #[test]
     fn deserialize_good_connack() {
-        crate::tests::init_host_logging();
+        init_host_logging();
         let serialized_connack: [u8; 5] = [
             0x20, 0x03, // Remaining length = 3 bytes
             0x00, // Connect acknowledge flags - bit 0 clear.
@@ -252,9 +252,7 @@ mod test {
         let serialized_disconnect: [u8; 9] = [0xE0, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xA3, 0xA3];
         assert!(matches!(
             ReceivedPacket::from_buffer(&serialized_disconnect),
-            Err(crate::ProtocolError::Deserialization(
-                crate::DeError::BadVarint
-            ))
+            Err(ProtocolError::Deserialization(DeError::BadVarint))
         ));
     }
 
@@ -383,9 +381,7 @@ mod test {
 
         assert!(matches!(
             ReceivedPacket::from_buffer(&serialized_ping_resp),
-            Err(crate::ProtocolError::Deserialization(
-                crate::DeError::Custom
-            ))
+            Err(ProtocolError::Deserialization(DeError::Custom))
         ));
     }
 
@@ -398,9 +394,7 @@ mod test {
 
         assert!(matches!(
             ReceivedPacket::from_buffer(&serialized_pubrel),
-            Err(crate::ProtocolError::Deserialization(
-                crate::DeError::Custom
-            ))
+            Err(ProtocolError::Deserialization(DeError::Custom))
         ));
     }
 

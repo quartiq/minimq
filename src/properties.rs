@@ -1,7 +1,8 @@
 use crate::{
     PeerError,
-    de::deserializer::MqttDeserializer,
-    varint::Varint,
+    de::MqttDeserializer,
+    trace,
+    varint::{MQTT_VARINT_MAX, Varint},
     wire::{BinaryData, Utf8String},
 };
 
@@ -153,9 +154,7 @@ impl Property<'_> {
             | Property::SubscriptionIdentifierAvailable(value)
             | Property::SharedSubscriptionAvailable(value) => *value <= 1,
             Property::MaximumQoS(value) => *value <= 2,
-            Property::SubscriptionIdentifier(value) => {
-                (1..=crate::varint::MQTT_VARINT_MAX).contains(value)
-            }
+            Property::SubscriptionIdentifier(value) => (1..=MQTT_VARINT_MAX).contains(value),
             _ => true,
         }
     }
@@ -216,12 +215,12 @@ enum PropertiesData<'a> {
 }
 
 impl Properties<'_> {
-    /// Return an empty property collection.
+    /// Return an empty decoded property collection for outbound packet builders.
     pub const fn empty() -> Self {
         Self::from_slice(&[])
     }
 
-    /// Borrow a decoded property slice.
+    /// Borrow decoded MQTT properties for outbound packet builders.
     pub const fn from_slice<'a>(properties: &'a [Property<'a>]) -> Properties<'a> {
         Properties {
             inner: PropertiesData::Slice(properties),
@@ -252,23 +251,26 @@ impl<'a> Properties<'a> {
         }
     }
 
-    /// Iterate over properties.
+    /// Iterate over decoded properties.
+    ///
+    /// Inbound encoded properties are decoded lazily and may yield a [`PeerError`] if the broker
+    /// sent malformed property data.
     pub fn iter(&'a self) -> impl Iterator<Item = Result<Property<'a>, PeerError>> + 'a {
         self.iter_inner()
     }
 
-    /// Return the first `ResponseTopic` property, if present.
+    /// Return the first `ResponseTopic` property, if present and valid.
     pub fn response_topic(&'a self) -> Option<&'a str> {
         self.iter().find_map(|prop| match prop {
-            Ok(crate::Property::ResponseTopic(topic)) => Some(topic),
+            Ok(Property::ResponseTopic(topic)) => Some(topic),
             _ => None,
         })
     }
 
-    /// Return the first `CorrelationData` property, if present.
+    /// Return the first `CorrelationData` property, if present and valid.
     pub fn correlation_data(&'a self) -> Option<&'a [u8]> {
         self.iter().find_map(|prop| match prop {
-            Ok(crate::Property::CorrelationData(data)) => Some(data),
+            Ok(Property::CorrelationData(data)) => Some(data),
             _ => None,
         })
     }
@@ -304,10 +306,6 @@ impl<'a> Properties<'a> {
         }
     }
 
-    pub(crate) fn iter_decoded(&'a self) -> PropertiesIter<'a> {
-        self.iter_inner()
-    }
-
     pub(crate) fn valid_for(&'a self, context: PropertyContext) -> bool {
         self.iter()
             .all(|property| property.is_ok_and(|property| property.is_valid_for(context)))
@@ -340,7 +338,7 @@ impl<'a> Properties<'a> {
 }
 
 /// Iterator over decoded MQTT properties.
-pub(crate) struct PropertiesIter<'a> {
+struct PropertiesIter<'a> {
     inner: PropertiesIterInner<'a>,
 }
 
@@ -487,7 +485,7 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
         use serde::de::{Error, VariantAccess};
 
         let (field, variant) = data.variant::<PropertyIdentifier>()?;
-        crate::trace!("Deserializing property field {}", field);
+        trace!("Deserializing property field {}", field);
 
         let property = match field {
             PropertyIdentifier::ResponseTopic => {
@@ -600,7 +598,7 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Property<'a> {
                 _data: core::marker::PhantomData,
             },
         )?;
-        crate::trace!("Deserialized property {}", prop);
+        trace!("Deserialized property {}", prop);
         Ok(prop)
     }
 }
@@ -748,7 +746,7 @@ impl Property<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Properties, Property};
     use heapless::Vec;
 
     #[test]

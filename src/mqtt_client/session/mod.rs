@@ -13,8 +13,7 @@ use crate::types::Auth;
 use crate::{ConfigBuilder, Op, QoS, Will};
 use heapless::String;
 
-use super::Io;
-use super::OpStatus;
+use super::{Io, OpKind, OpStatus};
 
 use state::{RuntimeState, SessionData};
 
@@ -115,10 +114,10 @@ where
         }
 
         let pending = match op.kind {
-            super::OpKind::PublishAtLeastOnce
-            | super::OpKind::Subscribe
-            | super::OpKind::Unsubscribe => self.data.outbound.has_retained(op.packet_id),
-            super::OpKind::PublishExactlyOnce => {
+            OpKind::PublishAtLeastOnce | OpKind::Subscribe | OpKind::Unsubscribe => {
+                self.data.outbound.has_retained(op.packet_id)
+            }
+            OpKind::PublishExactlyOnce => {
                 self.data.outbound.has_retained(op.packet_id)
                     || self.data.outbound.has_pending_release(op.packet_id)
             }

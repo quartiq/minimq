@@ -1,6 +1,6 @@
 use crate::{
     QoS, ReasonCode,
-    de::{PacketReader, received_packet::ReceivedPacket},
+    de::{PacketReader, ReceivedPacket},
     packets::{
         Connect, Disconnect, PingReq, PubAck, PubComp, PubRec, PubRel, PublishHeader, Reason,
         Subscribe, Unsubscribe,
