@@ -9,8 +9,7 @@ use crate::properties::Properties;
 use crate::wire::Utf8String;
 use crate::{Error, PeerError, Property, QoS, debug, info, warn};
 
-use super::drive::fill_packet_reader;
-use super::{Io, Session};
+use super::{Io, Session, drive::fill_packet_reader};
 
 impl<'buf, IO> Session<'buf, IO>
 where

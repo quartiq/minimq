@@ -1,7 +1,8 @@
 use crate::{
     PeerError,
     de::deserializer::MqttDeserializer,
-    varint::Varint,
+    trace,
+    varint::{MQTT_VARINT_MAX, Varint},
     wire::{BinaryData, Utf8String},
 };
 
@@ -153,9 +154,7 @@ impl Property<'_> {
             | Property::SubscriptionIdentifierAvailable(value)
             | Property::SharedSubscriptionAvailable(value) => *value <= 1,
             Property::MaximumQoS(value) => *value <= 2,
-            Property::SubscriptionIdentifier(value) => {
-                (1..=crate::varint::MQTT_VARINT_MAX).contains(value)
-            }
+            Property::SubscriptionIdentifier(value) => (1..=MQTT_VARINT_MAX).contains(value),
             _ => true,
         }
     }
@@ -260,7 +259,7 @@ impl<'a> Properties<'a> {
     /// Return the first `ResponseTopic` property, if present.
     pub fn response_topic(&'a self) -> Option<&'a str> {
         self.iter().find_map(|prop| match prop {
-            Ok(crate::Property::ResponseTopic(topic)) => Some(topic),
+            Ok(Property::ResponseTopic(topic)) => Some(topic),
             _ => None,
         })
     }
@@ -268,7 +267,7 @@ impl<'a> Properties<'a> {
     /// Return the first `CorrelationData` property, if present.
     pub fn correlation_data(&'a self) -> Option<&'a [u8]> {
         self.iter().find_map(|prop| match prop {
-            Ok(crate::Property::CorrelationData(data)) => Some(data),
+            Ok(Property::CorrelationData(data)) => Some(data),
             _ => None,
         })
     }
@@ -487,7 +486,7 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
         use serde::de::{Error, VariantAccess};
 
         let (field, variant) = data.variant::<PropertyIdentifier>()?;
-        crate::trace!("Deserializing property field {}", field);
+        trace!("Deserializing property field {}", field);
 
         let property = match field {
             PropertyIdentifier::ResponseTopic => {
@@ -600,7 +599,7 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Property<'a> {
                 _data: core::marker::PhantomData,
             },
         )?;
-        crate::trace!("Deserialized property {}", prop);
+        trace!("Deserialized property {}", prop);
         Ok(prop)
     }
 }
@@ -748,7 +747,7 @@ impl Property<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Properties, Property};
     use heapless::Vec;
 
     #[test]

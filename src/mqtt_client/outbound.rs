@@ -607,9 +607,12 @@ pub(super) async fn write_all<C: Io>(
 
 #[cfg(test)]
 mod tests {
-    use super::{ControlAction, Outbound, OutboundStep, SendState};
+    use super::{ControlAction, MAX_FIXED_HEADER_SIZE, Outbound, OutboundStep, SendState};
     use crate::{
-        Properties, packets::Subscribe, publication::Publication, types::TopicFilter,
+        Error, Properties, PubError, ReasonCode, ResourceError,
+        packets::{PublishHeader, Subscribe},
+        publication::Publication,
+        types::TopicFilter,
         wire::Utf8String,
     };
 
@@ -634,7 +637,7 @@ mod tests {
 
     #[test]
     fn can_retain_requires_fixed_header_scratch() {
-        let mut storage = [0u8; super::MAX_FIXED_HEADER_SIZE + 4];
+        let mut storage = [0u8; MAX_FIXED_HEADER_SIZE + 4];
         let mut outbound = Outbound::new(&mut storage);
 
         outbound.retain_packet(7, 0, 5).unwrap();
@@ -644,13 +647,13 @@ mod tests {
 
     #[test]
     fn encode_publish_returns_insufficient_memory_when_only_header_gap_remains() {
-        let mut storage = [0u8; super::MAX_FIXED_HEADER_SIZE + 4];
+        let mut storage = [0u8; MAX_FIXED_HEADER_SIZE + 4];
         let mut outbound = Outbound::new(&mut storage);
 
         outbound.retain_packet(7, 0, 5).unwrap();
 
         let publication = Publication::bytes("a", b"x");
-        let header = crate::packets::PublishHeader {
+        let header = PublishHeader {
             topic: Utf8String(publication.topic),
             packet_id: None,
             properties: publication.properties,
@@ -662,8 +665,8 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(crate::PubError::Session(crate::Error::Resource(
-                crate::ResourceError::BufferTooSmall
+            Err(PubError::Session(Error::Resource(
+                ResourceError::BufferTooSmall
             )))
         ));
     }
@@ -674,7 +677,7 @@ mod tests {
         let mut outbound = Outbound::new(&mut storage);
         let action = ControlAction::PubAck {
             packet_id: 7,
-            reason: crate::ReasonCode::Success,
+            reason: ReasonCode::Success,
         };
         outbound.queue_control(action).unwrap();
         outbound.set_control_written(action, 5, 5);

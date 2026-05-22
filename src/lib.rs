@@ -28,7 +28,7 @@ pub use will::Will;
 pub mod fuzzing;
 
 use de::Error as DeError;
-use ser::Error as SerError;
+use ser::{Error as SerError, PubError as SerPubError};
 
 use num_enum::TryFromPrimitive;
 
@@ -154,11 +154,11 @@ pub enum PubError<P, E> {
     Payload(P),
 }
 
-impl<P, E> From<crate::ser::PubError<P>> for PubError<P, E> {
-    fn from(e: crate::ser::PubError<P>) -> Self {
+impl<P, E> From<SerPubError<P>> for PubError<P, E> {
+    fn from(e: SerPubError<P>) -> Self {
         match e {
-            crate::ser::PubError::Payload(e) => Self::Payload(e),
-            crate::ser::PubError::Encode(e) => Self::Session(Error::from(e)),
+            SerPubError::Payload(e) => Self::Payload(e),
+            SerPubError::Encode(e) => Self::Session(Error::from(e)),
         }
     }
 }
@@ -214,17 +214,17 @@ impl<E> From<ProtocolError> for Error<E> {
     }
 }
 
-impl<E> From<crate::ser::Error> for Error<E> {
-    fn from(err: crate::ser::Error) -> Self {
+impl<E> From<SerError> for Error<E> {
+    fn from(err: SerError) -> Self {
         match err {
-            crate::ser::Error::InsufficientMemory => Self::Resource(ResourceError::BufferTooSmall),
-            crate::ser::Error::Custom => Self::InvalidRequest,
+            SerError::InsufficientMemory => Self::Resource(ResourceError::BufferTooSmall),
+            SerError::Custom => Self::InvalidRequest,
         }
     }
 }
 
-impl<E> From<crate::de::Error> for Error<E> {
-    fn from(err: crate::de::Error) -> Self {
+impl<E> From<DeError> for Error<E> {
+    fn from(err: DeError) -> Self {
         let _ = err;
         Self::Peer(PeerError::InvalidPacket)
     }

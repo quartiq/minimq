@@ -297,10 +297,7 @@ impl From<ReasonCode> for Reason<'_> {
 
 impl<'a> Reason<'a> {
     #[cfg_attr(not(feature = "fuzzing"), allow(dead_code))]
-    pub(crate) fn with_properties(
-        code: ReasonCode,
-        properties: &'a [crate::properties::Property<'a>],
-    ) -> Self {
+    pub(crate) fn with_properties(code: ReasonCode, properties: &'a [Property<'a>]) -> Self {
         Self {
             reason: Some(ReasonData {
                 code,
@@ -327,10 +324,14 @@ struct ReasonData<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::Disconnect;
+    use super::{
+        Connect, Disconnect, PingReq, PubAck, PubComp, PubRel, PublishHeader, Reason, ReasonData,
+        Subscribe, Unsubscribe,
+    };
     use crate::properties::{Properties, Property};
     use crate::reason_codes::ReasonCode;
     use crate::ser::MqttSerializer;
+    use crate::will::Will;
     use crate::{QoS, Retain};
     use crate::{types::TopicFilter, wire::Utf8String};
 
@@ -344,7 +345,7 @@ mod tests {
             0xAB, 0xCD, // Payload
         ];
 
-        let header = crate::packets::PublishHeader {
+        let header = PublishHeader {
             qos: QoS::AtMostOnce,
             packet_id: None,
             dup: false,
@@ -371,7 +372,7 @@ mod tests {
             0xAB, 0xCD, // Payload
         ];
 
-        let header = crate::packets::PublishHeader {
+        let header = PublishHeader {
             qos: QoS::AtLeastOnce,
             topic: Utf8String("ABC"),
             packet_id: Some(0xBEEF),
@@ -398,7 +399,7 @@ mod tests {
             0xAB, 0xCD, // Payload
         ];
 
-        let header = crate::packets::PublishHeader {
+        let header = PublishHeader {
             qos: QoS::AtLeastOnce,
             topic: Utf8String("ABC"),
             packet_id: Some(0xBEEF),
@@ -425,7 +426,7 @@ mod tests {
             0x00, // Options byte = 0
         ];
 
-        let subscribe = crate::packets::Subscribe {
+        let subscribe = Subscribe {
             packet_id: 16,
             dup: false,
             properties: Properties::from_slice(&[]),
@@ -448,7 +449,7 @@ mod tests {
             0x00, 0x03, 0x41, 0x42, 0x43, // Topic: ABC
         ];
 
-        let unsubscribe = crate::packets::Unsubscribe {
+        let unsubscribe = Unsubscribe {
             packet_id: 16,
             dup: false,
             properties: Properties::from_slice(&[]),
@@ -472,7 +473,7 @@ mod tests {
             0xAB, 0xCD, // Payload
         ];
 
-        let header = crate::packets::PublishHeader {
+        let header = PublishHeader {
             qos: QoS::AtMostOnce,
             topic: Utf8String("ABC"),
             packet_id: None,
@@ -499,7 +500,7 @@ mod tests {
             0xAB, 0xCD, // Payload
         ];
 
-        let header = crate::packets::PublishHeader {
+        let header = PublishHeader {
             qos: QoS::AtMostOnce,
             topic: Utf8String("ABC"),
             packet_id: None,
@@ -528,7 +529,7 @@ mod tests {
         ];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let connect: crate::packets::Connect<'_> = crate::packets::Connect {
+        let connect: Connect<'_> = Connect {
             client_id: Utf8String("ABC"),
             auth: None,
             will: None,
@@ -571,11 +572,11 @@ mod tests {
         ];
 
         let mut buffer: [u8; 900] = [0; 900];
-        let will = crate::will::Will::new("EFG", &[0xAB, 0xCD], &[])
+        let will = Will::new("EFG", &[0xAB, 0xCD], &[])
             .unwrap()
-            .qos(crate::QoS::AtMostOnce);
+            .qos(QoS::AtMostOnce);
 
-        let connect = crate::packets::Connect {
+        let connect = Connect {
             clean_start: true,
             keepalive: 10,
             properties: Properties::from_slice(&[]),
@@ -597,7 +598,7 @@ mod tests {
         ];
 
         let mut buffer: [u8; 1024] = [0; 1024];
-        let message = MqttSerializer::encode(&mut buffer, &crate::packets::PingReq {}).unwrap();
+        let message = MqttSerializer::encode(&mut buffer, &PingReq {}).unwrap();
         assert_eq!(message, good_ping_req);
     }
 
@@ -633,7 +634,7 @@ mod tests {
             0x10, // Response Code
         ];
 
-        let pubrel = crate::packets::PubRel {
+        let pubrel = PubRel {
             packet_id: 5,
             reason: ReasonCode::NoMatchingSubscribers.into(),
         };
@@ -655,10 +656,10 @@ mod tests {
             0x00, // Response Code
         ];
 
-        let pubrel = crate::packets::PubAck {
+        let pubrel = PubAck {
             packet_id: 0x15,
-            reason: crate::packets::Reason {
-                reason: Some(crate::packets::ReasonData {
+            reason: Reason {
+                reason: Some(ReasonData {
                     code: ReasonCode::Success,
                     properties: None,
                 }),
@@ -682,10 +683,10 @@ mod tests {
             0x00, // Response Code
         ];
 
-        let pubrel = crate::packets::PubComp {
+        let pubrel = PubComp {
             packet_id: 0x15,
-            reason: crate::packets::Reason {
-                reason: Some(crate::packets::ReasonData {
+            reason: Reason {
+                reason: Some(ReasonData {
                     code: ReasonCode::Success,
                     properties: None,
                 }),

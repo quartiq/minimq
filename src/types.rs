@@ -133,7 +133,8 @@ impl<'a> TopicFilter<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::TopicFilter;
+    use crate::QoS;
 
     #[test]
     fn default_subscription_options_cap_inbound_qos_to_at_most_once() {
