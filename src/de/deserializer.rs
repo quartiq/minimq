@@ -103,12 +103,12 @@ impl<'a> MqttDeserializer<'a> {
     }
 
     /// Override the next binary field length.
-    pub(crate) fn set_next_bytes_len(&mut self, len: usize) {
+    fn set_next_bytes_len(&mut self, len: usize) {
         self.next_bytes_len.replace(len);
     }
 
     /// Attempt to take N bytes from the buffer.
-    pub(crate) fn try_take_n(&mut self, n: usize) -> Result<&'a [u8], Error> {
+    fn try_take_n(&mut self, n: usize) -> Result<&'a [u8], Error> {
         if self.len() < n {
             return Err(Error::InsufficientData);
         }
@@ -119,7 +119,7 @@ impl<'a> MqttDeserializer<'a> {
     }
 
     /// Pop a single byte from the data buffer.
-    pub(crate) fn pop(&mut self) -> Result<u8, Error> {
+    fn pop(&mut self) -> Result<u8, Error> {
         if self.len() == 0 {
             return Err(Error::InsufficientData);
         }
@@ -130,17 +130,17 @@ impl<'a> MqttDeserializer<'a> {
     }
 
     /// Read a 16-bit integer from the data buffer.
-    pub(crate) fn read_u16(&mut self) -> Result<u16, Error> {
+    fn read_u16(&mut self) -> Result<u16, Error> {
         Ok(u16::from_be_bytes([self.pop()?, self.pop()?]))
     }
 
     /// Read the number of remaining bytes in the data buffer.
-    pub(crate) fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.buf.len() - self.index
     }
 
     /// Read a variable-length integer from the data buffer.
-    pub(crate) fn read_varint(&mut self) -> Result<u32, Error> {
+    fn read_varint(&mut self) -> Result<u32, Error> {
         read_mqtt_u32_varint(|| self.pop(), || Error::BadVarint)
     }
 

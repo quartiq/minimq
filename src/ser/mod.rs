@@ -80,7 +80,7 @@ pub(crate) struct MqttSerializer<'a> {
 
 impl<'a> MqttSerializer<'a> {
     /// Construct a serializer over one packet buffer.
-    pub(crate) fn new(buf: &'a mut [u8]) -> Self {
+    fn new(buf: &'a mut [u8]) -> Self {
         Self {
             buf,
             index: MAX_FIXED_HEADER_SIZE,
@@ -146,7 +146,7 @@ impl<'a> MqttSerializer<'a> {
     ///
     /// # Returns
     /// A slice representing the serialized packet.
-    pub(crate) fn finalize(self, typ: MessageType, flags: u8) -> Result<(usize, &'a [u8]), Error> {
+    fn finalize(self, typ: MessageType, flags: u8) -> Result<(usize, &'a [u8]), Error> {
         let len = self
             .index
             .checked_sub(MAX_FIXED_HEADER_SIZE)
@@ -172,7 +172,7 @@ impl<'a> MqttSerializer<'a> {
     }
 
     /// Write data into the packet.
-    pub(crate) fn push_bytes(&mut self, data: &[u8]) -> Result<(), Error> {
+    fn push_bytes(&mut self, data: &[u8]) -> Result<(), Error> {
         trace!("Serializer pushed {=usize} bytes", data.len());
         if self.buf.len().saturating_sub(self.index) < data.len() {
             return Err(Error::InsufficientMemory);
@@ -185,7 +185,7 @@ impl<'a> MqttSerializer<'a> {
     }
 
     /// Push a byte to the tail of the packet.
-    pub(crate) fn push(&mut self, byte: u8) -> Result<(), Error> {
+    fn push(&mut self, byte: u8) -> Result<(), Error> {
         if self.buf.len().saturating_sub(self.index) < 1 {
             return Err(Error::InsufficientMemory);
         }
@@ -199,13 +199,13 @@ impl<'a> MqttSerializer<'a> {
     ///
     /// # Note
     /// You must call `commit` after serializing.
-    pub(crate) fn remainder(&mut self) -> &mut [u8] {
+    fn remainder(&mut self) -> &mut [u8] {
         let start = self.index.min(self.buf.len());
         &mut self.buf[start..]
     }
 
     /// Commit previously-serialized data into the buffer.
-    pub(crate) fn commit(&mut self, len: usize) -> Result<(), Error> {
+    fn commit(&mut self, len: usize) -> Result<(), Error> {
         if self.buf.len().saturating_sub(self.index) < len {
             return Err(Error::InsufficientMemory);
         }

@@ -303,10 +303,6 @@ impl<'a> Properties<'a> {
         }
     }
 
-    pub(crate) fn iter_decoded(&'a self) -> PropertiesIter<'a> {
-        self.iter_inner()
-    }
-
     pub(crate) fn valid_for(&'a self, context: PropertyContext) -> bool {
         self.iter()
             .all(|property| property.is_ok_and(|property| property.is_valid_for(context)))
@@ -339,7 +335,7 @@ impl<'a> Properties<'a> {
 }
 
 /// Iterator over decoded MQTT properties.
-pub(crate) struct PropertiesIter<'a> {
+struct PropertiesIter<'a> {
     inner: PropertiesIterInner<'a>,
 }
 

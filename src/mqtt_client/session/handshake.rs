@@ -1,5 +1,6 @@
 use embassy_time::{Duration, Instant};
 use embedded_io_async::Error as _;
+use heapless::String;
 
 use crate::de::received_packet::ReceivedPacket;
 use crate::mqtt_client::ConnectEvent;
@@ -126,48 +127,37 @@ where
         let mut max_qos = None;
         let mut maximum_packet_size = None;
         let mut keepalive_interval = self.runtime.keepalive_interval;
-        let mut assigned_client_id = None;
+        let mut assigned_client_id: Option<String<64>> = None;
 
-        for property in ack.properties.iter_decoded() {
-            match match property {
-                Ok(property) => property,
-                Err(err) => {
-                    self.handle_disconnect();
-                    return Err(Error::Peer(err));
-                }
-            } {
-                Property::MaximumPacketSize(size) => maximum_packet_size = Some(size),
-                Property::AssignedClientIdentifier(id) => {
-                    assigned_client_id = Some(match id.try_into() {
-                        Ok(client_id) => client_id,
-                        Err(_) => {
-                            self.handle_disconnect();
-                            return Err(Error::Peer(PeerError::InvalidPacket));
-                        }
-                    });
-                }
-                Property::ServerKeepAlive(keepalive) => {
-                    keepalive_interval = Duration::from_secs(keepalive as u64);
-                }
-                Property::ReceiveMaximum(max) => {
-                    if max == 0 {
-                        self.handle_disconnect();
-                        return Err(Error::Peer(PeerError::InvalidPacket));
+        let property_result = (|| {
+            for property in ack.properties.iter() {
+                match property? {
+                    Property::MaximumPacketSize(size) => maximum_packet_size = Some(size),
+                    Property::AssignedClientIdentifier(id) => {
+                        assigned_client_id =
+                            Some(id.try_into().map_err(|_| PeerError::InvalidPacket)?);
                     }
-                    send_quota = max.min(local_quota);
-                    max_send_quota = max.min(local_quota);
-                }
-                Property::MaximumQoS(max) => {
-                    max_qos = Some(match QoS::try_from(max) {
-                        Ok(qos) => qos,
-                        Err(_) => {
-                            self.handle_disconnect();
-                            return Err(Error::Peer(PeerError::InvalidPacket));
+                    Property::ServerKeepAlive(keepalive) => {
+                        keepalive_interval = Duration::from_secs(keepalive as u64);
+                    }
+                    Property::ReceiveMaximum(max) => {
+                        if max == 0 {
+                            return Err(PeerError::InvalidPacket);
                         }
-                    });
+                        send_quota = max.min(local_quota);
+                        max_send_quota = max.min(local_quota);
+                    }
+                    Property::MaximumQoS(max) => {
+                        max_qos = Some(QoS::try_from(max).map_err(|_| PeerError::InvalidPacket)?);
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+            Ok(())
+        })();
+        if let Err(err) = property_result {
+            self.handle_disconnect();
+            return Err(Error::Peer(err));
         }
 
         self.runtime.session_resumed = resumed;
