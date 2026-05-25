@@ -38,11 +38,8 @@ thiserror = { version = "2", default-features = false }
 
 [dev-dependencies]
 defmt2log = "0.1.0"
-embassy-futures = "0.1.2"
-embedded-nal-async = "0.9"
 env_logger = "0.11"
 embassy-time = { version = "0.5.1", features = ["std", "generic-queue-8"] }
-std-embedded-nal-async = "0.4"
 embedded-tls = "0.18.0"
 embedded-io-adapters = { version = "0.7.0", features = ["tokio-1"] }
 rand = "0.8"
