@@ -167,6 +167,7 @@ impl<P, T> From<ProtocolError> for PubError<P, T> {
 
 /// Possible errors encountered during MQTT operation.
 #[derive(Debug, PartialEq, thiserror::Error)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum Error<E> {
     /// Local buffers or in-flight state are not currently ready for the requested operation.
