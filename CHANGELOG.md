@@ -6,6 +6,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased](https://github.com/quartiq/minimq/compare/v0.12.0...HEAD)
+
+## Changed
+
+* **Breaking:** `Session` no longer carries the transport `IO` type parameter. `Session::connect()`
+  now returns a `Connection` handle that owns the transport and borrows the session; the network
+  operations (`drive`/`poll`/`recv`/`publish`/`subscribe`/`unsubscribe`/`disconnect`) move onto the
+  handle, while session-state queries remain reachable through its `Deref` to `Session`. This lets a
+  single `Session` be reused across reconnects with transports of different types or buffer
+  lifetimes — for example reusing TLS record buffers instead of leaking a fresh pair per connection.
+* **Breaking:** `is_connected()` moves from `Session` to the `Connection` handle and now reports
+  *per-connection* liveness: it latches `false` as soon as any operation observes a transport- or
+  protocol-level disconnect (broker `DISCONNECT`, transport error, keepalive timeout) or a graceful
+  `disconnect`, after which further operations on the handle fail fast with `Error::Disconnected`
+  instead of driving the dead transport.
+
 ## [v0.12.0](https://github.com/quartiq/minimq/compare/v0.11.2..v0.12.0) - 2026-05-24
 
 ## Changed

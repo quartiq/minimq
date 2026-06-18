@@ -200,11 +200,10 @@ impl<'a> SessionData<'a> {
     }
 }
 
-impl<'buf, IO> Session<'buf, IO>
-where
-    IO: Io,
-{
-    pub(super) fn process_received_packet(&mut self) -> Result<Option<usize>, Error<IO::Error>> {
+impl<'buf> Session<'buf> {
+    pub(super) fn process_received_packet<IO: Io>(
+        &mut self,
+    ) -> Result<Option<usize>, Error<IO::Error>> {
         if !self.packet_reader.packet_available() {
             return Ok(None);
         }
@@ -213,7 +212,7 @@ where
             Ok(packet) => packet,
             Err(err) => {
                 warn!("Failed to decode inbound packet: {}", err);
-                self.handle_disconnect();
+                self.mark_disconnected();
                 return Err(err.into());
             }
         };
@@ -222,17 +221,17 @@ where
             Ok(false) => Ok(None),
             Err(Error::Disconnected) => {
                 warn!("Disconnecting session after broker DISCONNECT");
-                self.handle_disconnect();
+                self.mark_disconnected();
                 Err(Error::Disconnected)
             }
             Err(Error::Peer(PeerError::InvalidPacket)) => {
                 warn!("Disconnecting session after packet handling error");
-                self.handle_disconnect();
+                self.mark_disconnected();
                 Err(Error::Peer(PeerError::InvalidPacket))
             }
             Err(Error::Resource(ResourceError::PacketTooLarge)) => {
                 warn!("Disconnecting session after packet handling error");
-                self.handle_disconnect();
+                self.mark_disconnected();
                 Err(Error::Resource(ResourceError::PacketTooLarge))
             }
             Err(Error::Peer(err)) => Err(Error::Peer(err)),

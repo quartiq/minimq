@@ -51,7 +51,7 @@ async fn run() -> Result<(), Box<dyn StdError>> {
     let mut subscriber = Session::new(
         ConfigBuilder::from_buffer(&mut sub_storage, 1024)?.auth(USERNAME, PASSWORD.as_bytes())?,
     );
-    subscriber
+    let mut subscriber = subscriber
         .connect(connect_tls(BROKER_HOST, BROKER_PORT).await?)
         .await?;
     let sub = subscriber
@@ -65,7 +65,7 @@ async fn run() -> Result<(), Box<dyn StdError>> {
     let mut publisher = Session::new(
         ConfigBuilder::from_buffer(&mut pub_storage, 1024)?.auth(USERNAME, PASSWORD.as_bytes())?,
     );
-    publisher
+    let mut publisher = publisher
         .connect(connect_tls(BROKER_HOST, BROKER_PORT).await?)
         .await?;
     let pub_ = publisher

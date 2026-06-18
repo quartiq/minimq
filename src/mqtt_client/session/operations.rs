@@ -13,27 +13,18 @@ use crate::{Error, Op, Property, PubError, QoS, ResourceError, debug, info, warn
 
 use super::{Io, Session};
 
-impl<'buf, IO> Session<'buf, IO>
-where
-    IO: Io,
-{
-    /// Gracefully close the current MQTT transport with `DISCONNECT`.
+impl<'buf> Session<'buf> {
+    /// Helper backing [`Connection::disconnect`](super::Connection::disconnect) and
+    /// [`Connection::disconnect_with`](super::Connection::disconnect_with): write the `DISCONNECT`
+    /// over the transport. The caller drops the transport afterwards.
     ///
     /// Cancel-safe if the underlying transport write/flush futures are cancel-safe.
-    pub async fn disconnect(&mut self) -> Result<(), Error<IO::Error>> {
-        self.disconnect_with(Disconnect::success()).await
-    }
-
-    /// Close the current MQTT transport with a caller-specified `DISCONNECT`.
-    ///
-    /// Use [`Disconnect::with_will`] to ask the broker to publish the configured Will immediately.
-    ///
-    /// Cancel-safe if the underlying transport write/flush futures are cancel-safe.
-    pub async fn disconnect_with(
+    pub(super) async fn disconnect_with<IO: Io>(
         &mut self,
+        io: &mut IO,
         disconnect: Disconnect<'_>,
     ) -> Result<(), Error<IO::Error>> {
-        if self.connection.is_none() {
+        if !self.connected {
             return Ok(());
         }
         info!("Graceful disconnect requested");
@@ -45,12 +36,12 @@ where
         let mut buffer = [0u8; CONTROL_PACKET_LEN];
         let packet = MqttSerializer::encode(&mut buffer, &disconnect)?;
         self.runtime.require_packet_size(packet.len())?;
-        let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
-        let result = match write_all(connection, packet).await {
-            Ok(()) => connection.flush().await.map_err(Error::Transport),
+        let result = match write_all(io, packet).await {
+            Ok(()) => io.flush().await.map_err(Error::Transport),
             Err(err) => Err(err),
         };
-        self.handle_disconnect();
+        // The transport is finished after a DISCONNECT regardless of the write outcome.
+        self.mark_disconnected();
         result
     }
 
@@ -64,12 +55,13 @@ where
     /// [`Session::is_invalidated`](Self::is_invalidated).
     ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
-    pub async fn subscribe(
+    pub(super) async fn subscribe<IO: Io>(
         &mut self,
+        io: &mut IO,
         topics: &[TopicFilter<'_>],
         properties: &[Property<'_>],
     ) -> Result<Op, Error<IO::Error>> {
-        if self.connection.is_none() {
+        if !self.connected {
             return Err(Error::Disconnected);
         }
         if topics.is_empty() {
@@ -78,8 +70,8 @@ where
         if !Properties::from_slice(properties).valid_for(PropertyContext::Subscribe) {
             return Err(Error::InvalidRequest);
         }
-        self.flush_outbound().await?;
-        self.require_retained_slot()?;
+        self.flush_outbound(io).await?;
+        self.require_retained_slot::<IO>()?;
 
         let packet_id = self.data.next_packet_id();
         let (offset, len) = self.data.outbound.encode_packet(&Subscribe {
@@ -96,7 +88,7 @@ where
             len,
             self.data.outbound.used()
         );
-        self.flush_outbound().await?;
+        self.flush_outbound(io).await?;
         Ok(Op::new(
             OpKind::Subscribe,
             packet_id,
@@ -111,12 +103,13 @@ where
     /// [`Session::is_invalidated`](Self::is_invalidated).
     ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
-    pub async fn unsubscribe(
+    pub(super) async fn unsubscribe<IO: Io>(
         &mut self,
+        io: &mut IO,
         topics: &[&str],
         properties: &[Property<'_>],
     ) -> Result<Op, Error<IO::Error>> {
-        if self.connection.is_none() {
+        if !self.connected {
             return Err(Error::Disconnected);
         }
         if topics.is_empty() {
@@ -125,8 +118,8 @@ where
         if !Properties::from_slice(properties).valid_for(PropertyContext::Unsubscribe) {
             return Err(Error::InvalidRequest);
         }
-        self.flush_outbound().await?;
-        self.require_retained_slot()?;
+        self.flush_outbound(io).await?;
+        self.require_retained_slot::<IO>()?;
 
         let packet_id = self.data.next_packet_id();
         let (offset, len) = self.data.outbound.encode_packet(&Unsubscribe {
@@ -143,7 +136,7 @@ where
             len,
             self.data.outbound.used()
         );
-        self.flush_outbound().await?;
+        self.flush_outbound(io).await?;
         Ok(Op::new(
             OpKind::Unsubscribe,
             packet_id,
@@ -163,17 +156,18 @@ where
     /// directly to the transport. It therefore does not consume replay/in-flight slots and only
     /// needs enough currently free TX space for that one encode, but it is not cancel-safe and
     /// returns `None`.
-    pub async fn publish<P>(
+    pub(super) async fn publish<IO: Io, P>(
         &mut self,
+        io: &mut IO,
         publication: Publication<'_, P>,
     ) -> Result<Option<Op>, PubError<P::Error, IO::Error>>
     where
         P: ToPayload,
     {
-        if self.connection.is_none() {
+        if !self.connected {
             return Err(Error::Disconnected.into());
         }
-        self.flush_outbound().await?;
+        self.flush_outbound(io).await?;
 
         let Publication {
             topic,
@@ -199,7 +193,7 @@ where
             dup: false,
         };
         if packet_id.is_some() {
-            self.require_retained_slot()?;
+            self.require_retained_slot::<IO>()?;
         }
 
         if !self.can_publish(qos) {
@@ -220,7 +214,7 @@ where
                 self.runtime.max_send_quota,
                 self.data.outbound.used()
             );
-            self.flush_outbound().await?;
+            self.flush_outbound(io).await?;
             let kind = if qos == QoS::ExactlyOnce {
                 OpKind::PublishExactlyOnce
             } else {
@@ -233,18 +227,17 @@ where
             MqttSerializer::encode_publish(self.data.outbound.scratch_space(), &header, payload)?;
         self.runtime.require_packet_size(packet.len())?;
         debug!("Sending QoS0 PUBLISH len={=usize}", packet.len());
-        let connection = self.connection.as_mut().ok_or(Error::Disconnected)?;
-        if let Err(err) = write_all(connection, packet).await {
+        if let Err(err) = write_all(io, packet).await {
             if matches!(err, Error::WriteZero) {
                 return Err(err.into());
             }
             warn!("QoS0 PUBLISH write failed");
-            self.handle_disconnect();
+            self.mark_disconnected();
             return Err(err.into());
         }
-        if let Err(err) = connection.flush().await {
+        if let Err(err) = io.flush().await {
             warn!("QoS0 PUBLISH flush failed: {}", err.kind());
-            self.handle_disconnect();
+            self.mark_disconnected();
             return Err(Error::Transport(err).into());
         }
         self.runtime.note_outbound_activity(Instant::now());
@@ -252,7 +245,7 @@ where
         Ok(None)
     }
 
-    pub(super) fn require_retained_slot(&self) -> Result<(), Error<IO::Error>> {
+    pub(super) fn require_retained_slot<IO: Io>(&self) -> Result<(), Error<IO::Error>> {
         if self.data.outbound.retained_full() {
             return Err(Error::Resource(ResourceError::InflightExhausted));
         }
