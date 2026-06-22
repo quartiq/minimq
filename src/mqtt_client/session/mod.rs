@@ -13,7 +13,7 @@ use crate::types::Auth;
 use crate::{ConfigBuilder, Op, QoS, Will};
 use heapless::String;
 
-use super::{Io, OpKind, OpStatus};
+use super::{ConnectEvent, Io, OpKind, OpStatus};
 
 use state::{RuntimeState, SessionData};
 
@@ -34,8 +34,7 @@ use state::{RuntimeState, SessionData};
 /// disconnected; the next `connect()` retries from clean transport-local state. QoS 0
 /// [`publish`](Self::publish) is not cancel-safe because it bypasses retained outbound state and
 /// writes directly from temporary TX scratch space.
-pub struct Session<'buf, IO> {
-    connection: Option<IO>,
+pub struct Session<'buf> {
     client_id: String<64>,
     packet_reader: PacketReader<'buf>,
     data: SessionData<'buf>,
@@ -46,10 +45,7 @@ pub struct Session<'buf, IO> {
     downgrade_qos: bool,
 }
 
-impl<'buf, IO> Session<'buf, IO>
-where
-    IO: Io,
-{
+impl<'buf> Session<'buf> {
     /// Construct a session from a setup builder.
     pub fn new(config: ConfigBuilder<'buf>) -> Self {
         let (
@@ -64,7 +60,6 @@ where
         let (rx, tx) = buffers.into_parts();
 
         Self {
-            connection: None,
             client_id,
             packet_reader: PacketReader::new(rx),
             data: SessionData::new(tx),
@@ -74,11 +69,6 @@ where
             session_expiry_interval,
             downgrade_qos,
         }
-    }
-
-    /// Return whether the MQTT session is currently established.
-    pub fn is_connected(&self) -> bool {
-        self.connection.is_some()
     }
 
     /// Return the maximum inbound MQTT packet size accepted by this session.
@@ -93,13 +83,12 @@ where
 
     /// Return whether the session currently has the local capacity to attempt a
     /// publish at the requested QoS.
-    pub fn can_publish(&self, qos: QoS) -> bool {
-        self.connection.is_some()
-            && if qos == QoS::AtMostOnce {
-                self.data.outbound.scratch_len() >= MAX_FIXED_HEADER_SIZE
-            } else {
-                self.runtime.send_quota != 0 && self.data.outbound.can_retain()
-            }
+    fn can_publish(&self, qos: QoS) -> bool {
+        if qos == QoS::AtMostOnce {
+            self.data.outbound.scratch_len() >= MAX_FIXED_HEADER_SIZE
+        } else {
+            self.runtime.send_quota != 0 && self.data.outbound.can_retain()
+        }
     }
 
     /// Return whether the session has no in-flight retained MQTT packets or
@@ -143,5 +132,77 @@ where
     /// Return whether the local session state that could complete this operation was discarded.
     pub fn is_invalidated(&self, op: &Op) -> bool {
         self.status(op) == OpStatus::Invalidated
+    }
+}
+
+/// A live MQTT connection over a transport `IO`, returned by
+/// [`Session::connect`](Session::connect).
+///
+/// The handle owns the transport and borrows the [`Session`] for the duration of the connection.
+/// All network operations (`drive`, `poll`, `recv`, `publish`, `subscribe`, `unsubscribe`,
+/// `disconnect`) live here; session-state queries (`is_pending`, `is_complete`, `can_publish`, …)
+/// are reachable through the [`Self::session`] method.
+///
+/// Note that dropping or forgetting the handle is an *ungraceful* MQTT close: **no `DISCONNECT`
+/// packet is sent** (a sync `Drop` cannot perform the async write).
+pub struct Connection<'a, 'buf, IO> {
+    pub(super) session: &'a mut Session<'buf>,
+    pub(super) io: IO,
+    pub(super) event: ConnectEvent,
+    pub(super) live: bool,
+}
+
+impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
+    /// Whether this connection started a fresh broker session or resumed an existing one.
+    pub fn connect_event(&self) -> ConnectEvent {
+        self.event
+    }
+
+    /// Return a reference to the underlying session.
+    pub fn session(&self) -> &Session<'buf> {
+        self.session
+    }
+
+    /// Return whether the transport is connected and the session currently has the local capacity to attempt a
+    /// publish at the requested QoS.
+    pub fn can_publish(&self, qos: QoS) -> bool {
+        self.live && self.session.can_publish(qos)
+    }
+
+    /// Whether the connection is still live.
+    ///
+    /// Becomes `false` once any operation on this handle has observed a transport- or
+    /// protocol-level disconnect (broker `DISCONNECT`, transport error, keepalive timeout, fatal
+    /// protocol violation) or after a graceful [`disconnect`](Self::disconnect). Once `false`,
+    /// further operations fail fast with [`Error::Disconnected`](crate::Error::Disconnected)
+    /// instead of driving the dead transport; drop the handle and `connect` again to recover.
+    pub fn is_connected(&self) -> bool {
+        self.live
+    }
+
+    /// Return whether the operation still has local in-flight state.
+    pub fn is_pending(&self, op: &Op) -> bool {
+        self.session.is_pending(op)
+    }
+
+    /// Return whether the operation completed in the current session generation.
+    pub fn is_complete(&self, op: &Op) -> bool {
+        self.session.is_complete(op)
+    }
+
+    /// Return whether the local session state that could complete this operation was discarded.
+    pub fn is_invalidated(&self, op: &Op) -> bool {
+        self.session.is_invalidated(op)
+    }
+
+    /// Return the underlying transport, consuming this handle.
+    pub fn into_inner(mut self) -> IO {
+        self.handle_disconnect();
+        self.io
+    }
+
+    pub fn handle_disconnect(&mut self) {
+        self.live = false;
+        self.session.handle_disconnect();
     }
 }

@@ -1,7 +1,7 @@
 mod outbound;
 mod session;
 
-pub use session::Session;
+pub use session::{Connection, Session};
 
 use crate::{
     Properties, QoS, ResourceError, Retain,

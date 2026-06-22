@@ -57,10 +57,13 @@ async fn run() {
 
     loop {
         let io = open_io(addr).await.unwrap();
-        match session.connect(io).await.unwrap() {
+        // `connect` returns a connection handle that owns the transport and borrows
+        // the session. Dropping it at the end of the loop releases both for the next
+        // reconnect.
+        let mut conn = session.connect(io).await.unwrap();
+        match conn.connect_event() {
             ConnectEvent::Connected => {
-                session
-                    .subscribe(&[TopicFilter::new("demo/in")], &[])
+                conn.subscribe(&[TopicFilter::new("demo/in")], &[])
                     .await
                     .unwrap();
             }
@@ -68,7 +71,7 @@ async fn run() {
         }
 
         loop {
-            match session.recv().await {
+            match conn.recv().await {
                 Ok(message) => println!("topic={}", message.topic()),
                 Err(Error::Disconnected) => break,
                 Err(err) => panic!("{err}"),

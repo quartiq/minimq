@@ -10,31 +10,54 @@ use crate::properties::Properties;
 use crate::wire::Utf8String;
 use crate::{Error, PeerError, Property, QoS, debug, info, warn};
 
-use super::{Io, Session, drive::fill_packet_reader};
+use super::{Connection, Io, Session, drive::fill_packet_reader};
 
-impl<'buf, IO> Session<'buf, IO>
-where
-    IO: Io,
-{
+impl<'buf> Session<'buf> {
     /// Establish or resume the MQTT session on a newly supplied transport.
     ///
-    /// The session takes ownership of `io` for the lifetime of the connected session and drops it
-    /// again on disconnect or connection failure. If cancelled during the handshake, `io` is
-    /// dropped and a later `connect()` restarts from clean transport-local state.
-    pub async fn connect(&mut self, mut io: IO) -> Result<ConnectEvent, Error<IO::Error>> {
-        if self.connection.is_some() {
-            return Err(Error::NotReady);
-        }
+    /// On success the returned [`Connection`] takes ownership of `io` for the lifetime of the
+    /// connected session and borrows this session; all network operations are driven through it.
+    /// On handshake failure (or cancellation) `io` is dropped and the session is left disconnected.
+    ///
+    /// All state carried across reconnects (in-flight QoS replay, keepalive timers, the inbound
+    /// packet reader) is reset here, at the start of every `connect`, so it does not matter how a
+    /// previous [`Connection`] ended — dropped, `mem::forget`-ed, or errored. A previous handle that
+    /// was merely dropped did not send a `DISCONNECT`; if the broker still holds the session it is
+    /// resumed here (`CONNECT` `clean_start=false`, yielding [`ConnectEvent::Reconnected`]),
+    /// otherwise a fresh session is started ([`ConnectEvent::Connected`]).
+    pub async fn connect<IO: Io>(
+        &mut self,
+        mut io: IO,
+    ) -> Result<Connection<'_, 'buf, IO>, Error<IO::Error>> {
+        // We are not guaranteed that any of those 3 calls have been made after
+        // the previous `connect` call.
         self.packet_reader.reset();
         self.runtime.reset_transport();
-        let result = self.connect_handshake(&mut io).await;
-        if result.is_ok() {
-            self.connection = Some(io);
-        }
-        result
+        self.data.outbound.arm_replay();
+        let event = self.connect_handshake(&mut io).await?;
+        Ok(Connection {
+            session: self,
+            io,
+            event,
+            live: true,
+        })
     }
 
-    async fn connect_handshake(
+    pub(super) fn handle_disconnect(&mut self) {
+        debug!(
+            "Resetting local session transport state and arming replay if needed control={=usize} tx_used={=usize} tx_capacity={=usize} retained={=usize} pending_release={=usize}",
+            self.data.outbound.pending_control_len(),
+            self.data.outbound.used(),
+            self.data.outbound.capacity(),
+            self.data.outbound.retained_len(),
+            self.data.outbound.pending_release_len()
+        );
+        self.data.outbound.arm_replay();
+        self.runtime.reset_transport();
+        self.packet_reader.reset();
+    }
+
+    async fn connect_handshake<IO: Io>(
         &mut self,
         connection: &mut IO,
     ) -> Result<ConnectEvent, Error<IO::Error>> {
@@ -114,7 +137,6 @@ where
 
         if let Err(err) = ack.reason_code.as_result() {
             warn!("Broker rejected CONNECT with reason {}", ack.reason_code);
-            self.handle_disconnect();
             return Err(Error::Peer(err));
         }
 

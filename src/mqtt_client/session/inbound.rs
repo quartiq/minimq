@@ -3,12 +3,11 @@ use core::convert::Infallible;
 use crate::de::ReceivedPacket;
 use crate::mqtt_client::outbound::{ControlAction, check_control_packet_size, check_pubrel_size};
 use crate::{
-    Error, InboundPublish, PeerError, ProtocolError, QoS, ReasonCode, ResourceError, debug, info,
-    trace, warn,
+    Connection, Error, InboundPublish, Io, PeerError, ProtocolError, QoS, ReasonCode,
+    ResourceError, debug, info, trace, warn,
 };
 
 use super::state::{RuntimeState, SessionData};
-use super::{Io, Session};
 
 impl<'a> SessionData<'a> {
     pub(super) fn handle_packet(
@@ -200,16 +199,13 @@ impl<'a> SessionData<'a> {
     }
 }
 
-impl<'buf, IO> Session<'buf, IO>
-where
-    IO: Io,
-{
+impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     pub(super) fn process_received_packet(&mut self) -> Result<Option<usize>, Error<IO::Error>> {
-        if !self.packet_reader.packet_available() {
+        if !self.session.packet_reader.packet_available() {
             return Ok(None);
         }
 
-        let (packet_length, packet) = match self.packet_reader.take_packet() {
+        let (packet_length, packet) = match self.session.packet_reader.take_packet() {
             Ok(packet) => packet,
             Err(err) => {
                 warn!("Failed to decode inbound packet: {}", err);
@@ -217,7 +213,11 @@ where
                 return Err(err.into());
             }
         };
-        match self.data.handle_packet(&mut self.runtime, packet) {
+        match self
+            .session
+            .data
+            .handle_packet(&mut self.session.runtime, packet)
+        {
             Ok(true) => Ok(Some(packet_length)),
             Ok(false) => Ok(None),
             Err(Error::Disconnected) => {
@@ -245,9 +245,9 @@ where
     }
 
     pub(super) fn decode_inbound_publish(&self, packet_length: usize) -> InboundPublish<'_> {
-        let ReceivedPacket::Publish(info) =
-            ReceivedPacket::from_buffer(&self.packet_reader.buffer[..packet_length])
-                .expect("inbound packet must remain decodable")
+        let buffer = &self.session.packet_reader.buffer[..];
+        let ReceivedPacket::Publish(info) = ReceivedPacket::from_buffer(&buffer[..packet_length])
+            .expect("inbound packet must remain decodable")
         else {
             unreachable!("inbound event must be a PUBLISH");
         };

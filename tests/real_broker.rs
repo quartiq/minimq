@@ -6,8 +6,8 @@ use core::task::Poll;
 use embassy_time::{Duration, with_timeout};
 use embedded_io_async::{ErrorType, Read, Write};
 use minimq::{
-    Buffers, ConfigBuilder, ConnectEvent, Error, Publication, QoS, Session, SubscriptionOptions,
-    TopicFilter,
+    Buffers, ConfigBuilder, ConnectEvent, Connection, Error, Publication, QoS, Session,
+    SubscriptionOptions, TopicFilter,
 };
 use std::{
     net::SocketAddr,
@@ -21,6 +21,8 @@ use tokio::{
 
 const BROKER_ADDR_ENV: &str = "MINIMQ_REAL_BROKER_ADDR";
 const BROKER_HOST_ENV: &str = "MINIMQ_REAL_BROKER_HOST";
+
+type Conn<'a, 'buf> = Connection<'a, 'buf, TokioConnection>;
 
 fn socket_broker() -> Option<SocketAddr> {
     let raw = std::env::var(BROKER_ADDR_ENV).ok()?;
@@ -111,14 +113,14 @@ async fn connect_host(host: &str, port: u16) -> std::io::Result<TokioConnection>
 }
 
 async fn poll_until_ready(
-    session: &mut Session<'_, TokioConnection>,
+    conn: &mut Conn<'_, '_>,
     want_inbound: bool,
 ) -> Option<(String, Vec<u8>, QoS)> {
     for _ in 0..200 {
         let result = if want_inbound {
-            Ok(session.poll().await)
+            Ok(conn.poll().await)
         } else {
-            with_timeout(Duration::from_millis(0), session.poll()).await
+            with_timeout(Duration::from_millis(0), conn.poll()).await
         };
         match result {
             Ok(Ok(Some(message))) if want_inbound => {
@@ -143,33 +145,36 @@ async fn poll_until_ready(
 }
 
 async fn assert_roundtrip(
-    subscriber: &mut Session<'_, TokioConnection>,
-    publisher: &mut Session<'_, TokioConnection>,
+    subscriber: &mut Session<'_>,
+    publisher: &mut Session<'_>,
     subscriber_io: TokioConnection,
     publisher_io: TokioConnection,
     topic: &str,
     payload: &[u8],
 ) {
+    let mut sub_conn = subscriber.connect(subscriber_io).await.unwrap();
     assert!(matches!(
-        subscriber.connect(subscriber_io).await.unwrap(),
+        sub_conn.connect_event(),
         ConnectEvent::Connected | ConnectEvent::Reconnected
     ));
     let topics = [TopicFilter::new(topic)
         .options(SubscriptionOptions::default().maximum_qos(QoS::AtLeastOnce))];
-    subscriber.subscribe(&topics, &[]).await.unwrap();
-    let _ = poll_until_ready(subscriber, false).await;
+    sub_conn.subscribe(&topics, &[]).await.unwrap();
+    let _ = poll_until_ready(&mut sub_conn, false).await;
 
+    let mut pub_conn = publisher.connect(publisher_io).await.unwrap();
     assert!(matches!(
-        publisher.connect(publisher_io).await.unwrap(),
+        pub_conn.connect_event(),
         ConnectEvent::Connected | ConnectEvent::Reconnected
     ));
-    publisher
+    pub_conn
         .publish(Publication::bytes(topic, payload).qos(QoS::AtLeastOnce))
         .await
         .unwrap();
 
-    let (received_topic, received_payload, received_qos) =
-        poll_until_ready(subscriber, true).await.expect("publish");
+    let (received_topic, received_payload, received_qos) = poll_until_ready(&mut sub_conn, true)
+        .await
+        .expect("publish");
     assert_eq!(received_topic, topic);
     assert_eq!(received_payload, payload);
     assert_eq!(received_qos, QoS::AtLeastOnce);

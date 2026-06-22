@@ -48,10 +48,10 @@ async fn run() -> Result<(), Box<dyn StdError>> {
     let payload = payload_str.as_bytes();
 
     let mut sub_storage = [0u8; 2048];
-    let mut subscriber = Session::new(
+    let mut session = Session::new(
         ConfigBuilder::from_buffer(&mut sub_storage, 1024)?.auth(USERNAME, PASSWORD.as_bytes())?,
     );
-    subscriber
+    let mut subscriber = session
         .connect(connect_tls(BROKER_HOST, BROKER_PORT).await?)
         .await?;
     let sub = subscriber
@@ -62,10 +62,10 @@ async fn run() -> Result<(), Box<dyn StdError>> {
     }
 
     let mut pub_storage = [0u8; 2048];
-    let mut publisher = Session::new(
+    let mut session = Session::new(
         ConfigBuilder::from_buffer(&mut pub_storage, 1024)?.auth(USERNAME, PASSWORD.as_bytes())?,
     );
-    publisher
+    let mut publisher = session
         .connect(connect_tls(BROKER_HOST, BROKER_PORT).await?)
         .await?;
     let pub_ = publisher
@@ -84,6 +84,8 @@ async fn run() -> Result<(), Box<dyn StdError>> {
                 message.topic(),
                 payload.escape_ascii()
             );
+            publisher.disconnect().await?;
+            subscriber.disconnect().await?;
             return Ok(());
         }
     }
