@@ -81,7 +81,7 @@ impl<'buf> Session<'buf> {
         self.data.outbound.capacity()
     }
 
-    /// Return whether the session is connected and currently has the local capacity to attempt a
+    /// Return whether the session currently has the local capacity to attempt a
     /// publish at the requested QoS.
     fn can_publish(&self, qos: QoS) -> bool {
         if qos == QoS::AtMostOnce {
