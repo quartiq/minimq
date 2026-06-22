@@ -1,7 +1,7 @@
 use super::state::ROUND_TRIP_TIMEOUT_MS;
 use crate::ser::MAX_FIXED_HEADER_SIZE;
 use crate::{Buffers, ConfigBuilder, Publication, tests::block_on};
-use crate::{ConnectEvent, Connection, Error, ResourceError, Session};
+use crate::{ConnectEvent, Connection, Error, QoS, ResourceError, Session};
 use embassy_time::{Duration, Instant};
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use std::collections::VecDeque;
@@ -303,4 +303,50 @@ fn timed_out_read_disconnects_session() {
     let result = block_on(conn.poll());
 
     assert!(matches!(result, Err(Error::Transport(ErrorKind::TimedOut))));
+}
+
+#[test]
+fn can_publish_false_after_disconnect() {
+    let mut session = session();
+    let mut conn = live_connection(&mut session, MockConnection::default());
+    assert!(conn.can_publish(QoS::AtMostOnce));
+    assert!(conn.can_publish(QoS::AtLeastOnce));
+
+    conn.handle_disconnect();
+
+    assert!(!conn.can_publish(QoS::AtMostOnce));
+    assert!(!conn.can_publish(QoS::AtLeastOnce));
+    assert!(!conn.can_publish(QoS::ExactlyOnce));
+}
+
+#[test]
+fn can_publish_gates_qos1_2_on_send_quota() {
+    let mut session = session();
+    let conn = live_connection(&mut session, MockConnection::default());
+    conn.session.runtime.send_quota = 0;
+
+    assert!(!conn.can_publish(QoS::AtLeastOnce));
+    assert!(!conn.can_publish(QoS::ExactlyOnce));
+    // QoS0 ignores send_quota.
+    assert!(conn.can_publish(QoS::AtMostOnce));
+}
+
+#[test]
+fn can_publish_qos1_false_when_retained_slots_full() {
+    let mut session = session();
+    let conn = live_connection(&mut session, MockConnection::default());
+    for packet_id in 1u16..=8 {
+        let offset = (packet_id - 1) * 4;
+        conn.session
+            .data
+            .outbound
+            .retain_packet(packet_id, offset as usize, 4)
+            .unwrap();
+    }
+
+    assert_ne!(conn.session.runtime.send_quota, 0);
+    assert!(!conn.can_publish(QoS::AtLeastOnce));
+    assert!(!conn.can_publish(QoS::ExactlyOnce));
+    // QoS0 only needs scratch space, which is still ample.
+    assert!(conn.can_publish(QoS::AtMostOnce));
 }
