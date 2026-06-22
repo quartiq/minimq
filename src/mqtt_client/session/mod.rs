@@ -163,7 +163,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         self.session
     }
 
-    /// Return whether the session is connected and currently has the local capacity to attempt a
+    /// Return whether the transport is connected and the session currently has the local capacity to attempt a
     /// publish at the requested QoS.
     pub fn can_publish(&self, qos: QoS) -> bool {
         self.live && self.session.can_publish(qos)
