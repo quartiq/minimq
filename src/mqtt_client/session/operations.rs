@@ -12,9 +12,7 @@ use crate::wire::Utf8String;
 use crate::{Connection, Error, Io, Op, Property, PubError, QoS, ResourceError, debug, info, warn};
 
 impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
-    /// Helper backing [`Connection::disconnect`](super::Connection::disconnect) and
-    /// [`Connection::disconnect_with`](super::Connection::disconnect_with): write the `DISCONNECT`
-    /// over the transport. The caller drops the transport afterwards.
+    /// Write the `DISCONNECT` over the transport. The caller drops the transport afterwards.
     ///
     /// Cancel-safe if the underlying transport write/flush futures are cancel-safe.
     pub async fn disconnect_with(
@@ -53,6 +51,8 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
 
     /// Send a `SUBSCRIBE`.
     ///
+    /// Call this after [`connect`](Self::connect). A resumed [`crate::ConnectEvent::Reconnected`]
+    /// already kept broker-side subscriptions.
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
     pub async fn subscribe(
         &mut self,
