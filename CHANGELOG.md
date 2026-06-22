@@ -13,9 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **Breaking:** `Session` no longer carries the transport `IO` type parameter. `Session::connect()`
   now returns a `Connection` handle that owns the transport and borrows the session; the network
   operations (`drive`/`poll`/`recv`/`publish`/`subscribe`/`unsubscribe`/`disconnect`) move onto the
-  handle, while session-state queries remain reachable through its `Deref` to `Session`. This lets a
-  single `Session` be reused across reconnects with transports of different types or buffer
-  lifetimes — for example reusing TLS record buffers instead of leaking a fresh pair per connection.
+  handle.
 * **Breaking:** `is_connected()` moves from `Session` to the `Connection` handle and now reports
   *per-connection* liveness: it latches `false` as soon as any operation observes a transport- or
   protocol-level disconnect (broker `DISCONNECT`, transport error, keepalive timeout) or a graceful

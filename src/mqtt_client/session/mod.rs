@@ -8,11 +8,9 @@ mod state;
 mod tests;
 
 use crate::de::PacketReader;
-use crate::packets::Disconnect;
-use crate::publication::{Publication, ToPayload};
 use crate::ser::MAX_FIXED_HEADER_SIZE;
-use crate::types::{Auth, TopicFilter};
-use crate::{ConfigBuilder, Error, InboundPublish, Op, Property, PubError, QoS, Will};
+use crate::types::Auth;
+use crate::{ConfigBuilder, Op, QoS, Will};
 use heapless::String;
 
 use super::{ConnectEvent, Io, OpKind, OpStatus};
@@ -45,12 +43,6 @@ pub struct Session<'buf> {
     auth: Option<Auth<'buf>>,
     session_expiry_interval: u32,
     downgrade_qos: bool,
-    /// Whether the transport currently owned by an outstanding [`Connection`] is still usable.
-    /// Set true by a successful [`connect`](Self::connect) and latched false the moment any
-    /// operation observes a fatal transport- or protocol-level disconnect. State carried to the
-    /// next connection is reset in `connect`, not here, so the latch does not depend on the
-    /// handle's `Drop` running.
-    connected: bool,
 }
 
 impl<'buf> Session<'buf> {
@@ -76,15 +68,7 @@ impl<'buf> Session<'buf> {
             auth,
             session_expiry_interval,
             downgrade_qos,
-            connected: false,
         }
-    }
-
-    /// Latch the current transport as disconnected. Called at every site that observes a fatal
-    /// transport- or protocol-level failure. Only flips the liveness flag; state needed for the
-    /// next connection is reset in `connect`.
-    pub(super) fn mark_disconnected(&mut self) {
-        self.connected = false;
     }
 
     /// Return the maximum inbound MQTT packet size accepted by this session.
@@ -99,13 +83,12 @@ impl<'buf> Session<'buf> {
 
     /// Return whether the session is connected and currently has the local capacity to attempt a
     /// publish at the requested QoS.
-    pub fn can_publish(&self, qos: QoS) -> bool {
-        self.connected
-            && if qos == QoS::AtMostOnce {
-                self.data.outbound.scratch_len() >= MAX_FIXED_HEADER_SIZE
-            } else {
-                self.runtime.send_quota != 0 && self.data.outbound.can_retain()
-            }
+    fn can_publish(&self, qos: QoS) -> bool {
+        if qos == QoS::AtMostOnce {
+            self.data.outbound.scratch_len() >= MAX_FIXED_HEADER_SIZE
+        } else {
+            self.runtime.send_quota != 0 && self.data.outbound.can_retain()
+        }
     }
 
     /// Return whether the session has no in-flight retained MQTT packets or
@@ -158,40 +141,32 @@ impl<'buf> Session<'buf> {
 /// The handle owns the transport and borrows the [`Session`] for the duration of the connection.
 /// All network operations (`drive`, `poll`, `recv`, `publish`, `subscribe`, `unsubscribe`,
 /// `disconnect`) live here; session-state queries (`is_pending`, `is_complete`, `can_publish`, …)
-/// are reachable through the [`Deref`](core::ops::Deref) to the underlying [`Session`].
-///
-/// Dropping (or [`mem::forget`](core::mem::forget)-ing) the handle releases the transport and the
-/// session borrow; the same `Session` can then be reconnected with a fresh transport — possibly of
-/// a different `IO` type or buffer lifetime. State needed across reconnects (in-flight QoS replay,
-/// keepalive timers, the inbound packet reader) is reset at the start of the next
-/// [`Session::connect`](Session::connect), so correctness does not depend on this handle's `Drop`
-/// running.
+/// are reachable through the [`Self::session`] method.
 ///
 /// Note that dropping or forgetting the handle is an *ungraceful* MQTT close: **no `DISCONNECT`
-/// packet is sent** (a sync `Drop` cannot perform the async write), so the broker sees an abnormal
-/// disconnect and will publish the configured Will, if any. Whether the underlying transport is
-/// actually closed is up to the `IO`'s own `Drop`. For a clean shutdown — `DISCONNECT` sent, Will
-/// suppressed — call [`disconnect`](Self::disconnect) (or [`disconnect_with`](Self::disconnect_with))
-/// before dropping. Reconnecting afterwards with [`Session::connect`](Session::connect) resumes the
-/// broker session via `CONNECT` `clean_start=false`; see [`ConnectEvent`](crate::ConnectEvent).
+/// packet is sent** (a sync `Drop` cannot perform the async write).
 pub struct Connection<'a, 'buf, IO> {
     pub(super) session: &'a mut Session<'buf>,
     pub(super) io: IO,
     pub(super) event: ConnectEvent,
-}
-
-impl<'buf, IO> core::ops::Deref for Connection<'_, 'buf, IO> {
-    type Target = Session<'buf>;
-
-    fn deref(&self) -> &Self::Target {
-        self.session
-    }
+    pub(super) live: bool,
 }
 
 impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     /// Whether this connection started a fresh broker session or resumed an existing one.
     pub fn connect_event(&self) -> ConnectEvent {
         self.event
+    }
+
+    /// Return a reference to the underlying session.
+    pub fn session(&self) -> &Session<'buf> {
+        self.session
+    }
+
+    /// Return whether the session is connected and currently has the local capacity to attempt a
+    /// publish at the requested QoS.
+    pub fn can_publish(&self, qos: QoS) -> bool {
+        self.live && self.session.can_publish(qos)
     }
 
     /// Whether the connection is still live.
@@ -202,79 +177,32 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     /// further operations fail fast with [`Error::Disconnected`](crate::Error::Disconnected)
     /// instead of driving the dead transport; drop the handle and `connect` again to recover.
     pub fn is_connected(&self) -> bool {
-        self.session.connected
+        self.live
     }
 
-    /// See [`Session`] docs: advance local session state cooperatively without waiting on new
-    /// inbound reads or future deadlines.
-    pub async fn drive(&mut self) -> Result<Option<InboundPublish<'_>>, Error<IO::Error>> {
-        self.session.drive(&mut self.io).await
+    /// Return whether the operation still has local in-flight state.
+    pub fn is_pending(&self, op: &Op) -> bool {
+        self.session.is_pending(op)
     }
 
-    /// Wait until any session progress happens or the session disconnects.
-    pub async fn poll(&mut self) -> Result<Option<InboundPublish<'_>>, Error<IO::Error>> {
-        self.session.poll(&mut self.io).await
+    /// Return whether the operation completed in the current session generation.
+    pub fn is_complete(&self, op: &Op) -> bool {
+        self.session.is_complete(op)
     }
 
-    /// Wait until the next inbound publish arrives.
-    pub async fn recv(&mut self) -> Result<InboundPublish<'_>, Error<IO::Error>> {
-        self.session.recv(&mut self.io).await
+    /// Return whether the local session state that could complete this operation was discarded.
+    pub fn is_invalidated(&self, op: &Op) -> bool {
+        self.session.is_invalidated(op)
     }
 
-    /// Send a `SUBSCRIBE`.
-    pub async fn subscribe(
-        &mut self,
-        topics: &[TopicFilter<'_>],
-        properties: &[Property<'_>],
-    ) -> Result<Op, Error<IO::Error>> {
-        self.session
-            .subscribe(&mut self.io, topics, properties)
-            .await
+    /// Return the underlying transport, consuming this handle.
+    pub fn into_inner(mut self) -> IO {
+        self.handle_disconnect();
+        self.io
     }
 
-    /// Send an `UNSUBSCRIBE`.
-    pub async fn unsubscribe(
-        &mut self,
-        topics: &[&str],
-        properties: &[Property<'_>],
-    ) -> Result<Op, Error<IO::Error>> {
-        self.session
-            .unsubscribe(&mut self.io, topics, properties)
-            .await
-    }
-
-    /// Send a `PUBLISH`.
-    pub async fn publish<P>(
-        &mut self,
-        publication: Publication<'_, P>,
-    ) -> Result<Option<Op>, PubError<P::Error, IO::Error>>
-    where
-        P: ToPayload,
-    {
-        self.session.publish(&mut self.io, publication).await
-    }
-
-    /// Gracefully close the transport with `DISCONNECT`.
-    ///
-    /// This is the graceful counterpart to simply dropping the handle: it sends the MQTT
-    /// `DISCONNECT` so the broker closes cleanly and suppresses the Will. Just dropping (or
-    /// [`mem::forget`](core::mem::forget)-ing) the handle skips this and is treated by the broker
-    /// as an abnormal disconnect.
-    ///
-    /// Takes `&mut self` rather than consuming the handle, so a cancelled disconnect can be
-    /// retried. After a successful disconnect the handle's transport is dead; drop it (or
-    /// `mem::forget` it) to release the session for a fresh `connect`.
-    pub async fn disconnect(&mut self) -> Result<(), Error<IO::Error>> {
-        self.session
-            .disconnect_with(&mut self.io, Disconnect::success())
-            .await
-    }
-
-    /// Close the transport with a caller-specified `DISCONNECT`.
-    pub async fn disconnect_with(
-        &mut self,
-        disconnect: Disconnect<'_>,
-    ) -> Result<(), Error<IO::Error>> {
-        self.session.disconnect_with(&mut self.io, disconnect).await
+    pub fn handle_disconnect(&mut self) {
+        self.live = false;
+        self.session.handle_disconnect();
     }
 }

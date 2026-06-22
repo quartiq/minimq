@@ -29,16 +29,32 @@ impl<'buf> Session<'buf> {
         &mut self,
         mut io: IO,
     ) -> Result<Connection<'_, 'buf, IO>, Error<IO::Error>> {
+        // We are not guaranteed that any of those 3 calls have been made after
+        // the previous `connect` call.
         self.packet_reader.reset();
         self.runtime.reset_transport();
         self.data.outbound.arm_replay();
         let event = self.connect_handshake(&mut io).await?;
-        self.connected = true;
         Ok(Connection {
             session: self,
             io,
             event,
+            live: true,
         })
+    }
+
+    pub(super) fn handle_disconnect(&mut self) {
+        debug!(
+            "Resetting local session transport state and arming replay if needed control={=usize} tx_used={=usize} tx_capacity={=usize} retained={=usize} pending_release={=usize}",
+            self.data.outbound.pending_control_len(),
+            self.data.outbound.used(),
+            self.data.outbound.capacity(),
+            self.data.outbound.retained_len(),
+            self.data.outbound.pending_release_len()
+        );
+        self.data.outbound.arm_replay();
+        self.runtime.reset_transport();
+        self.packet_reader.reset();
     }
 
     async fn connect_handshake<IO: Io>(
@@ -91,6 +107,7 @@ impl<'buf> Session<'buf> {
                 Error::Disconnected => warn!("Transport returned EOF during CONNECT"),
                 _ => {}
             }
+            self.handle_disconnect();
             return Err(err);
         }
 
@@ -98,6 +115,7 @@ impl<'buf> Session<'buf> {
             Ok(packet) => packet,
             Err(err) => {
                 warn!("Failed to decode inbound packet: {}", err);
+                self.handle_disconnect();
                 return Err(err.into());
             }
         };
@@ -108,9 +126,11 @@ impl<'buf> Session<'buf> {
                     "Received broker DISCONNECT during CONNECT reason={}",
                     disconnect.reason_code()
                 );
+                self.handle_disconnect();
                 return Err(Error::Disconnected);
             }
             _ => {
+                self.handle_disconnect();
                 return Err(Error::Peer(PeerError::InvalidPacket));
             }
         };
@@ -161,6 +181,7 @@ impl<'buf> Session<'buf> {
             Ok(())
         })();
         if let Err(err) = property_result {
+            self.handle_disconnect();
             return Err(Error::Peer(err));
         }
 

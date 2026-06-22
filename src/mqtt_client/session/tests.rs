@@ -1,7 +1,7 @@
 use super::state::ROUND_TRIP_TIMEOUT_MS;
 use crate::ser::MAX_FIXED_HEADER_SIZE;
-use crate::{Buffers, ConfigBuilder, Publication, QoS, tests::block_on};
-use crate::{ConnectEvent, Error, ResourceError, Session};
+use crate::{Buffers, ConfigBuilder, Publication, tests::block_on};
+use crate::{ConnectEvent, Connection, Error, ResourceError, Session};
 use embassy_time::{Duration, Instant};
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 use std::collections::VecDeque;
@@ -64,14 +64,20 @@ fn session() -> Session<'static> {
     )
 }
 
-/// A session marked as if a transport were already attached, for the white-box tests below that
-/// drive the internal session methods directly without going through the `connect` handshake.
-/// Kept separate from `session()` so that helper still models the genuinely-disconnected
-/// `Session::new` default that the `connect`-path and pure-state tests rely on.
-fn live_session() -> Session<'static> {
-    let mut session = session();
-    session.connected = true;
-    session
+/// Build a live [`Connection`] over a mock transport, bypassing the `connect` handshake, for the
+/// white-box tests below that drive the internal connection methods directly. Kept separate from
+/// `session()` so that helper still models the genuinely-disconnected `Session::new` default that
+/// the `connect`-path and pure-state tests rely on.
+fn live_connection<'a>(
+    session: &'a mut Session<'static>,
+    io: MockConnection,
+) -> Connection<'a, 'static, MockConnection> {
+    Connection {
+        session,
+        io,
+        event: ConnectEvent::Connected,
+        live: true,
+    }
 }
 
 #[test]
@@ -83,34 +89,27 @@ fn session_exposes_local_packet_capacities() {
 }
 
 #[test]
-fn can_publish_requires_a_live_connection() {
-    // A disconnected session cannot publish even when buffer capacity is available.
-    let session = session();
-    assert!(!session.can_publish(QoS::AtMostOnce));
-    assert!(!session.can_publish(QoS::AtLeastOnce));
-
-    // A live connection with free scratch space can publish at QoS 0.
-    let session = live_session();
-    assert!(session.can_publish(QoS::AtMostOnce));
-}
-
-#[test]
 fn maintain_sends_pingreq_when_due() {
     let mut session = session();
-    let mut io = MockConnection::default();
+    let mut conn = live_connection(&mut session, MockConnection::default());
     let now = Instant::now();
-    session.runtime.next_ping = Some(now);
+    conn.session.runtime.next_ping = Some(now);
 
-    block_on(session.service(&mut io, now)).unwrap();
+    block_on(conn.service(now)).unwrap();
 
-    assert!(io.tx.iter().any(|frame| frame.as_slice() == [0xC0, 0x00]));
+    assert!(
+        conn.io
+            .tx
+            .iter()
+            .any(|frame| frame.as_slice() == [0xC0, 0x00])
+    );
     assert_eq!(
-        session.runtime.ping_timeout,
+        conn.session.runtime.ping_timeout,
         Some(now + Duration::from_millis(ROUND_TRIP_TIMEOUT_MS))
     );
     assert_eq!(
-        session.runtime.next_ping,
-        Some(now + session.runtime.keepalive_send_interval().unwrap())
+        conn.session.runtime.next_ping,
+        Some(now + conn.session.runtime.keepalive_send_interval().unwrap())
     );
 }
 
@@ -131,14 +130,15 @@ fn long_keepalive_schedules_ping_before_expiry() {
 #[test]
 fn maintain_does_not_send_second_pingreq_while_waiting_for_pingresp() {
     let mut session = session();
-    let mut io = MockConnection::default();
+    let mut conn = live_connection(&mut session, MockConnection::default());
     let now = Instant::now();
-    session.runtime.next_ping = Some(now);
+    conn.session.runtime.next_ping = Some(now);
 
-    block_on(session.service(&mut io, now)).unwrap();
-    block_on(session.service(&mut io, now + Duration::from_millis(600))).unwrap();
+    block_on(conn.service(now)).unwrap();
+    block_on(conn.service(now + Duration::from_millis(600))).unwrap();
 
-    let pingreqs = io
+    let pingreqs = conn
+        .io
         .tx
         .iter()
         .filter(|frame| frame.as_slice() == [0xC0, 0x00])
@@ -149,79 +149,84 @@ fn maintain_does_not_send_second_pingreq_while_waiting_for_pingresp() {
 #[test]
 fn pingresp_clears_keepalive_timeout() {
     let mut session = session();
-    let mut io = MockConnection::default();
+    let mut conn = live_connection(&mut session, MockConnection::default());
     let now = Instant::now();
-    session.runtime.next_ping = Some(now);
+    conn.session.runtime.next_ping = Some(now);
 
-    block_on(session.service(&mut io, now)).unwrap();
-    io.push_rx(&[0xD0, 0x00]);
+    block_on(conn.service(now)).unwrap();
+    conn.io.push_rx(&[0xD0, 0x00]);
 
-    block_on(session.read_packet(&mut io)).unwrap();
-    let result = session.process_received_packet::<MockConnection>().unwrap();
+    block_on(conn.read_packet()).unwrap();
+    let result = conn.process_received_packet().unwrap();
     assert!(result.is_none());
-    assert_eq!(session.runtime.ping_timeout, None);
-    assert!(session.runtime.next_ping.is_some());
+    assert_eq!(conn.session.runtime.ping_timeout, None);
+    assert!(conn.session.runtime.next_ping.is_some());
 }
 
 #[test]
 fn drive_returns_none_when_waiting_for_read() {
-    let mut session = live_session();
-    let mut io = MockConnection::default();
+    let mut session = session();
+    let mut conn = live_connection(&mut session, MockConnection::default());
 
-    let result = block_on(session.drive(&mut io)).unwrap();
+    let result = block_on(conn.drive()).unwrap();
 
     assert!(result.is_none());
 }
 
 #[test]
 fn poll_returns_none_after_internal_progress() {
-    let mut session = live_session();
-    let mut io = MockConnection::default();
-    session.runtime.next_ping = Some(Instant::now());
+    let mut session = session();
+    let mut conn = live_connection(&mut session, MockConnection::default());
+    conn.session.runtime.next_ping = Some(Instant::now());
 
-    let result = block_on(session.poll(&mut io)).unwrap();
+    let result = block_on(conn.poll()).unwrap();
 
     assert!(result.is_none());
-    assert!(io.tx.iter().any(|frame| frame.as_slice() == [0xC0, 0x00]));
+    assert!(
+        conn.io
+            .tx
+            .iter()
+            .any(|frame| frame.as_slice() == [0xC0, 0x00])
+    );
 }
 
 #[test]
 fn inbound_publish_does_not_refresh_keepalive_deadline() {
-    let mut session = live_session();
-    let mut io = MockConnection::default();
+    let mut session = session();
+    let mut conn = live_connection(&mut session, MockConnection::default());
     let now = Instant::now();
     let deadline = now + Duration::from_secs(1);
-    session.runtime.next_ping = Some(deadline);
-    io.push_rx(&[0x30, 0x05, 0x00, 0x01, b'A', 0x00, 0x05]);
+    conn.session.runtime.next_ping = Some(deadline);
+    conn.io.push_rx(&[0x30, 0x05, 0x00, 0x01, b'A', 0x00, 0x05]);
 
-    let result = block_on(session.poll(&mut io))
+    let result = block_on(conn.poll())
         .unwrap()
         .expect("expected inbound publish");
     assert_eq!(result.topic(), "A", "{result:?}");
-    assert_eq!(session.runtime.next_ping, Some(deadline));
+    assert_eq!(conn.session.runtime.next_ping, Some(deadline));
 }
 
 #[test]
 fn qos0_publish_refreshes_keepalive_deadline() {
-    let mut session = live_session();
-    let mut io = MockConnection::default();
+    let mut session = session();
+    let mut conn = live_connection(&mut session, MockConnection::default());
     let now = Instant::now();
-    session.runtime.next_ping = Some(now);
+    conn.session.runtime.next_ping = Some(now);
 
-    block_on(session.publish(&mut io, Publication::bytes("A", b"5"))).unwrap();
-    assert!(session.runtime.next_ping.is_some_and(
-        |deadline| deadline >= now + session.runtime.keepalive_send_interval().unwrap()
+    block_on(conn.publish(Publication::bytes("A", b"5"))).unwrap();
+    assert!(conn.session.runtime.next_ping.is_some_and(
+        |deadline| deadline >= now + conn.session.runtime.keepalive_send_interval().unwrap()
     ));
 }
 
 #[test]
 fn expired_ping_timeout_disconnects_session() {
     let mut session = session();
-    let mut io = MockConnection::default();
+    let mut conn = live_connection(&mut session, MockConnection::default());
     let now = Instant::now();
-    session.runtime.ping_timeout = Some(now);
+    conn.session.runtime.ping_timeout = Some(now);
 
-    let result = block_on(session.service(&mut io, now));
+    let result = block_on(conn.service(now));
 
     // The session signals the dead connection by surfacing `Disconnected`; the caller drops the
     // transport. Carried-over state is reset on the next `connect`, not here.
@@ -231,14 +236,17 @@ fn expired_ping_timeout_disconnects_session() {
 #[test]
 fn pingreq_write_error_disconnects_session() {
     let mut session = session();
-    let mut io = MockConnection {
-        write_error: Some(ErrorKind::ConnectionReset),
-        ..Default::default()
-    };
+    let mut conn = live_connection(
+        &mut session,
+        MockConnection {
+            write_error: Some(ErrorKind::ConnectionReset),
+            ..Default::default()
+        },
+    );
     let now = Instant::now();
-    session.runtime.next_ping = Some(now);
+    conn.session.runtime.next_ping = Some(now);
 
-    let result = block_on(session.service(&mut io, now));
+    let result = block_on(conn.service(now));
 
     assert!(matches!(
         result,
@@ -289,10 +297,10 @@ fn connect_returns_insufficient_memory_when_tx_is_too_small() {
 
 #[test]
 fn timed_out_read_disconnects_session() {
-    let mut session = live_session();
-    let mut io = MockConnection::default();
+    let mut session = session();
+    let mut conn = live_connection(&mut session, MockConnection::default());
 
-    let result = block_on(session.poll(&mut io));
+    let result = block_on(conn.poll());
 
     assert!(matches!(result, Err(Error::Transport(ErrorKind::TimedOut))));
 }
