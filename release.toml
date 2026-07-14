@@ -1,0 +1,7 @@
+[[pre-release-replacements]]
+file = "CHANGELOG.md"
+search = "## \\[UNRELEASED\\]\\(https?://[^)]+?/compare/(?P<previous>[^)]+)\\.\\.\\.HEAD\\) - DATE"
+replace = """## [UNRELEASED]({{repository}}/compare/{{tag_name}}...HEAD) - DATE
+
+## [{{version}}]({{repository}}/compare/${previous}...{{tag_name}}) - {{date}}"""
+exactly = 1
