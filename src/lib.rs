@@ -137,7 +137,7 @@ pub enum ResourceError {
     InflightExhausted,
 }
 
-/// Error returned from [`Session::publish`](crate::Session::publish).
+/// Error returned from [`Connection::publish`].
 ///
 /// `P` is the payload serialization error and `T` is the transport error.
 #[derive(Debug, PartialEq, thiserror::Error)]

@@ -9,11 +9,11 @@ use crate::{
 };
 use embedded_io_async::{ErrorType, Read, Write};
 
-/// Transport trait required by [`Session`](crate::Session).
+/// Transport trait required by [`Connection`].
 ///
 /// Ordinary lack of inbound data must leave the read future pending. If `read()` returns
-/// `TimedOut` or `Interrupted`, [`Session::poll`](crate::Session::poll) treats that as transport
-/// failure and disconnects the session.
+/// `TimedOut` or `Interrupted`, [`Connection::poll`] treats that as
+/// transport failure and disconnects the connection.
 pub trait Io: Read + Write + ErrorType {}
 
 impl<T> Io for T where T: Read + Write + ErrorType {}
@@ -54,9 +54,8 @@ pub(crate) enum OpStatus {
     Invalidated,
 }
 
-/// Inbound MQTT `PUBLISH` surfaced by [`Session::recv`](crate::Session::recv) and by
-/// [`Session::drive`](crate::Session::drive) / [`Session::poll`](crate::Session::poll) when they
-/// return `Some(...)`.
+/// Inbound MQTT `PUBLISH` surfaced by [`Connection::recv`] and by
+/// [`Connection::drive`] / [`Connection::poll`] when they return `Some(...)`.
 #[derive(Debug)]
 pub struct InboundPublish<'a> {
     topic: &'a str,

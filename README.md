@@ -17,7 +17,7 @@ The main API is [`Session`].
 - [`Disconnect`]: graceful disconnect options
 - [`Io`]: transport boundary for an established byte stream
 - [`Session`]: the client you drive
-- [`InboundPublish`]: output of [`Session::recv()`]
+- [`InboundPublish`]: output of [`Connection::recv()`]
 
 ## Example
 
@@ -86,11 +86,11 @@ async fn run() {
 The attached transport must implement [`embedded_io_async::Read`] and
 [`embedded_io_async::Write`].
 Ordinary lack of inbound data must keep the read future pending; if the transport returns
-`TimedOut` or `Interrupted`, [`Session::poll()`] treats that as transport failure and disconnects
-the session.
+`TimedOut` or `Interrupted`, [`Connection::poll()`] treats that as transport failure and
+disconnects the connection.
 
-For a TLS connectivity example and for caller-side cooperative driving via external timeouts, see
-`examples/tls_public_broker.rs`.
+For a TLS MQTT v5 request/reply example that preserves a subscription across reconnects and reuses
+the TLS record buffers, see `examples/tls_public_broker.rs`.
 
 ## Errors
 
@@ -106,32 +106,33 @@ You provide packet buffers plus an already-established transport, and a loop tha
 passes that transport into [`Session::connect()`] to establish or resume the broker session.
 
 [`Session::connect()`] takes ownership of the provided transport and performs the unbounded MQTT
-`CONNECT` / `CONNACK` handshake. Once connected:
-- [`Session::recv()`] blocks until the next inbound publish arrives or the session is lost.
-- [`Session::poll()`] blocks until any session progress happens and returns `Ok(None)` for
+`CONNECT` / `CONNACK` handshake. It returns a [`Connection`] that borrows the session. Once
+connected:
+- [`Connection::recv()`] blocks until the next inbound publish arrives or the connection is lost.
+- [`Connection::poll()`] blocks until any session progress happens and returns `Ok(None)` for
   internal-only progress such as ACK handling, replay, or keepalive traffic.
 
-The session drops the transport again on graceful disconnect, connection failure, or
-transport/protocol loss.
+Dropping the connection releases the session for a later reconnect. Call
+[`Connection::disconnect()`] first for a graceful MQTT close.
 
 - [`ConnectEvent::Connected`] means the broker created a fresh session. Re-establish subscriptions
   here.
 - [`ConnectEvent::Reconnected`] means the broker resumed the existing MQTT session. Existing
   subscriptions and in-flight QoS state were kept.
-- [`Session::recv()`] yields one inbound publish.
+- [`Connection::recv()`] yields one inbound publish.
 
-If [`Session::recv()`] or [`Session::poll()`] returns [`Error::Disconnected`], the caller decides
+If [`Connection::recv()`] or [`Connection::poll()`] returns [`Error::Disconnected`], the caller
+discards the handle and decides
 when to call
 [`Session::connect()`] with a fresh transport again.
-Other transport/protocol errors already tear down the attached transport locally; callers should
-handle the error and reconnect rather than retrying `recv()` or `poll()` on the same session
-state.
+Other transport/protocol errors mark the handle dead; callers should handle the error and reconnect
+rather than retrying network operations on that handle.
 
 For cooperative driving:
-- use [`Session::drive()`] for immediate local progress without waiting for future inbound reads or
-  future session deadlines
-- wrap cancel-safe blocking [`Session::poll()`] or [`Session::recv()`] in an external timeout such
-  as [`embassy_time::with_timeout()`] or [`embassy_time::with_deadline()`]
+- use [`Connection::drive()`] for immediate local progress without waiting for future inbound reads
+  or future session deadlines
+- wrap cancel-safe blocking [`Connection::poll()`] or [`Connection::recv()`] in an external timeout
+  such as [`embassy_time::with_timeout()`] or [`embassy_time::with_deadline()`]
 - if you need real wall-clock limits, enforce them in the transport's `read`, `write`, and
   `flush` futures; using the same budget as minimq's internal MQTT round-trip timeout keeps
   keepalive and transport liveness aligned

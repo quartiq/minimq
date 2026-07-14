@@ -19,21 +19,12 @@ use state::{RuntimeState, SessionData};
 
 /// One long-lived MQTT client session.
 ///
-/// Drive the session after [`connect`](Self::connect) has taken ownership of a live transport.
-/// Use [`recv`](Self::recv) when you want the next inbound publish, [`poll`](Self::poll) when you
-/// need to wait for any session progress, and [`drive`](Self::drive) for cooperative immediate
-/// progress. Real time bounds come from the transport: stalled reads, writes, or flushes must
-/// eventually error if the caller needs hard latency limits. The same session is also used for
-/// outbound `publish`, `subscribe`, and `unsubscribe` operations.
+/// [`connect`](Self::connect) borrows the session and returns a live [`Connection`] that owns the
+/// transport. Drive all network operations through that handle. Dropping it releases the session
+/// for a later reconnect while preserving durable MQTT state such as in-flight QoS replay.
 ///
-/// Cancel safety, assuming the transport's I/O futures are cancel-safe:
-/// [`drive`](Self::drive), [`poll`](Self::poll), [`recv`](Self::recv), [`disconnect`](Self::disconnect),
-/// [`subscribe`](Self::subscribe), [`unsubscribe`](Self::unsubscribe), and
-/// [`publish`](Self::publish) for QoS 1/2 preserve local session state across cancellation.
-/// Cancelling [`connect`](Self::connect) drops the supplied transport and leaves the session
-/// disconnected; the next `connect()` retries from clean transport-local state. QoS 0
-/// [`publish`](Self::publish) is not cancel-safe because it bypasses retained outbound state and
-/// writes directly from temporary TX scratch space.
+/// Cancelling `connect()` drops the supplied transport and leaves the session available for a
+/// clean retry.
 pub struct Session<'buf> {
     client_id: String<64>,
     packet_reader: PacketReader<'buf>,
@@ -145,6 +136,10 @@ impl<'buf> Session<'buf> {
 ///
 /// Note that dropping or forgetting the handle is an *ungraceful* MQTT close: **no `DISCONNECT`
 /// packet is sent** (a sync `Drop` cannot perform the async write).
+///
+/// Cancellation guarantees are documented on each network operation. In particular, QoS 1/2
+/// publishes preserve their retained session state, while a QoS 0 publish writes directly from
+/// temporary TX scratch space and is not cancel-safe.
 pub struct Connection<'a, 'buf, IO> {
     pub(super) session: &'a mut Session<'buf>,
     pub(super) io: IO,

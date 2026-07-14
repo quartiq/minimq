@@ -1,11 +1,8 @@
-//! TLS connectivity example for `embedded-tls`.
-//!
-//! Use this as a TLS transport example. Bounded/cooperative session driving is done by wrapping
-//! the cancel-safe blocking `Session::poll()` in an external timeout at the call site.
+//! MQTT v5 request/reply echo demonstrating session resumption over `embedded-tls`.
 
 use embedded_io_adapters::tokio_1::FromTokio;
 use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
-use minimq::{ConfigBuilder, Publication, QoS, Session, TopicFilter};
+use minimq::{ConfigBuilder, ConnectEvent, Session, TopicFilter};
 use std::error::Error as StdError;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
@@ -17,17 +14,19 @@ const PASSWORD: &str = "public";
 const TLS_READ_RECORD_BUFFER_LEN: usize = 16_640;
 const TLS_WRITE_RECORD_BUFFER_LEN: usize = 4_096;
 
-async fn connect_tls(
+async fn connect_tls<'a>(
     host: &str,
     port: u16,
-) -> Result<TlsConnection<'static, FromTokio<TcpStream>, Aes128GcmSha256>, Box<dyn StdError>> {
+    read_record: &'a mut [u8],
+    write_record: &'a mut [u8],
+) -> Result<TlsConnection<'a, FromTokio<TcpStream>, Aes128GcmSha256>, Box<dyn StdError>> {
     let config = TlsConfig::new()
         .with_server_name(host)
         .enable_rsa_signatures();
     let mut tls = TlsConnection::new(
         FromTokio::new(TcpStream::connect((host, port)).await?),
-        Box::leak(Box::new([0u8; TLS_READ_RECORD_BUFFER_LEN])),
-        Box::leak(Box::new([0u8; TLS_WRITE_RECORD_BUFFER_LEN])),
+        read_record,
+        write_record,
     );
     let mut provider = UnsecureProvider::new::<Aes128GcmSha256>(rand::rngs::OsRng);
     tls.open(TlsContext::new(&config, &mut provider)).await?;
@@ -43,51 +42,60 @@ fn unique_id(label: &str) -> String {
 }
 
 async fn run() -> Result<(), Box<dyn StdError>> {
-    let topic = format!("minimq/examples/tls/{}", unique_id("topic"));
-    let payload_str = format!("hello over tls {}", unique_id("msg"));
-    let payload = payload_str.as_bytes();
-
-    let mut sub_storage = [0u8; 2048];
+    let client_id = unique_id("client");
+    let topic = format!("minimq/examples/echo/{}", unique_id("request"));
+    let mut read_record = vec![0; TLS_READ_RECORD_BUFFER_LEN];
+    let mut write_record = vec![0; TLS_WRITE_RECORD_BUFFER_LEN];
+    let mut storage = [0u8; 2048];
     let mut session = Session::new(
-        ConfigBuilder::from_buffer(&mut sub_storage, 1024)?.auth(USERNAME, PASSWORD.as_bytes())?,
+        ConfigBuilder::from_buffer(&mut storage, 1024)?
+            .client_id(&client_id)?
+            .auth(USERNAME, PASSWORD.as_bytes())?
+            .session_expiry_interval(60),
     );
-    let mut subscriber = session
-        .connect(connect_tls(BROKER_HOST, BROKER_PORT).await?)
-        .await?;
-    let sub = subscriber
+
+    let tls = connect_tls(
+        BROKER_HOST,
+        BROKER_PORT,
+        &mut read_record,
+        &mut write_record,
+    )
+    .await?;
+    let mut connection = session.connect(tls).await?;
+    let subscribe = connection
         .subscribe(&[TopicFilter::new(&topic)], &[])
         .await?;
-    while subscriber.is_pending(&sub) {
-        subscriber.poll().await?;
+    while connection.is_pending(&subscribe) {
+        connection.poll().await?;
     }
-
-    let mut pub_storage = [0u8; 2048];
-    let mut session = Session::new(
-        ConfigBuilder::from_buffer(&mut pub_storage, 1024)?.auth(USERNAME, PASSWORD.as_bytes())?,
-    );
-    let mut publisher = session
-        .connect(connect_tls(BROKER_HOST, BROKER_PORT).await?)
-        .await?;
-    let pub_ = publisher
-        .publish(Publication::new(&topic, payload).qos(QoS::AtLeastOnce))
-        .await?
-        .unwrap();
-    while publisher.is_pending(&pub_) {
-        publisher.poll().await?;
-    }
+    println!("echoing requests on {topic}");
 
     loop {
-        let message = subscriber.recv().await?;
-        if message.topic() == topic && message.payload() == payload {
-            println!(
-                "received topic={} payload={}",
-                message.topic(),
-                payload.escape_ascii()
-            );
-            publisher.disconnect().await?;
-            subscriber.disconnect().await?;
-            return Ok(());
+        let (reply, payload) = {
+            let request = connection.recv().await?;
+            // Preserve the MQTT v5 response topic and correlation data past this receive borrow.
+            let Some(reply) = request.reply_owned::<256, 64>()? else {
+                continue;
+            };
+            (reply, request.payload().to_vec())
+        };
+
+        connection.disconnect().await?;
+        drop(connection);
+        let tls = connect_tls(
+            BROKER_HOST,
+            BROKER_PORT,
+            &mut read_record,
+            &mut write_record,
+        )
+        .await?;
+        connection = session.connect(tls).await?;
+        if connection.connect_event() != ConnectEvent::Reconnected {
+            return Err("broker did not resume the MQTT session".into());
         }
+        connection
+            .publish(reply.publication(payload.as_slice()))
+            .await?;
     }
 }
 
