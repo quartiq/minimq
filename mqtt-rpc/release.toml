@@ -1,0 +1,13 @@
+[[pre-release-replacements]]
+file = "CHANGELOG.md"
+search = "## \\[UNRELEASED\\]\\(https?://[^)]+?/compare/(?P<previous>[^)]+)\\.\\.\\.HEAD\\) - DATE"
+replace = """## [UNRELEASED](https://github.com/quartiq/minimq/compare/{{tag_name}}...HEAD) - DATE
+
+## [{{version}}](https://github.com/quartiq/minimq/compare/${previous}...{{tag_name}}) - {{date}}"""
+exactly = 1
+
+[[pre-release-replacements]]
+file = "py/pyproject.toml"
+search = '^version = "[^"]+"$'
+replace = 'version = "{{version}}"'
+exactly = 1

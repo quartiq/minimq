@@ -22,6 +22,10 @@ The [`py`](py/) directory contains the corresponding Python requester and comman
 - QoS 1 provides at-least-once delivery. Application methods with side effects must be idempotent;
   Correlation Data routes replies but is not a durable deduplication record.
 
+The requester chooses the MQTT response topic. Before responding, the application
+can inspect `ResponseTarget::topic()` and must rely on an appropriate broker ACL
+or reject targets outside its allowed response-topic tree.
+
 ## Device use
 
 After every successful `Session::connect`, tell the service whether the broker resumed the MQTT

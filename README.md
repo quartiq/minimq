@@ -12,3 +12,9 @@ Minimq owns MQTT session mechanics, not the network stack or application. The
 protocol crates likewise leave dispatch, storage, activation, and reboot policy
 to their applications. Each package has an independent version and release
 boundary.
+
+## Releasing
+
+Packages are released independently with `cargo release -p <package> <level>`;
+inspect the default dry run before adding `--execute`. Protocol-crate releases
+also update the matching Python package version, which is published separately.

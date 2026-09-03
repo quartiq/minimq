@@ -758,7 +758,7 @@ fn should_log_chunk_progress(next_offset: u32, size: u32, chunk_size: usize) -> 
     if next_offset == 0 {
         return true;
     }
-    if next_offset + chunk_size as u32 >= size {
+    if next_offset.saturating_add(chunk_size.try_into().unwrap_or(u32::MAX)) >= size {
         return true;
     }
     (next_offset as usize / chunk_size).is_multiple_of(INFO_CHUNK_STRIDE)
@@ -1057,6 +1057,11 @@ mod tests {
         };
         let mut payload = [0; MAX_STATUS_BYTES];
         assert!(serde_json_core::ser::to_slice(&status, &mut payload).is_ok());
+    }
+
+    #[test]
+    fn chunk_progress_handles_the_u32_limit() {
+        assert!(should_log_chunk_progress(u32::MAX - 1, u32::MAX, 4));
     }
 
     #[test]

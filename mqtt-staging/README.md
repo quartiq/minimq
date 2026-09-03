@@ -63,6 +63,9 @@ Here `firmware.write()` can be a thin call to Embassy
 `FirmwareUpdater::write_firmware()`. `finish()` verifies the staged bytes; the
 application decides whether to call `mark_updated()` and reboot.
 
+Reconnects preserve transfer state only while the same `Service` remains alive.
+A device reset starts from idle unless the application restores that state.
+
 Call `begin_startup()` after each MQTT connection, `step()` until it is
 quiescent, and route inbound publishes through `handle()`. `StagingWrite` borrows
 Minimq's current RX packet. A concurrent worker must copy that payload once

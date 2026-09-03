@@ -33,6 +33,15 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 
+  semver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: minimq,mqtt-staging
+
   python:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -97,14 +106,17 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: mqtt-staging/py/pyproject.toml
-      - run: python -m pip install ./mqtt-staging/py
+          cache-dependency-path: |
+            mqtt-rpc/py/pyproject.toml
+            mqtt-staging/py/pyproject.toml
+      - run: python -m pip install './mqtt-rpc/py[test]' ./mqtt-staging/py
       - name: Start MQTT broker
         run: |
           sudo apt-get update
           sudo apt-get install -y mosquitto mosquitto-clients
           sudo service mosquitto start
       - run: cargo test --workspace --all-targets --all-features
+      - run: python -m pytest -q -o cache_dir=/tmp/mqtt-rpc-pytest mqtt-rpc/py/tests
       - run: cargo test -p mqtt-staging --test end_to_end -- --ignored
 
   package:

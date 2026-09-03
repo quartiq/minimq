@@ -3,7 +3,7 @@
 Python 3.11+ client for MQTT 5 request/response services implemented with the MQTT RPC Rust crate.
 
 ```sh
-python -m pip install -e py/
+python -m pip install mqtt-rpc
 mqtt-rpc --broker mqtt dt/device settings/store
 ```
 
