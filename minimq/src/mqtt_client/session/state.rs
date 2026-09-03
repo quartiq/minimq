@@ -119,9 +119,34 @@ impl<'a> SessionData<'a> {
     }
 
     pub(super) fn next_packet_id(&mut self) -> u16 {
-        let packet_id = self.packet_id.get();
-        self.packet_id =
-            NonZeroU16::new(packet_id.wrapping_add(1)).unwrap_or(NonZeroU16::new(1).unwrap());
-        packet_id
+        loop {
+            let packet_id = self.packet_id.get();
+            self.packet_id = NonZeroU16::new(packet_id.wrapping_add(1)).unwrap_or(NonZeroU16::MIN);
+            if !self.outbound.has_retained(packet_id)
+                && !self.outbound.has_pending_release(packet_id)
+            {
+                return packet_id;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NonZeroU16, SessionData};
+    use crate::ReasonCode;
+    use crate::mqtt_client::OpKind;
+
+    #[test]
+    fn packet_identifier_wrap_skips_live_operations() {
+        let mut storage = [0; 16];
+        let mut data = SessionData::new(&mut storage);
+        data.packet_id = NonZeroU16::new(u16::MAX).unwrap();
+        data.outbound
+            .retain_packet(OpKind::Subscribe, u16::MAX, 0, 5)
+            .unwrap();
+        data.outbound.queue_release(1, ReasonCode::Success).unwrap();
+
+        assert_eq!(data.next_packet_id(), 2);
     }
 }

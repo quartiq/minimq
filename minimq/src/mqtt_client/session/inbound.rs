@@ -1,6 +1,7 @@
 use core::convert::Infallible;
 
 use crate::de::ReceivedPacket;
+use crate::mqtt_client::OpKind;
 use crate::mqtt_client::outbound::{ControlAction, check_control_packet_size, check_pubrel_size};
 use crate::{
     Connection, Error, InboundPublish, Io, PeerError, ProtocolError, QoS, ReasonCode,
@@ -18,7 +19,7 @@ impl<'a> SessionData<'a> {
         match packet {
             ReceivedPacket::ConnAck(_) => return Err(ProtocolError::UnexpectedPacket.into()),
             ReceivedPacket::SubAck(ack) => {
-                if !self.outbound.ack_packet(ack.packet_id) {
+                if !self.outbound.ack_packet(OpKind::Subscribe, ack.packet_id) {
                     debug!("Ignoring stale SUBACK for packet id {=u16}", ack.packet_id);
                     return Ok(false);
                 }
@@ -28,7 +29,7 @@ impl<'a> SessionData<'a> {
                 }
             }
             ReceivedPacket::UnsubAck(ack) => {
-                if !self.outbound.ack_packet(ack.packet_id) {
+                if !self.outbound.ack_packet(OpKind::Unsubscribe, ack.packet_id) {
                     debug!(
                         "Ignoring stale UNSUBACK for packet id {=u16}",
                         ack.packet_id
@@ -45,7 +46,10 @@ impl<'a> SessionData<'a> {
                 runtime.ping_timeout = None;
             }
             ReceivedPacket::PubAck(ack) => {
-                if !self.outbound.ack_packet(ack.packet_id) {
+                if !self
+                    .outbound
+                    .ack_packet(OpKind::PublishAtLeastOnce, ack.packet_id)
+                {
                     debug!("Ignoring stale PUBACK for packet id {=u16}", ack.packet_id);
                     return Ok(false);
                 }
@@ -60,7 +64,10 @@ impl<'a> SessionData<'a> {
                 ack.reason.code().as_result()?;
             }
             ReceivedPacket::PubRec(rec) => {
-                let queue_release = match self.outbound.ack_packet(rec.packet_id) {
+                let queue_release = match self
+                    .outbound
+                    .ack_packet(OpKind::PublishExactlyOnce, rec.packet_id)
+                {
                     true => {
                         runtime.send_quota = runtime
                             .send_quota
