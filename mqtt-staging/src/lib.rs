@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(not(test), no_std)]
+#![warn(missing_docs)]
 
 use defmt::{debug, info, trace, warn};
 use heapless::String;

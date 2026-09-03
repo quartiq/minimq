@@ -156,9 +156,9 @@ jobs:
         with:
           tool: cargo-fuzz
       - uses: dtolnay/rust-toolchain@nightly
-      - run: cargo +nightly fuzz run fuzz_received_packet --target host-tuple -- -dict=dictionary.txt -max_total_time=3
+      - run: cargo +nightly fuzz run fuzz_received_packet -- -dict=dictionary.txt -max_total_time=3
         working-directory: fuzz
-      - run: cargo +nightly fuzz run fuzz_packet_reader --target host-tuple -- -dict=dictionary.txt -max_total_time=3
+      - run: cargo +nightly fuzz run fuzz_packet_reader -- -dict=dictionary.txt -max_total_time=3
         working-directory: fuzz
-      - run: cargo +nightly fuzz run fuzz_serializer --target host-tuple -- -dict=dictionary.txt -max_total_time=3
+      - run: cargo +nightly fuzz run fuzz_serializer -- -dict=dictionary.txt -max_total_time=3
         working-directory: fuzz

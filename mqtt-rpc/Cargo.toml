@@ -2,13 +2,16 @@
 name = "mqtt-rpc"
 version = "0.1.0"
 edition.workspace = true
-rust-version = "1.88"
+rust-version.workspace = true
 authors = ["Ryan Summers <ryan.summers@vertigo-designs.com>"]
-license = "MIT"
+license.workspace = true
 description = "MQTT 5 request/response transport for embedded services"
-keywords = ["request", "response", "embedded", "no_std", "mqtt"]
+keywords = ["request", "response", "embedded", "no-std", "mqtt"]
 categories = ["no-std", "embedded", "network-programming"]
 repository.workspace = true
+
+[lints]
+workspace = true
 
 [features]
 default = []

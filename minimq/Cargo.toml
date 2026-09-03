@@ -7,13 +7,15 @@ authors = [
     "Max Rottenkolber <max@mr.gy>",
 ]
 edition.workspace = true
-description = "An MQTT5 client"
+description = "An MQTT 5 client"
 repository.workspace = true
-readme = "README.md"
 categories = ["embedded", "no-std", "database", "encoding"]
 keywords = ["mqtt", "embedded", "client"]
-license = "MIT"
-rust-version = "1.88"
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [features]
 default = ["defmt"]

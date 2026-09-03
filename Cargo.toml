@@ -4,4 +4,9 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
+license = "MIT"
 repository = "https://github.com/quartiq/minimq.git"
+rust-version = "1.88"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

@@ -18,6 +18,9 @@ Choose Minimq when fixed memory use and a small managed client matter more than 
 extensibility. It deliberately provides one direct session model rather than a general MQTT packet
 toolkit: no allocator, executor, network stack, runtime-sized queues, or application framework.
 
+Downstream users include [`miniconf_mqtt`](https://docs.rs/miniconf_mqtt), which exposes typed
+configuration trees over MQTT.
+
 ## What You Use
 
 - [`Buffers`]: caller-owned RX/TX memory

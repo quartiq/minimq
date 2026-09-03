@@ -1,4 +1,4 @@
 target/
 build/
 dist/
-/fuzz/Cargo.lock
+Cargo.lock

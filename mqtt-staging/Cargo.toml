@@ -5,15 +5,13 @@ authors = ["Robert Jördens <rj@quartiq.de>"]
 edition.workspace = true
 description = "Stage bounded objects into embedded storage over MQTT"
 repository.workspace = true
-readme = "README.md"
 categories = ["embedded", "no-std", "network-programming"]
 keywords = ["mqtt", "embedded", "no-std", "staging"]
 license = "MIT OR Apache-2.0"
 rust-version = "1.93"
 
-[lints.rust]
-missing_docs = "warn"
-unsafe_code = "forbid"
+[lints]
+workspace = true
 
 [dependencies]
 defmt = "1.0.1"
