@@ -11,7 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 
 [dependencies.minimq]
-path = ".."
+path = "../minimq"
 features = ["fuzzing"]
 
 [[bin]]

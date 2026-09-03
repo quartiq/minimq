@@ -1,16 +1,9 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::Arc,
     sync::OnceLock,
-    task::{Context, Poll, Wake, Waker},
+    task::{Context, Poll, Waker},
 };
-
-struct NoopWaker;
-
-impl Wake for NoopWaker {
-    fn wake(self: Arc<Self>) {}
-}
 
 pub fn init_host_logging() {
     static HOST_LOGGING: OnceLock<()> = OnceLock::new();
@@ -40,6 +33,5 @@ pub fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
 }
 
 fn noop_context() -> Context<'static> {
-    let waker = Waker::from(Arc::new(NoopWaker));
-    Context::from_waker(Box::leak(Box::new(waker)))
+    Context::from_waker(Waker::noop())
 }
