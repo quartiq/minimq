@@ -3,17 +3,26 @@
 
 # Minimq
 
-`minimq` is a small `no_std`, no-alloc, `async` MQTT v5 client for embedded systems.
+`minimq` is an opinionated `no_std`, no-alloc, `async` MQTT 5 client for embedded systems.
 
-Use it when your application already has async network I/O and needs one long-lived MQTT session
-with explicit buffers and reconnect handling.
+It manages one broker session over caller-provided packet buffers and an
+[`embedded_io_async`] byte stream. Keepalive, QoS 0/1/2 handshakes, in-flight replay, and resumed
+sessions stay inside the client; transport establishment, reconnect timing, and application
+dispatch stay outside it.
 
 The main API is [`Session`].
+
+## Scope
+
+Choose Minimq when fixed memory use and a small managed client matter more than protocol
+extensibility. It deliberately provides one direct session model rather than a general MQTT packet
+toolkit: no allocator, executor, network stack, runtime-sized queues, or application framework.
 
 ## What You Use
 
 - [`Buffers`]: caller-owned RX/TX memory
 - [`ConfigBuilder`]: session configuration
+- [`Connection`]: one live MQTT connection
 - [`Disconnect`]: graceful disconnect options
 - [`Io`]: transport boundary for an established byte stream
 - [`Session`]: the client you drive
@@ -127,6 +136,10 @@ when to call
 [`Session::connect()`] with a fresh transport again.
 Other transport/protocol errors mark the handle dead; callers should handle the error and reconnect
 rather than retrying network operations on that handle.
+
+A transport write returning `Ok(0)` for a non-empty buffer produces [`Error::WriteZero`] and also
+marks the connection dead. This is intentionally conservative: an earlier write may already have
+sent a packet prefix, so restarting that packet on the same byte stream is not safe.
 
 For cooperative driving:
 - use [`Connection::drive()`] for immediate local progress without waiting for future inbound reads
