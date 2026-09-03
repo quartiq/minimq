@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [UNRELEASED](https://github.com/quartiq/minimq/compare/v0.13.0...HEAD) - DATE
 
+## Fixed
+
+* Match acknowledgements to the operation kind and avoid reusing live packet identifiers.
+* Reject publishes above the broker's Maximum QoS unless automatic downgrade is enabled.
+
 ## [0.13.0](https://github.com/quartiq/minimq/compare/v0.12.1...v0.13.0) - 2026-07-14
 
 ## Changed

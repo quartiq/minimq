@@ -1376,7 +1376,7 @@ fn connect_retries_cleanly_after_cancellation_during_pending_connack() {
 }
 
 #[test]
-fn disconnect_sends_disconnect_packet_and_drops_connection() {
+fn disconnect_sends_disconnect_packet_and_marks_handle_dead() {
     let mut connection = MockConnection::default();
     let inspect = connection.clone();
     connection.push_rx(&connack());
@@ -1384,15 +1384,14 @@ fn disconnect_sends_disconnect_packet_and_drops_connection() {
     let mut session = session();
     let mut conn = expect_connected(&mut session, &connector);
 
-    // `disconnect` consumes the handle, so after this the session is no
-    // longer connected (no live Conn borrow).
+    // `disconnect` marks the handle dead; dropping it releases the session borrow.
     block_on(conn.disconnect()).unwrap();
 
     assert_eq!(inspect.tx().last().unwrap(), &disconnect_req());
 }
 
 #[test]
-fn disconnect_with_sends_reason_and_drops_connection() {
+fn disconnect_with_sends_reason_and_marks_handle_dead() {
     let mut connection = MockConnection::default();
     let inspect = connection.clone();
     connection.push_rx(&connack());
@@ -1400,7 +1399,7 @@ fn disconnect_with_sends_reason_and_drops_connection() {
     let mut session = session();
     let mut conn = expect_connected(&mut session, &connector);
 
-    // `disconnect_with` consumes the handle.
+    // `disconnect_with` marks the handle dead.
     block_on(conn.disconnect_with(Disconnect::with_will())).unwrap();
 
     assert_eq!(inspect.tx().last().unwrap(), &disconnect_with_will());
@@ -1424,7 +1423,7 @@ fn disconnect_uses_dedicated_control_storage_when_tx_arena_is_full() {
     let payload = [0u8; 80];
     block_on(conn.publish(Publication::bytes("data", &payload).qos(QoS::AtLeastOnce))).unwrap();
 
-    // `disconnect` consumes the handle.
+    // `disconnect` marks the handle dead.
     block_on(conn.disconnect()).unwrap();
 
     assert_eq!(inspect.tx().last().unwrap(), &disconnect_req());

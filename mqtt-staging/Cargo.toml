@@ -17,11 +17,11 @@ unsafe_code = "forbid"
 
 [dependencies]
 defmt = "1.0.1"
-heapless = { version = "0.9.1", features = ["serde"] }
+heapless = "0.9.1"
 itoa = "1"
 minimq = { path = "../minimq", version = "0.13" }
 serde = { version = "1.0", features = ["derive"], default-features = false }
-serde-json-core = "0.6.0"
+serde-json-core = { version = "0.6.0", default-features = false }
 
 [dev-dependencies]
 critical-section = { version = "1", features = ["std"] }

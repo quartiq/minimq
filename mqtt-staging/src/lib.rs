@@ -429,6 +429,8 @@ impl Service {
     where
         IO: Io,
     {
+        self.max_rx_packet_size = connection.session().max_rx_packet_size();
+
         if let Some(inflight) = self.inflight.take() {
             if connection.is_pending(&inflight.op) {
                 self.inflight = Some(inflight);
@@ -648,7 +650,6 @@ impl Service {
         match action {
             Action::Subscribe => {
                 info!("Subscribing staging MQTT topics");
-                self.max_rx_packet_size = connection.session().max_rx_packet_size();
                 let manifest_topic = self.manifest_topic();
                 let chunk_topic = self.chunk_topic();
                 let filters = [

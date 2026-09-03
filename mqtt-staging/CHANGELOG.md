@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [UNRELEASED](https://github.com/quartiq/minimq/compare/0ae37e5...HEAD) - DATE
 
+## Fixed
+
+* Refresh the MQTT receive limit for reconstructed services on resumed sessions.
+
 ## [0.1.0](https://github.com/quartiq/mqtt-staging/releases/tag/v0.1.0) - 2026-09-01
 
 * Initial release

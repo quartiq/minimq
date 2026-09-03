@@ -40,7 +40,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         result
     }
 
-    /// Gracefully close the transport with `DISCONNECT`.
+    /// Gracefully end the MQTT connection with `DISCONNECT`.
     ///
     /// This is the graceful counterpart to simply dropping the handle: it sends the MQTT
     /// `DISCONNECT` so the broker closes cleanly and suppresses the Will. Just dropping
