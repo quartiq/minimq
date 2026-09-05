@@ -7,12 +7,15 @@ are documented in `fuzz/corpus/README.md`.
 
 Run the focused packet-boundary fuzzers with nightly Rust:
 
-- `cargo +nightly fuzz run fuzz_received_packet -- -dict=dictionary.txt`
-- `cargo +nightly fuzz run fuzz_packet_reader -- -dict=dictionary.txt`
-- `cargo +nightly fuzz run fuzz_serializer -- -dict=dictionary.txt`
-- `cargo +nightly fuzz cmin fuzz_received_packet`
-- `cargo +nightly fuzz cmin fuzz_packet_reader`
-- `cargo +nightly fuzz cmin fuzz_serializer`
+- `cargo +nightly fuzz run fuzz_received_packet --target host-tuple -- -dict=dictionary.txt`
+- `cargo +nightly fuzz run fuzz_packet_reader --target host-tuple -- -dict=dictionary.txt`
+- `cargo +nightly fuzz run fuzz_serializer --target host-tuple -- -dict=dictionary.txt`
+- `cargo +nightly fuzz cmin fuzz_received_packet --target host-tuple`
+- `cargo +nightly fuzz cmin fuzz_packet_reader --target host-tuple`
+- `cargo +nightly fuzz cmin fuzz_serializer --target host-tuple`
+
+`host-tuple` makes Cargo use the machine's host target even when `cargo-fuzz`
+itself came from a prebuilt binary for a different target.
 
 The fuzz crate enables the main crate's `fuzzing` feature to expose a minimal,
 fuzz-only API surface for serializer, parser, and `PacketReader` entry points.
