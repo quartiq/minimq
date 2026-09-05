@@ -21,6 +21,7 @@ struct MockIo {
     tx: Vec<Vec<u8>>,
     read_error: Option<ErrorKind>,
     write_error: Option<(usize, ErrorKind)>,
+    write_zero: Option<usize>,
     pending_reads: usize,
     pending_writes: usize,
     pending_flushes: usize,
@@ -44,6 +45,10 @@ impl MockConnection {
 
     fn fail_write_after(&mut self, successful_writes: usize, err: ErrorKind) {
         self.inner.borrow_mut().write_error = Some((successful_writes, err));
+    }
+
+    fn zero_write_after(&mut self, successful_writes: usize) {
+        self.inner.borrow_mut().write_zero = Some(successful_writes);
     }
 
     fn fail_read(&mut self, err: ErrorKind) {
@@ -115,6 +120,13 @@ impl Write for MockConnection {
                     let err = *err;
                     inner.write_error = None;
                     return Poll::Ready(Err(err));
+                }
+                *remaining -= 1;
+            }
+            if let Some(remaining) = &mut inner.write_zero {
+                if *remaining == 0 {
+                    inner.write_zero = None;
+                    return Poll::Ready(Ok(0));
                 }
                 *remaining -= 1;
             }
@@ -204,6 +216,10 @@ fn connack_max_packet_size(max: u32) -> [u8; 10] {
         (max >> 8) as u8,
         max as u8,
     ]
+}
+
+fn connack_max_qos(max: QoS) -> [u8; 7] {
+    [0x20, 0x05, 0x00, 0x00, 0x02, 0x24, max as u8]
 }
 
 fn puback(id: u16) -> [u8; 4] {
@@ -862,6 +878,26 @@ fn outbound_qos_acks_can_arrive_out_of_order() {
 }
 
 #[test]
+fn acknowledgement_kind_must_match_operation() {
+    let mut connection = MockConnection::default();
+    connection.push_rx(&connack());
+    connection.push_rx(&puback(1));
+    connection.push_rx(&suback(1, 0x00));
+    let connector = MockConnector::new(connection);
+    let mut session = session();
+    let mut conn = expect_connected(&mut session, &connector);
+
+    let op = block_on(conn.subscribe(&[TopicFilter::new("data")], &[])).unwrap();
+    assert!(conn.is_pending(&op));
+
+    assert!(poll_now(&mut conn).unwrap().is_none());
+    assert!(conn.is_pending(&op));
+
+    assert!(poll_now(&mut conn).unwrap().is_none());
+    assert!(conn.is_complete(&op));
+}
+
+#[test]
 fn subscribe_is_replayed_after_disconnect_until_suback() {
     let mut first = MockConnection::default();
     first.push_rx(&connack());
@@ -1101,6 +1137,35 @@ fn connack_receive_maximum_clamps_local_quota() {
 }
 
 #[test]
+fn publish_above_broker_maximum_qos_fails_before_send() {
+    let mut connection = MockConnection::default();
+    let inspect = connection.clone();
+    connection.push_rx(&connack_max_qos(QoS::AtMostOnce));
+    let connector = MockConnector::new(connection);
+    let mut session = session();
+    let mut conn = expect_connected(&mut session, &connector);
+
+    assert!(matches!(
+        publish_qos1(&mut conn, "data", b"x"),
+        Err(PubError::Session(Error::InvalidRequest))
+    ));
+    assert_eq!(inspect.tx().len(), 1);
+}
+
+#[test]
+fn publish_can_downgrade_to_broker_maximum_qos() {
+    let mut connection = MockConnection::default();
+    let inspect = connection.clone();
+    connection.push_rx(&connack_max_qos(QoS::AtMostOnce));
+    let connector = MockConnector::new(connection);
+    let mut session = Session::new(config().autodowngrade_qos());
+    let mut conn = expect_connected(&mut session, &connector);
+
+    assert!(publish_qos1(&mut conn, "data", b"x").unwrap().is_none());
+    assert_eq!(inspect.tx().last().unwrap()[0], 0x30);
+}
+
+#[test]
 fn session_allows_publish_after_message_borrow_is_dropped() {
     let mut connection = MockConnection::default();
     connection.push_rx(&connack());
@@ -1141,6 +1206,58 @@ fn session_reconnects_after_write_error() {
 
     let mut conn = expect_reconnected(&mut session, &connector);
     publish_qos1_ok(&mut conn, "reply", b"ok");
+}
+
+#[test]
+fn qos0_write_zero_kills_connection() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.zero_write_after(1);
+
+    let mut second = MockConnection::default();
+    second.push_rx(&connack());
+
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = session();
+    let mut conn = expect_connected(&mut session, &connector);
+
+    assert!(matches!(
+        block_on(conn.publish(Publication::bytes("data", b"x"))),
+        Err(PubError::Session(Error::WriteZero))
+    ));
+    assert!(matches!(
+        block_on(conn.publish(Publication::bytes("data", b"x"))),
+        Err(PubError::Session(Error::Disconnected))
+    ));
+
+    drop(conn);
+    expect_connected(&mut session, &connector);
+}
+
+#[test]
+fn retained_write_zero_kills_connection() {
+    let mut first = MockConnection::default();
+    first.push_rx(&connack());
+    first.zero_write_after(1);
+
+    let mut second = MockConnection::default();
+    second.push_rx(&connack());
+
+    let connector = MockConnector::with_connections([first, second]);
+    let mut session = session();
+    let mut conn = expect_connected(&mut session, &connector);
+
+    assert!(matches!(
+        publish_qos1(&mut conn, "data", b"x"),
+        Err(PubError::Session(Error::WriteZero))
+    ));
+    assert!(matches!(
+        publish_qos1(&mut conn, "data", b"x"),
+        Err(PubError::Session(Error::Disconnected))
+    ));
+
+    drop(conn);
+    expect_connected(&mut session, &connector);
 }
 
 #[test]
@@ -1259,7 +1376,7 @@ fn connect_retries_cleanly_after_cancellation_during_pending_connack() {
 }
 
 #[test]
-fn disconnect_sends_disconnect_packet_and_drops_connection() {
+fn disconnect_sends_disconnect_packet_and_marks_handle_dead() {
     let mut connection = MockConnection::default();
     let inspect = connection.clone();
     connection.push_rx(&connack());
@@ -1267,15 +1384,14 @@ fn disconnect_sends_disconnect_packet_and_drops_connection() {
     let mut session = session();
     let mut conn = expect_connected(&mut session, &connector);
 
-    // `disconnect` consumes the handle, so after this the session is no
-    // longer connected (no live Conn borrow).
+    // `disconnect` marks the handle dead; dropping it releases the session borrow.
     block_on(conn.disconnect()).unwrap();
 
     assert_eq!(inspect.tx().last().unwrap(), &disconnect_req());
 }
 
 #[test]
-fn disconnect_with_sends_reason_and_drops_connection() {
+fn disconnect_with_sends_reason_and_marks_handle_dead() {
     let mut connection = MockConnection::default();
     let inspect = connection.clone();
     connection.push_rx(&connack());
@@ -1283,7 +1399,7 @@ fn disconnect_with_sends_reason_and_drops_connection() {
     let mut session = session();
     let mut conn = expect_connected(&mut session, &connector);
 
-    // `disconnect_with` consumes the handle.
+    // `disconnect_with` marks the handle dead.
     block_on(conn.disconnect_with(Disconnect::with_will())).unwrap();
 
     assert_eq!(inspect.tx().last().unwrap(), &disconnect_with_will());
@@ -1307,7 +1423,7 @@ fn disconnect_uses_dedicated_control_storage_when_tx_arena_is_full() {
     let payload = [0u8; 80];
     block_on(conn.publish(Publication::bytes("data", &payload).qos(QoS::AtLeastOnce))).unwrap();
 
-    // `disconnect` consumes the handle.
+    // `disconnect` marks the handle dead.
     block_on(conn.disconnect()).unwrap();
 
     assert_eq!(inspect.tx().last().unwrap(), &disconnect_req());

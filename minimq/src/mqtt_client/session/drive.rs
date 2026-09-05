@@ -395,6 +395,10 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                 self.handle_disconnect();
                 return Err(Error::Transport(err));
             }
+            Err(Error::WriteZero) => {
+                self.handle_disconnect();
+                return Err(Error::WriteZero);
+            }
             Err(err) => return Err(err),
         };
         let written = written + count;

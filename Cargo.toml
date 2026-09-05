@@ -1,49 +1,12 @@
-[package]
-name = "minimq"
-version = "0.13.0"
-authors = [
-    "Ryan Summers <ryan.summers@vertigo-designs.com>",
-    "Robert Jördens <rj@quartiq.de>",
-    "Max Rottenkolber <max@mr.gy>",
-]
+[workspace]
+members = ["minimq", "mqtt-rpc", "mqtt-staging"]
+resolver = "3"
+
+[workspace.package]
 edition = "2024"
-description = "An MQTT5 client"
-homepage = "https://github.com/quartiq/minimq"
-repository = "https://github.com/quartiq/minimq"
-documentation = "https://docs.rs/minimq"
-readme = "README.md"
-categories = ["embedded", "no-std", "database", "encoding"]
-keywords = ["mqtt", "embedded", "client"]
 license = "MIT"
-rust-version = "1.85.0"
+repository = "https://github.com/quartiq/minimq.git"
+rust-version = "1.88"
 
-[features]
-default = ["defmt"]
-defmt = [
-    "dep:defmt",
-    "heapless/defmt",
-    "embedded-io-async/defmt",
-    "embassy-time/defmt",
-]
-fuzzing = []
-
-[dependencies]
-defmt = { version = "1.0.1", optional = true }
-num_enum = { version = "0.7", default-features = false }
-heapless = "0.9.1"
-embedded-io-async = "0.7"
-embassy-time = "0.5.1"
-serde = { version = "1", features = ["derive"], default-features = false }
-thiserror = { version = "2", default-features = false }
-
-[dev-dependencies]
-defmt2log = "0.1.0"
-env_logger = "0.11"
-embassy-time = { version = "0.5.1", features = ["std", "generic-queue-8"] }
-embedded-tls = "0.18.0"
-embedded-io-adapters = { version = "0.7.0", features = ["tokio-1"] }
-rand = "0.8"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
-
-[[example]]
-name = "tls_public_broker"
+[workspace.lints.rust]
+unsafe_code = "forbid"

@@ -196,6 +196,9 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         self.io
     }
 
+    /// Mark this connection dead without sending MQTT `DISCONNECT`.
+    ///
+    /// Use this when the application knows the transport can no longer be used.
     pub fn handle_disconnect(&mut self) {
         self.live = false;
         self.session.handle_disconnect();

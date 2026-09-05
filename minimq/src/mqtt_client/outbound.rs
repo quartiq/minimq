@@ -5,7 +5,7 @@ use crate::wire::ControlPacket;
 use crate::{Error, ProtocolError, PubError, ReasonCode, ResourceError, error, trace};
 use heapless::Vec;
 
-use super::Io;
+use super::{Io, OpKind};
 
 pub(super) const CONTROL_PACKET_LEN: usize = 9;
 pub(super) const MAX_RETAINED: usize = 8;
@@ -36,6 +36,7 @@ pub(super) struct PendingRelease {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct RetainedPacket {
+    kind: OpKind,
     packet_id: u16,
     offset: usize,
     len: usize,
@@ -201,11 +202,11 @@ impl<'a> Outbound<'a> {
         })
     }
 
-    pub(super) fn ack_packet(&mut self, packet_id: u16) -> bool {
+    pub(super) fn ack_packet(&mut self, kind: OpKind, packet_id: u16) -> bool {
         let Some(position) = self
             .retained
             .iter()
-            .position(|entry| entry.packet_id == packet_id)
+            .position(|entry| entry.kind == kind && entry.packet_id == packet_id)
         else {
             return false;
         };
@@ -286,12 +287,14 @@ impl<'a> Outbound<'a> {
 
     pub(super) fn retain_packet(
         &mut self,
+        kind: OpKind,
         packet_id: u16,
         offset: usize,
         len: usize,
     ) -> Result<(), ProtocolError> {
         self.retained
             .push(RetainedPacket {
+                kind,
                 packet_id,
                 offset,
                 len,
@@ -608,6 +611,7 @@ pub(super) async fn write_all<C: Io>(
 #[cfg(test)]
 mod tests {
     use super::{ControlAction, MAX_FIXED_HEADER_SIZE, Outbound, OutboundStep, SendState};
+    use crate::mqtt_client::OpKind;
     use crate::{
         Error, Properties, PubError, ReasonCode, ResourceError,
         packets::{PublishHeader, Subscribe},
@@ -621,7 +625,7 @@ mod tests {
         let mut storage = [0u8; 64];
         let mut outbound = Outbound::new(&mut storage);
 
-        outbound.retain_packet(7, 0, 10).unwrap();
+        outbound.retain_packet(OpKind::Subscribe, 7, 0, 10).unwrap();
 
         let (offset, len) = outbound
             .encode_packet(&Subscribe {
@@ -640,7 +644,7 @@ mod tests {
         let mut storage = [0u8; MAX_FIXED_HEADER_SIZE + 4];
         let mut outbound = Outbound::new(&mut storage);
 
-        outbound.retain_packet(7, 0, 5).unwrap();
+        outbound.retain_packet(OpKind::Subscribe, 7, 0, 5).unwrap();
 
         assert!(!outbound.can_retain());
     }
@@ -650,7 +654,7 @@ mod tests {
         let mut storage = [0u8; MAX_FIXED_HEADER_SIZE + 4];
         let mut outbound = Outbound::new(&mut storage);
 
-        outbound.retain_packet(7, 0, 5).unwrap();
+        outbound.retain_packet(OpKind::Subscribe, 7, 0, 5).unwrap();
 
         let publication = Publication::bytes("a", b"x");
         let header = PublishHeader {
@@ -689,5 +693,17 @@ mod tests {
             Some(OutboundStep::Control(step))
                 if step.action == action && step.state == SendState::Write { written: 0 }
         ));
+    }
+
+    #[test]
+    fn acknowledgement_must_match_retained_operation() {
+        let mut storage = [0u8; 16];
+        let mut outbound = Outbound::new(&mut storage);
+        outbound.retain_packet(OpKind::Subscribe, 7, 0, 5).unwrap();
+
+        assert!(!outbound.ack_packet(OpKind::PublishAtLeastOnce, 7));
+        assert!(outbound.has_retained(7));
+        assert!(outbound.ack_packet(OpKind::Subscribe, 7));
+        assert!(!outbound.has_retained(7));
     }
 }

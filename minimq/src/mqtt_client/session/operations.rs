@@ -40,7 +40,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         result
     }
 
-    /// Gracefully close the transport with `DISCONNECT`.
+    /// Gracefully end the MQTT connection with `DISCONNECT`.
     ///
     /// This is the graceful counterpart to simply dropping the handle: it sends the MQTT
     /// `DISCONNECT` so the broker closes cleanly and suppresses the Will. Just dropping
@@ -83,7 +83,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         self.session
             .data
             .outbound
-            .retain_packet(packet_id, offset, len)?;
+            .retain_packet(OpKind::Subscribe, packet_id, offset, len)?;
         debug!(
             "Enqueued SUBSCRIBE packet_id={=u16} len={=usize} tx_used={=usize}",
             packet_id,
@@ -133,7 +133,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         self.session
             .data
             .outbound
-            .retain_packet(packet_id, offset, len)?;
+            .retain_packet(OpKind::Unsubscribe, packet_id, offset, len)?;
         debug!(
             "Enqueued UNSUBSCRIBE packet_id={=u16} len={=usize} tx_used={=usize}",
             packet_id,
@@ -184,7 +184,8 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             return Err(Error::InvalidRequest.into());
         }
         let qos = match self.session.runtime.max_qos {
-            Some(max_qos) if self.session.downgrade_qos && qos > max_qos => max_qos,
+            Some(max_qos) if qos > max_qos && self.session.downgrade_qos => max_qos,
+            Some(max_qos) if qos > max_qos => return Err(Error::InvalidRequest.into()),
             _ => qos,
         };
         let packet_id = (qos > QoS::AtMostOnce).then(|| self.session.data.next_packet_id());
@@ -205,6 +206,11 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         }
 
         if let Some(packet_id) = packet_id {
+            let kind = if qos == QoS::ExactlyOnce {
+                OpKind::PublishExactlyOnce
+            } else {
+                OpKind::PublishAtLeastOnce
+            };
             let (offset, len) = self
                 .session
                 .data
@@ -214,7 +220,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             self.session
                 .data
                 .outbound
-                .retain_packet(packet_id, offset, len)?;
+                .retain_packet(kind, packet_id, offset, len)?;
             self.session.runtime.send_quota = self.session.runtime.send_quota.saturating_sub(1);
             debug!(
                 "Enqueued PUBLISH packet_id={=u16} qos={} len={=usize} send_quota={=u16}/{=u16} tx_used={=usize}",
@@ -226,11 +232,6 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                 self.session.data.outbound.used()
             );
             self.flush_outbound().await?;
-            let kind = if qos == QoS::ExactlyOnce {
-                OpKind::PublishExactlyOnce
-            } else {
-                OpKind::PublishAtLeastOnce
-            };
             return Ok(Some(Op::new(
                 kind,
                 packet_id,
@@ -249,9 +250,6 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             return Err(Error::Disconnected.into());
         }
         if let Err(err) = write_all(&mut self.io, packet).await {
-            if matches!(err, Error::WriteZero) {
-                return Err(err.into());
-            }
             warn!("QoS0 PUBLISH write failed");
             self.handle_disconnect();
             return Err(err.into());

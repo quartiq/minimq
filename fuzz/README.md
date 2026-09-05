@@ -14,5 +14,8 @@ Run the focused packet-boundary fuzzers with nightly Rust:
 - `cargo +nightly fuzz cmin fuzz_packet_reader --target host-tuple`
 - `cargo +nightly fuzz cmin fuzz_serializer --target host-tuple`
 
+`host-tuple` makes Cargo use the machine's host target even when `cargo-fuzz`
+itself came from a prebuilt binary for a different target.
+
 The fuzz crate enables the main crate's `fuzzing` feature to expose a minimal,
 fuzz-only API surface for serializer, parser, and `PacketReader` entry points.

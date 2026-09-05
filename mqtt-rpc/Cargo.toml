@@ -1,0 +1,29 @@
+[package]
+name = "mqtt-rpc"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors = ["Ryan Summers <ryan.summers@vertigo-designs.com>"]
+license.workspace = true
+description = "MQTT 5 request/response transport for embedded services"
+keywords = ["request", "response", "embedded", "no-std", "mqtt"]
+categories = ["no-std", "embedded", "network-programming"]
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+defmt = ["minimq/defmt"]
+
+[dependencies]
+heapless = "0.9.1"
+minimq = { path = "../minimq", version = "0.13", default-features = false }
+
+[dev-dependencies]
+defmt2log = "0.2.0"
+embedded-io-adapters = { version = "0.7", features = ["tokio-1"] }
+embassy-time = { version = "0.5.1", features = ["std", "generic-queue-8"] }
+env_logger = "0.11"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }

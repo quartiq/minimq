@@ -1,83 +1,149 @@
 name: Continuous Integration
 
 on:
+  merge_group:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
-    branches: [master]
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   style:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 
-      - run: cargo fmt -- --check
-      - run: cargo check
-      - run: cargo clippy --tests --examples
-
-  documentation:
+  semver:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: minimq,mqtt-staging
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - run: cargo doc
-
-  audit:
+  python:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: taiki-e/install-action@cargo-audit
-      - run: cargo audit
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            mqtt-rpc/py/pyproject.toml
+            mqtt-staging/py/pyproject.toml
+      - run: python -m pip install -e './mqtt-rpc/py[dev,test]' -e './mqtt-staging/py[dev]'
+      - run: python -m compileall -q mqtt_rpc tests
+        working-directory: mqtt-rpc/py
+      - run: python -m ruff format --check mqtt_rpc tests
+        working-directory: mqtt-rpc/py
+      - run: python -m ruff check mqtt_rpc tests
+        working-directory: mqtt-rpc/py
+      - run: python -m pytest -q -o cache_dir=/tmp/mqtt-rpc-pytest tests
+        working-directory: mqtt-rpc/py
+      - run: python -m compileall -q mqtt_staging.py tests
+        working-directory: mqtt-staging/py
+      - run: python -m ruff format --check mqtt_staging.py tests
+        working-directory: mqtt-staging/py
+      - run: python -m ruff check mqtt_staging.py tests
+        working-directory: mqtt-staging/py
+      - run: python -m unittest discover -s tests -p 'test_*.py'
+        working-directory: mqtt-staging/py
 
-  compile:
+  msrv:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       matrix:
-        toolchain:
-          - stable
-          - beta
+        include:
+          - toolchain: "1.88.0"
+            packages: -p minimq -p mqtt-rpc
+          - toolchain: "1.93.0"
+            packages: -p mqtt-staging
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust ${{ matrix.toolchain }}
-        uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
-          target: thumbv7em-none-eabihf
-      - run: cargo check --verbose
-      - run: cargo build
-      - run: cargo build --release
-      - run: cargo build --examples
+          targets: thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check ${{ matrix.packages }} --lib
+      - run: cargo check ${{ matrix.packages }} --lib --target thumbv7em-none-eabihf
 
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        toolchain:
-          - stable
+    timeout-minutes: 15
+    env:
+      BROKER: 127.0.0.1:1883
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Start Mosquitto
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            mqtt-rpc/py/pyproject.toml
+            mqtt-staging/py/pyproject.toml
+      - run: python -m pip install './mqtt-rpc/py[test]' ./mqtt-staging/py
+      - name: Start MQTT broker
         run: |
           sudo apt-get update
           sudo apt-get install -y mosquitto mosquitto-clients
           sudo service mosquitto start
+      - run: cargo test --workspace --all-targets --all-features
+      - run: python -m pytest -q -o cache_dir=/tmp/mqtt-rpc-pytest mqtt-rpc/py/tests
+      - run: cargo test -p mqtt-staging --test end_to_end -- --ignored
 
-      - name: Install Rust ${{ matrix.toolchain }}
-        uses: dtolnay/rust-toolchain@master
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v6
         with:
-          toolchain: ${{ matrix.toolchain }}
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            mqtt-rpc/py/pyproject.toml
+            mqtt-staging/py/pyproject.toml
+      - run: cargo package -p minimq
+      - run: cargo package -p mqtt-rpc
+      - run: cargo package -p mqtt-staging
+      - run: python -m pip install build
+      - run: python -m build mqtt-rpc/py
+      - run: python -m build mqtt-staging/py
 
-      - run: cargo test
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit
 
   fuzz:
     runs-on: ubuntu-latest
@@ -88,9 +154,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
-      - name: Install nightly Rust
-        uses: dtolnay/rust-toolchain@nightly
-
+      - uses: dtolnay/rust-toolchain@nightly
       - run: cargo +nightly fuzz run fuzz_received_packet --target host-tuple -- -dict=dictionary.txt -max_total_time=3
         working-directory: fuzz
       - run: cargo +nightly fuzz run fuzz_packet_reader --target host-tuple -- -dict=dictionary.txt -max_total_time=3

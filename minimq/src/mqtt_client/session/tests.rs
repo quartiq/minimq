@@ -340,7 +340,12 @@ fn can_publish_qos1_false_when_retained_slots_full() {
         conn.session
             .data
             .outbound
-            .retain_packet(packet_id, offset as usize, 4)
+            .retain_packet(
+                crate::mqtt_client::OpKind::PublishAtLeastOnce,
+                packet_id,
+                offset as usize,
+                4,
+            )
             .unwrap();
     }
 

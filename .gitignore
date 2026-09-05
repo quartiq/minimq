@@ -1,3 +1,4 @@
-ejabberd/*/
-/target
+target/
+build/
+dist/
 Cargo.lock
