@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mqtt-staging"
 # Note: keep this in sync with Cargo.toml
-version = "0.1.0"
+version = "0.1.1"
 description = "Stage bounded objects into embedded storage over MQTT"
 readme = "README.md"
 requires-python = ">=3.11"

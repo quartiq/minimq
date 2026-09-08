@@ -1,6 +1,6 @@
 [package]
 name = "mqtt-staging"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Robert Jördens <rj@quartiq.de>"]
 edition.workspace = true
 description = "Stage bounded objects into embedded storage over MQTT"
