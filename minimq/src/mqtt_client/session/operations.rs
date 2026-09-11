@@ -73,9 +73,8 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         self.require_retained_slot()?;
 
         let packet_id = self.session.data.next_packet_id();
-        let (offset, len) = self.session.data.outbound.encode_packet(&Subscribe {
+        let len = self.session.data.outbound.encode_packet(&Subscribe {
             packet_id,
-            dup: false,
             properties: Properties::from_slice(properties),
             topics,
         })?;
@@ -83,12 +82,12 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         self.session
             .data
             .outbound
-            .retain_packet(OpKind::Subscribe, packet_id, offset, len)?;
+            .retain_packet(OpKind::Subscribe, packet_id, len)?;
         debug!(
             "Enqueued SUBSCRIBE packet_id={=u16} len={=usize} tx_used={=usize}",
             packet_id,
             len,
-            self.session.data.outbound.used()
+            self.session.data.outbound.retained_bytes()
         );
         self.flush_outbound().await?;
         Ok(Op::new(
@@ -123,9 +122,8 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         self.require_retained_slot()?;
 
         let packet_id = self.session.data.next_packet_id();
-        let (offset, len) = self.session.data.outbound.encode_packet(&Unsubscribe {
+        let len = self.session.data.outbound.encode_packet(&Unsubscribe {
             packet_id,
-            dup: false,
             properties: Properties::from_slice(properties),
             topics,
         })?;
@@ -133,12 +131,12 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         self.session
             .data
             .outbound
-            .retain_packet(OpKind::Unsubscribe, packet_id, offset, len)?;
+            .retain_packet(OpKind::Unsubscribe, packet_id, len)?;
         debug!(
             "Enqueued UNSUBSCRIBE packet_id={=u16} len={=usize} tx_used={=usize}",
             packet_id,
             len,
-            self.session.data.outbound.used()
+            self.session.data.outbound.retained_bytes()
         );
         self.flush_outbound().await?;
         Ok(Op::new(
@@ -211,7 +209,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             } else {
                 OpKind::PublishAtLeastOnce
             };
-            let (offset, len) = self
+            let len = self
                 .session
                 .data
                 .outbound
@@ -220,7 +218,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             self.session
                 .data
                 .outbound
-                .retain_packet(kind, packet_id, offset, len)?;
+                .retain_packet(kind, packet_id, len)?;
             self.session.runtime.send_quota = self.session.runtime.send_quota.saturating_sub(1);
             debug!(
                 "Enqueued PUBLISH packet_id={=u16} qos={} len={=usize} send_quota={=u16}/{=u16} tx_used={=usize}",
@@ -229,7 +227,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                 len,
                 self.session.runtime.send_quota,
                 self.session.runtime.max_send_quota,
-                self.session.data.outbound.used()
+                self.session.data.outbound.retained_bytes()
             );
             self.flush_outbound().await?;
             return Ok(Some(Op::new(

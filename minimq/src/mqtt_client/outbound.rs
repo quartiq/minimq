@@ -1,7 +1,7 @@
 use crate::packets::{PingReq, PubAck, PubComp, PubRec, PubRel, PublishHeader};
 use crate::publication::ToPayload;
-use crate::ser::{MAX_FIXED_HEADER_SIZE, MqttSerializer};
-use crate::wire::ControlPacket;
+use crate::ser::{Error as SerError, MAX_FIXED_HEADER_SIZE, MqttSerializer};
+use crate::wire::{ControlPacket, mark_publish_duplicate};
 use crate::{Error, ProtocolError, PubError, ReasonCode, ResourceError, error, trace};
 use heapless::Vec;
 
@@ -38,7 +38,6 @@ pub(super) struct PendingRelease {
 struct RetainedPacket {
     kind: OpKind,
     packet_id: u16,
-    offset: usize,
     len: usize,
     state: SendState,
 }
@@ -107,7 +106,7 @@ pub(super) enum OutboundStep {
 #[derive(Debug)]
 pub(super) struct Outbound<'a> {
     buf: &'a mut [u8],
-    used: usize,
+    connect_workspace: usize,
     pending_control: Vec<PendingControl, MAX_PENDING_CONTROL>,
     retained: Vec<RetainedPacket, MAX_RETAINED>,
     pending_release: Vec<PendingRelease, MAX_PENDING_RELEASE>,
@@ -117,15 +116,14 @@ impl<'a> Outbound<'a> {
     pub(super) fn new(buf: &'a mut [u8]) -> Self {
         Self {
             buf,
-            used: 0,
+            connect_workspace: 0,
             pending_control: Vec::new(),
             retained: Vec::new(),
             pending_release: Vec::new(),
         }
     }
 
-    pub(super) fn clear(&mut self) {
-        self.used = 0;
+    pub(super) fn clear_inflight(&mut self) {
         self.pending_control.clear();
         self.retained.clear();
         self.pending_release.clear();
@@ -145,8 +143,8 @@ impl<'a> Outbound<'a> {
         self.retained.is_full()
     }
 
-    pub(super) fn used(&self) -> usize {
-        self.used
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.retained.iter().map(|entry| entry.len).sum()
     }
 
     pub(super) fn capacity(&self) -> usize {
@@ -169,22 +167,34 @@ impl<'a> Outbound<'a> {
         MAX_RETAINED.min(MAX_PENDING_RELEASE) as u16
     }
 
-    fn used_after_compact(&self) -> usize {
-        self.retained.iter().map(|entry| entry.len).sum()
-    }
-
     pub(super) fn scratch_len(&self) -> usize {
-        self.buf.len().saturating_sub(self.used_after_compact())
+        self.buf.len().saturating_sub(self.retained_bytes())
     }
 
     pub(super) fn can_retain(&self) -> bool {
         self.retained.len() < self.retained.capacity()
-            && self.scratch_len() >= MAX_FIXED_HEADER_SIZE
+            && self
+                .retained_capacity()
+                .saturating_sub(self.retained_bytes())
+                >= MAX_FIXED_HEADER_SIZE
     }
 
     pub(super) fn scratch_space(&mut self) -> &mut [u8] {
-        self.compact();
-        &mut self.buf[self.used..]
+        let used = self.retained_bytes();
+        &mut self.buf[used..]
+    }
+
+    pub(super) fn set_connect_workspace(&mut self, len: usize) -> Result<(), ResourceError> {
+        let capacity = self
+            .buf
+            .len()
+            .checked_sub(len)
+            .ok_or(ResourceError::BufferTooSmall)?;
+        if self.retained_bytes() > capacity {
+            return Err(ResourceError::BufferTooSmall);
+        }
+        self.connect_workspace = len;
+        Ok(())
     }
 
     pub(super) fn queue_control(&mut self, action: ControlAction) -> Result<(), ProtocolError> {
@@ -210,8 +220,14 @@ impl<'a> Outbound<'a> {
         else {
             return false;
         };
+        let offset = self.retained[..position]
+            .iter()
+            .map(|entry| entry.len)
+            .sum::<usize>();
+        let len = self.retained[position].len;
+        let used = self.retained_bytes();
+        self.buf.copy_within(offset + len..used, offset);
         self.retained.remove(position);
-        self.compact();
         true
     }
 
@@ -253,9 +269,16 @@ impl<'a> Outbound<'a> {
             .any(|pending| pending.packet_id == packet_id)
     }
 
-    pub(super) fn mark_retained_dup(&mut self) {
+    fn mark_publish_dup(&mut self) {
+        let mut offset = 0;
         for entry in &self.retained {
-            self.buf[entry.offset] |= 1 << 3;
+            if matches!(
+                entry.kind,
+                OpKind::PublishAtLeastOnce | OpKind::PublishExactlyOnce
+            ) {
+                mark_publish_duplicate(&mut self.buf[offset]);
+            }
+            offset += entry.len;
         }
     }
 
@@ -263,22 +286,26 @@ impl<'a> Outbound<'a> {
         &mut self,
         header: &PublishHeader<'_>,
         payload: P,
-    ) -> Result<(usize, usize), PubError<P::Error, E>> {
-        self.compact();
-        let start = self.used;
+    ) -> Result<usize, PubError<P::Error, E>> {
+        let start = self.retained_bytes();
         let (offset, packet) =
             MqttSerializer::encode_publish_with_offset(&mut self.buf[start..], header, payload)?;
-        Ok((start + offset, packet.len()))
+        let len = packet.len();
+        self.pack_encoded(offset, len)
+            .map_err(|err| PubError::Session(Error::Resource(err)))?;
+        Ok(len)
     }
 
-    pub(super) fn encode_packet<T>(&mut self, packet: &T) -> Result<(usize, usize), ProtocolError>
+    pub(super) fn encode_packet<T>(&mut self, packet: &T) -> Result<usize, ProtocolError>
     where
         T: serde::Serialize + ControlPacket,
     {
-        self.compact();
-        let start = self.used;
+        let start = self.retained_bytes();
         let (offset, packet) = MqttSerializer::encode_with_offset(&mut self.buf[start..], packet)?;
-        Ok((start + offset, packet.len()))
+        let len = packet.len();
+        self.pack_encoded(offset, len)
+            .map_err(|_| SerError::InsufficientMemory)?;
+        Ok(len)
     }
 
     pub(super) fn retained_packet(&self, offset: usize, len: usize) -> &[u8] {
@@ -289,19 +316,16 @@ impl<'a> Outbound<'a> {
         &mut self,
         kind: OpKind,
         packet_id: u16,
-        offset: usize,
         len: usize,
     ) -> Result<(), ProtocolError> {
         self.retained
             .push(RetainedPacket {
                 kind,
                 packet_id,
-                offset,
                 len,
                 state: SendState::Write { written: 0 },
             })
             .map_err(|_| ProtocolError::InflightMetadataExhausted)?;
-        self.used = self.used.max(offset + len);
         Ok(())
     }
 
@@ -324,15 +348,17 @@ impl<'a> Outbound<'a> {
                     }));
                 }
             }
+            let mut offset = 0;
             for entry in &self.retained {
                 if entry.state.matches_priority(in_progress) {
                     return Some(OutboundStep::Retained(RetainedStep {
                         packet_id: entry.packet_id,
-                        offset: entry.offset,
+                        offset,
                         len: entry.len,
                         state: entry.state,
                     }));
                 }
+                offset += entry.len;
             }
         }
         None
@@ -444,10 +470,10 @@ impl<'a> Outbound<'a> {
             self.pending_control.len(),
             self.retained.len(),
             self.pending_release.len(),
-            self.used,
+            self.retained_bytes(),
             self.buf.len()
         );
-        self.mark_retained_dup();
+        self.mark_publish_dup();
         for entry in &mut self.pending_control {
             entry.state = SendState::Write { written: 0 };
         }
@@ -459,31 +485,18 @@ impl<'a> Outbound<'a> {
         }
     }
 
-    fn compact(&mut self) {
-        let previous_used = self.used;
+    fn pack_encoded(&mut self, offset: usize, len: usize) -> Result<(), ResourceError> {
+        let start = self.retained_bytes();
+        if len > self.retained_capacity().saturating_sub(start) {
+            return Err(ResourceError::BufferTooSmall);
+        }
+        self.buf
+            .copy_within(start + offset..start + offset + len, start);
+        Ok(())
+    }
 
-        let mut cursor = 0;
-        let mut moved = 0;
-        for entry in self.retained.iter_mut() {
-            if entry.offset != cursor {
-                self.buf
-                    .copy_within(entry.offset..entry.offset + entry.len, cursor);
-                entry.offset = cursor;
-                moved += 1;
-            }
-            cursor += entry.len;
-        }
-        self.used = cursor;
-        if moved != 0 || previous_used != self.used {
-            trace!(
-                "Compacted outbound buffer moved={=usize} tx_used={=usize} -> {=usize} retained={=usize} pending_release={=usize}",
-                moved,
-                previous_used,
-                self.used,
-                self.retained.len(),
-                self.pending_release.len()
-            );
-        }
+    fn retained_capacity(&self) -> usize {
+        self.buf.len() - self.connect_workspace
     }
 }
 
@@ -579,20 +592,6 @@ fn encode_pubrel(
     )?)
 }
 
-pub(super) async fn write_packet<C: Io, T>(
-    buffer: &mut [u8],
-    connection: &mut C,
-    packet: &T,
-) -> Result<(), Error<C::Error>>
-where
-    T: serde::Serialize + ControlPacket + core::fmt::Debug,
-{
-    let bytes = MqttSerializer::encode(buffer, packet)?;
-    write_all(connection, bytes).await?;
-    connection.flush().await.map_err(Error::Transport)?;
-    Ok(())
-}
-
 pub(super) async fn write_all<C: Io>(
     connection: &mut C,
     mut bytes: &[u8],
@@ -621,22 +620,21 @@ mod tests {
     };
 
     #[test]
-    fn encode_packet_returns_absolute_offset_after_retained_prefix() {
+    fn encoded_packet_is_packed_after_retained_prefix() {
         let mut storage = [0u8; 64];
         let mut outbound = Outbound::new(&mut storage);
 
-        outbound.retain_packet(OpKind::Subscribe, 7, 0, 10).unwrap();
+        outbound.retain_packet(OpKind::Subscribe, 7, 10).unwrap();
 
-        let (offset, len) = outbound
+        let len = outbound
             .encode_packet(&Subscribe {
                 packet_id: 16,
-                dup: false,
                 properties: Properties::from_slice(&[]),
                 topics: &[TopicFilter::new("ABC")],
             })
             .unwrap();
 
-        assert_eq!(&outbound.retained_packet(offset, len)[..2], &[0x82, 0x09]);
+        assert_eq!(&outbound.retained_packet(10, len)[..2], &[0x82, 0x09]);
     }
 
     #[test]
@@ -644,7 +642,7 @@ mod tests {
         let mut storage = [0u8; MAX_FIXED_HEADER_SIZE + 4];
         let mut outbound = Outbound::new(&mut storage);
 
-        outbound.retain_packet(OpKind::Subscribe, 7, 0, 5).unwrap();
+        outbound.retain_packet(OpKind::Subscribe, 7, 5).unwrap();
 
         assert!(!outbound.can_retain());
     }
@@ -654,7 +652,7 @@ mod tests {
         let mut storage = [0u8; MAX_FIXED_HEADER_SIZE + 4];
         let mut outbound = Outbound::new(&mut storage);
 
-        outbound.retain_packet(OpKind::Subscribe, 7, 0, 5).unwrap();
+        outbound.retain_packet(OpKind::Subscribe, 7, 5).unwrap();
 
         let publication = Publication::bytes("a", b"x");
         let header = PublishHeader {
@@ -699,7 +697,7 @@ mod tests {
     fn acknowledgement_must_match_retained_operation() {
         let mut storage = [0u8; 16];
         let mut outbound = Outbound::new(&mut storage);
-        outbound.retain_packet(OpKind::Subscribe, 7, 0, 5).unwrap();
+        outbound.retain_packet(OpKind::Subscribe, 7, 5).unwrap();
 
         assert!(!outbound.ack_packet(OpKind::PublishAtLeastOnce, 7));
         assert!(outbound.has_retained(7));

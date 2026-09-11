@@ -13,8 +13,8 @@ use heapless::String;
 /// - retain in-flight `SUBSCRIBE` and `UNSUBSCRIBE` packets until acknowledged
 /// - replay retained packets after a resumed session reconnect
 ///
-/// `tx` therefore needs to cover both the largest outbound packet and the amount of in-flight
-/// state you want to allow.
+/// Size `tx` for the retained in-flight bytes plus the larger of the `CONNECT` workspace and the
+/// largest temporary packet-encoding workspace.
 #[derive(Debug)]
 pub struct Buffers<'a> {
     rx: &'a mut [u8],

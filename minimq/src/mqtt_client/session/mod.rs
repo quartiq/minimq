@@ -67,7 +67,10 @@ impl<'buf> Session<'buf> {
         self.packet_reader.capacity()
     }
 
-    /// Return the maximum outbound MQTT packet arena size available to this session.
+    /// Return the physical outbound MQTT packet arena size.
+    ///
+    /// Reconnect workspace and in-flight packets share this arena, so an individual outbound
+    /// packet may have less space available.
     pub fn max_tx_packet_size(&self) -> usize {
         self.data.outbound.capacity()
     }

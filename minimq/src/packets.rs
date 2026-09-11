@@ -109,8 +109,6 @@ impl<P> core::fmt::Debug for Publish<'_, P> {
 #[derive(Debug, Serialize)]
 pub(crate) struct Subscribe<'a> {
     pub(crate) packet_id: u16,
-    #[serde(skip)]
-    pub(crate) dup: bool,
     pub(crate) properties: Properties<'a>,
     pub(crate) topics: &'a [TopicFilter<'a>],
 }
@@ -118,7 +116,6 @@ pub(crate) struct Subscribe<'a> {
 #[derive(Debug)]
 pub(crate) struct Unsubscribe<'a> {
     pub(crate) packet_id: u16,
-    pub(crate) dup: bool,
     pub(crate) properties: Properties<'a>,
     pub(crate) topics: &'a [&'a str],
 }
@@ -420,7 +417,6 @@ mod tests {
 
         let subscribe = Subscribe {
             packet_id: 16,
-            dup: false,
             properties: Properties::from_slice(&[]),
             topics: &[TopicFilter::new("ABC")],
         };
@@ -443,7 +439,6 @@ mod tests {
 
         let unsubscribe = Unsubscribe {
             packet_id: 16,
-            dup: false,
             properties: Properties::from_slice(&[]),
             topics: &["ABC"],
         };

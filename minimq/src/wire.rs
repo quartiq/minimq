@@ -10,6 +10,12 @@ use crate::{
 use num_enum::TryFromPrimitive;
 use serde::ser::SerializeStruct;
 
+// MQTT PUBLISH fixed-header fields and the required PUBREL/SUBSCRIBE/UNSUBSCRIBE flags.
+const PUBLISH_RETAIN_FLAG: u8 = 1 << 0;
+const PUBLISH_QOS_SHIFT: u8 = 1;
+const PUBLISH_DUP_FLAG: u8 = 1 << 3;
+const REQUIRED_CONTROL_FLAGS: u8 = 0b0010;
+
 /// MQTT binary data field.
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -129,15 +135,20 @@ impl ControlPacket for ConnAck<'_> {
 
 impl PublishHeader<'_> {
     pub(crate) fn fixed_header_flags(&self) -> u8 {
-        let mut flags = (self.qos as u8) << 1;
+        let mut flags = (self.qos as u8) << PUBLISH_QOS_SHIFT;
         if self.retain == Retain::Retained {
-            flags |= 1;
+            flags |= PUBLISH_RETAIN_FLAG;
         }
         if self.dup {
-            flags |= 1 << 3;
+            flags |= PUBLISH_DUP_FLAG;
         }
         flags
     }
+}
+
+/// Mark an encoded PUBLISH fixed header as a retransmission.
+pub(crate) fn mark_publish_duplicate(fixed_header: &mut u8) {
+    *fixed_header |= PUBLISH_DUP_FLAG;
 }
 
 impl ControlPacket for PubAck<'_> {
@@ -152,7 +163,7 @@ impl ControlPacket for PubRel<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::PubRel;
 
     fn fixed_header_flags(&self) -> u8 {
-        0b0010
+        REQUIRED_CONTROL_FLAGS
     }
 }
 
@@ -164,7 +175,7 @@ impl ControlPacket for Subscribe<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::Subscribe;
 
     fn fixed_header_flags(&self) -> u8 {
-        0b0010 | ((self.dup as u8) << 3)
+        REQUIRED_CONTROL_FLAGS
     }
 }
 
@@ -176,7 +187,7 @@ impl ControlPacket for Unsubscribe<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::Unsubscribe;
 
     fn fixed_header_flags(&self) -> u8 {
-        0b0010 | ((self.dup as u8) << 3)
+        REQUIRED_CONTROL_FLAGS
     }
 }
 

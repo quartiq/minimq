@@ -349,7 +349,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                         written,
                         step.len,
                         data.outbound.pending_control_len(),
-                        data.outbound.used(),
+                        data.outbound.retained_bytes(),
                         data.outbound.capacity(),
                         data.outbound.retained_len(),
                         data.outbound.pending_release_len()
