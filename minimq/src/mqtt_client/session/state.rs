@@ -110,7 +110,7 @@ impl<'a> SessionData<'a> {
         self.session_present = false;
         self.generation = self.generation.wrapping_add(1);
         self.packet_id = NonZeroU16::new(1).unwrap();
-        self.outbound.clear();
+        self.outbound.clear_inflight();
         self.pending_server_packet_ids.clear();
     }
 
@@ -143,7 +143,7 @@ mod tests {
         let mut data = SessionData::new(&mut storage);
         data.packet_id = NonZeroU16::new(u16::MAX).unwrap();
         data.outbound
-            .retain_packet(OpKind::Subscribe, u16::MAX, 0, 5)
+            .retain_packet(OpKind::Subscribe, u16::MAX, 5)
             .unwrap();
         data.outbound.queue_release(1, ReasonCode::Success).unwrap();
 

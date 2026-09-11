@@ -1,5 +1,6 @@
 use super::ReceivedPacket;
 use crate::ProtocolError as Error;
+use crate::varint::probe_mqtt_u32_varint;
 use crate::{trace, warn};
 
 #[derive(Debug)]
@@ -64,34 +65,23 @@ impl<'a> PacketReader<'a> {
 
         self.packet_length = None;
 
-        let mut packet_length = 0;
-        for (index, value) in self.buffer[1..self.read_bytes].iter().take(4).enumerate() {
-            packet_length += ((value & 0x7F) as usize) << (index * 7);
-            if (value & 0x80) == 0 {
-                let length_size_bytes = 1 + index;
+        let Some((packet_length, length_size_bytes)) =
+            probe_mqtt_u32_varint(&self.buffer[1..self.read_bytes])
+                .map_err(|_| Error::MalformedPacket)?
+        else {
+            return Ok(());
+        };
+        let packet_length = packet_length as usize;
 
-                // MQTT headers encode the packet type in the first byte followed by the packet
-                // length as a varint
-                let header_size_bytes = 1 + length_size_bytes;
-                self.packet_length = Some(header_size_bytes + packet_length);
-                trace!(
-                    "PacketReader fixed header resolved packet_length={=usize} (header={=usize} payload={=usize})",
-                    header_size_bytes + packet_length,
-                    header_size_bytes,
-                    packet_length
-                );
-                break;
-            }
-        }
-
-        // We should have found the packet length by now.
-        if self.read_bytes >= 5 && self.packet_length.is_none() {
-            warn!(
-                "PacketReader failed to resolve MQTT remaining length after {=usize} bytes",
-                self.read_bytes
-            );
-            return Err(Error::MalformedPacket);
-        }
+        // MQTT headers encode the packet type in the first byte followed by the packet length.
+        let header_size_bytes = 1 + length_size_bytes;
+        self.packet_length = Some(header_size_bytes + packet_length);
+        trace!(
+            "PacketReader fixed header resolved packet_length={=usize} (header={=usize} payload={=usize})",
+            header_size_bytes + packet_length,
+            header_size_bytes,
+            packet_length
+        );
 
         Ok(())
     }

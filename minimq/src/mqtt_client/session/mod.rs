@@ -8,9 +8,9 @@ mod state;
 mod tests;
 
 use crate::de::PacketReader;
-use crate::ser::MAX_FIXED_HEADER_SIZE;
 use crate::types::Auth;
 use crate::{ConfigBuilder, Op, QoS, Will};
+use crate::{config::CLIENT_ID_CAPACITY, ser::MAX_FIXED_HEADER_SIZE};
 use heapless::String;
 
 use super::{ConnectEvent, Io, OpKind, OpStatus};
@@ -26,7 +26,7 @@ use state::{RuntimeState, SessionData};
 /// Cancelling `connect()` drops the supplied transport and leaves the session available for a
 /// clean retry.
 pub struct Session<'buf> {
-    client_id: String<64>,
+    client_id: String<CLIENT_ID_CAPACITY>,
     packet_reader: PacketReader<'buf>,
     data: SessionData<'buf>,
     runtime: RuntimeState,
@@ -67,7 +67,10 @@ impl<'buf> Session<'buf> {
         self.packet_reader.capacity()
     }
 
-    /// Return the maximum outbound MQTT packet arena size available to this session.
+    /// Return the physical outbound MQTT packet arena size.
+    ///
+    /// Reconnect workspace and in-flight packets share this arena, so an individual outbound
+    /// packet may have less space available.
     pub fn max_tx_packet_size(&self) -> usize {
         self.data.outbound.capacity()
     }

@@ -21,30 +21,10 @@ pub(crate) struct Connect<'a> {
 
 impl serde::Serialize for Connect<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut flags: u8 = 0;
-        if self.clean_start {
-            flags |= 1 << 1;
-        }
-
-        if let Some(will) = &self.will {
-            // Update the flags for the will parameters. Indicate that the will is present, the QoS of
-            // the will message, and whether or not the will message should be retained.
-            flags |= 1 << 2;
-            flags |= (will.qos_level() as u8) << 3;
-            if will.retained_flag() == Retain::Retained {
-                flags |= 1 << 5;
-            }
-        }
-
-        if self.auth.is_some() {
-            flags |= 1 << 6;
-            flags |= 1 << 7;
-        }
-
         let mut item = serializer.serialize_struct("Connect", 0)?;
         item.serialize_field("protocol_name", &Utf8String("MQTT"))?;
         item.serialize_field("protocol_version", &5u8)?;
-        item.serialize_field("flags", &flags)?;
+        item.serialize_field("flags", &self.flags())?;
         item.serialize_field("keep_alive", &self.keepalive)?;
         item.serialize_field("properties", &self.properties)?;
         item.serialize_field("client_id", &self.client_id)?;
@@ -109,8 +89,6 @@ impl<P> core::fmt::Debug for Publish<'_, P> {
 #[derive(Debug, Serialize)]
 pub(crate) struct Subscribe<'a> {
     pub(crate) packet_id: u16,
-    #[serde(skip)]
-    pub(crate) dup: bool,
     pub(crate) properties: Properties<'a>,
     pub(crate) topics: &'a [TopicFilter<'a>],
 }
@@ -118,7 +96,6 @@ pub(crate) struct Subscribe<'a> {
 #[derive(Debug)]
 pub(crate) struct Unsubscribe<'a> {
     pub(crate) packet_id: u16,
-    pub(crate) dup: bool,
     pub(crate) properties: Properties<'a>,
     pub(crate) topics: &'a [&'a str],
 }
@@ -420,7 +397,6 @@ mod tests {
 
         let subscribe = Subscribe {
             packet_id: 16,
-            dup: false,
             properties: Properties::from_slice(&[]),
             topics: &[TopicFilter::new("ABC")],
         };
@@ -443,7 +419,6 @@ mod tests {
 
         let unsubscribe = Unsubscribe {
             packet_id: 16,
-            dup: false,
             properties: Properties::from_slice(&[]),
             topics: &["ABC"],
         };
@@ -619,10 +594,9 @@ mod tests {
     #[test]
     fn serialize_pubrel() {
         let good_pubrel: [u8; 5] = [
-            6 << 4 | 0b10, // PubRel
-            0x03,          // Remaining length
-            0x00,
-            0x05, // Identifier
+            0x62, // PUBREL fixed header
+            0x03, // Remaining length
+            0x00, 0x05, // Identifier
             0x10, // Response Code
         ];
 
@@ -641,10 +615,9 @@ mod tests {
     #[test]
     fn serialize_puback() {
         let good_puback: [u8; 5] = [
-            4 << 4, // PubAck
-            0x03,   // Remaining length
-            0x00,
-            0x15, // Identifier
+            0x40, // PUBACK fixed header
+            0x03, // Remaining length
+            0x00, 0x15, // Identifier
             0x00, // Response Code
         ];
 
@@ -668,10 +641,9 @@ mod tests {
     #[test]
     fn serialize_pubcomp() {
         let good_pubcomp: [u8; 5] = [
-            7 << 4, // PubComp
-            0x03,   // Remaining length
-            0x00,
-            0x15, // Identifier
+            0x70, // PUBCOMP fixed header
+            0x03, // Remaining length
+            0x00, 0x15, // Identifier
             0x00, // Response Code
         ];
 

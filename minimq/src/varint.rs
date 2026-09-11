@@ -1,6 +1,11 @@
 use serde::ser::SerializeSeq;
 
-pub(crate) const MQTT_VARINT_MAX: u32 = 0x0FFF_FFFF;
+const MQTT_VARINT_DATA_BITS: usize = 7;
+const MQTT_VARINT_MAX_BYTES: usize = 4;
+const MQTT_VARINT_DATA_MASK: u8 = (1 << MQTT_VARINT_DATA_BITS) - 1;
+const MQTT_VARINT_CONTINUATION: u8 = 1 << MQTT_VARINT_DATA_BITS;
+const MQTT_VARINT_BASE: u32 = 1 << MQTT_VARINT_DATA_BITS;
+pub(crate) const MQTT_VARINT_MAX: u32 = (1 << (MQTT_VARINT_DATA_BITS * MQTT_VARINT_MAX_BYTES)) - 1;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -9,12 +14,13 @@ pub(crate) struct Varint(pub(crate) u32);
 impl Varint {
     /// Return the encoded length for a valid MQTT variable byte integer.
     pub(crate) fn encoded_len(&self) -> usize {
-        match self.0 {
-            0..=0x7F => 1,
-            0x80..=0x3FFF => 2,
-            0x4000..=0x1F_FFFF => 3,
-            _ => 4,
+        let mut value = self.0;
+        let mut len = 1;
+        while value >= MQTT_VARINT_BASE {
+            value /= MQTT_VARINT_BASE;
+            len += 1;
         }
+        len
     }
 }
 
@@ -25,7 +31,7 @@ impl From<u32> for Varint {
 }
 
 pub(crate) struct VarintBuffer {
-    data: [u8; 4],
+    data: [u8; MQTT_VARINT_MAX_BYTES],
     len: u8,
 }
 
@@ -33,7 +39,7 @@ impl VarintBuffer {
     #[inline]
     pub(crate) const fn new() -> Self {
         Self {
-            data: [0; 4],
+            data: [0; MQTT_VARINT_MAX_BYTES],
             len: 0,
         }
     }
@@ -63,10 +69,10 @@ pub(crate) fn write_mqtt_u32_varint(mut value: u32, out: &mut VarintBuffer) -> R
     }
 
     loop {
-        let mut byte = (value & 0x7F) as u8;
-        value >>= 7;
+        let mut byte = (value & u32::from(MQTT_VARINT_DATA_MASK)) as u8;
+        value >>= MQTT_VARINT_DATA_BITS;
         if value != 0 {
-            byte |= 0x80;
+            byte |= MQTT_VARINT_CONTINUATION;
         }
         out.push(byte)?;
         if value == 0 {
@@ -86,15 +92,16 @@ pub(crate) fn read_mqtt_u32_varint<E>(
 ) -> Result<u32, E> {
     let mut value = 0u32;
 
-    for shift in [0, 7, 14, 21] {
+    for index in 0..MQTT_VARINT_MAX_BYTES {
+        let shift = index * MQTT_VARINT_DATA_BITS;
         let byte = read()?;
-        let part = (byte & 0x7F) as u32;
-        if shift == 21 && part > 0x0F {
+        let part = u32::from(byte & MQTT_VARINT_DATA_MASK);
+        value |= part << shift;
+        if value > MQTT_VARINT_MAX {
             return Err(invalid());
         }
 
-        value |= part << shift;
-        if (byte & 0x80) == 0 {
+        if (byte & MQTT_VARINT_CONTINUATION) == 0 {
             if shift != 0 && part == 0 {
                 return Err(invalid());
             }
@@ -103,6 +110,29 @@ pub(crate) fn read_mqtt_u32_varint<E>(
     }
 
     Err(invalid())
+}
+
+#[derive(Copy, Clone)]
+enum ProbeError {
+    Incomplete,
+    Invalid,
+}
+
+/// Probe a possibly incomplete MQTT variable byte integer.
+pub(crate) fn probe_mqtt_u32_varint(bytes: &[u8]) -> Result<Option<(u32, usize)>, ()> {
+    let mut len = 0;
+    match read_mqtt_u32_varint(
+        || {
+            let byte = bytes.get(len).copied().ok_or(ProbeError::Incomplete)?;
+            len += 1;
+            Ok(byte)
+        },
+        || ProbeError::Invalid,
+    ) {
+        Ok(value) => Ok(Some((value, len))),
+        Err(ProbeError::Incomplete) => Ok(None),
+        Err(ProbeError::Invalid) => Err(()),
+    }
 }
 
 impl<'de> serde::de::Visitor<'de> for VarintVisitor {
@@ -129,7 +159,7 @@ impl<'de> serde::de::Visitor<'de> for VarintVisitor {
 
 impl<'de> serde::de::Deserialize<'de> for Varint {
     fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Varint, D::Error> {
-        deserializer.deserialize_tuple(4, VarintVisitor)
+        deserializer.deserialize_tuple(MQTT_VARINT_MAX_BYTES, VarintVisitor)
     }
 }
 

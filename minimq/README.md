@@ -159,8 +159,9 @@ You supply two buffers.
 
 - `rx` stores one inbound MQTT packet at a time. Size it for the largest inbound publish,
   including topic, properties, and payload.
-- `tx` stores outbound encodes and retained in-flight state. Size it for the largest outbound
-  packet plus the QoS/session state you want to keep active.
+- `tx` stores outbound encodes and packed in-flight state. Size it for the retained in-flight bytes
+  plus the larger of the `CONNECT` workspace and the largest temporary packet-encoding workspace.
+  Minimq keeps enough TX capacity free to reconnect without discarding admitted state.
 
 If `tx` is exhausted, `publish()` and other outbound operations can return [`Error::NotReady`].
 Malformed broker varints and undersized local encode buffers are rejected with errors rather than

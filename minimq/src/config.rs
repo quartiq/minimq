@@ -2,6 +2,9 @@ use crate::{ConfigError, Will, types::Auth};
 use embassy_time::Duration;
 use heapless::String;
 
+/// Storage for the configured or broker-assigned client identifier.
+pub(crate) const CLIENT_ID_CAPACITY: usize = 64;
+
 /// Caller-owned packet buffers.
 ///
 /// `rx` holds exactly one inbound MQTT control packet at a time. Size it for the largest packet
@@ -13,8 +16,8 @@ use heapless::String;
 /// - retain in-flight `SUBSCRIBE` and `UNSUBSCRIBE` packets until acknowledged
 /// - replay retained packets after a resumed session reconnect
 ///
-/// `tx` therefore needs to cover both the largest outbound packet and the amount of in-flight
-/// state you want to allow.
+/// Size `tx` for the retained in-flight bytes plus the larger of the `CONNECT` workspace and the
+/// largest temporary packet-encoding workspace.
 #[derive(Debug)]
 pub struct Buffers<'a> {
     rx: &'a mut [u8],
@@ -72,7 +75,7 @@ impl<'a> Buffers<'a> {
 pub struct ConfigBuilder<'a> {
     buffers: Buffers<'a>,
     will: Option<Will<'a>>,
-    client_id: String<64>,
+    client_id: String<CLIENT_ID_CAPACITY>,
     keepalive_interval: Duration,
     session_expiry_interval: u32,
     downgrade_qos: bool,
@@ -171,7 +174,7 @@ impl<'a> ConfigBuilder<'a> {
     ) -> (
         Buffers<'a>,
         Option<Will<'a>>,
-        String<64>,
+        String<CLIENT_ID_CAPACITY>,
         Duration,
         u32,
         bool,

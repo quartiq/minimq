@@ -144,7 +144,6 @@ pub fn encode_packet(
                 buf,
                 &Subscribe {
                     packet_id: 1,
-                    dup: retain,
                     properties: Properties::from_slice(subscribe_properties(aux)),
                     topics: &topics,
                 },
@@ -156,7 +155,6 @@ pub fn encode_packet(
                 buf,
                 &Unsubscribe {
                     packet_id: 1,
-                    dup: retain,
                     properties: Properties::from_slice(generic_properties(aux)),
                     topics: &topics,
                 },

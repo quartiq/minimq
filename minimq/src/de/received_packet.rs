@@ -1,13 +1,12 @@
 use crate::{
-    ProtocolError, QoS, Retain,
+    ProtocolError, QoS,
     packets::{ConnAck, Disconnect, PubAck, PubComp, PubRec, PubRel, Publish, SubAck, UnsubAck},
     varint::Varint,
-    wire::MessageType,
+    wire::{FixedHeader, MessageType},
 };
 
 use crate::{de::MqttDeserializer, trace, warn};
 
-use core::convert::TryFrom;
 use serde::Deserialize;
 
 #[derive(Debug)]
@@ -99,30 +98,18 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
         use serde::de::Error;
 
-        let fixed_header: u8 = next_required(&mut seq, "Missing fixed header")?;
+        let fixed_header = FixedHeader::from_byte(next_required(&mut seq, "Missing fixed header")?);
         let _length: Varint = next_required(&mut seq, "Missing remaining length")?;
-        let packet_type = MessageType::try_from(fixed_header >> 4)
-            .map_err(|_| A::Error::custom("Invalid MQTT control packet type"))?;
-        let flags = fixed_header & 0x0F;
+        let packet_type = fixed_header
+            .message_type()
+            .ok_or_else(|| A::Error::custom("Invalid MQTT control packet type"))?;
+        let flags = fixed_header.flags();
         trace!(
             "Received fixed header: type={} flags={=u8:#b} remaining_len={}",
             packet_type, flags, _length
         );
 
-        let valid_flags = match packet_type {
-            MessageType::Publish => true,
-            MessageType::PubRel => flags == 0b0010,
-            MessageType::ConnAck
-            | MessageType::PubAck
-            | MessageType::PubRec
-            | MessageType::PubComp
-            | MessageType::SubAck
-            | MessageType::UnsubAck
-            | MessageType::PingResp
-            | MessageType::Disconnect => flags == 0,
-            _ => true,
-        };
-        if !valid_flags {
+        if !fixed_header.flags_valid() {
             warn!(
                 "Rejecting packet {} due to invalid flags {=u8:#b}",
                 packet_type, flags
@@ -135,8 +122,9 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
                 ReceivedPacket::ConnAck(next_required(&mut seq, "Missing CONNACK")?)
             }
             MessageType::Publish => {
-                let qos = QoS::try_from((fixed_header >> 1) & 0b11)
-                    .map_err(|_| A::Error::custom("Bad QoS field"))?;
+                let qos = fixed_header
+                    .publish_qos()
+                    .ok_or_else(|| A::Error::custom("Bad QoS field"))?;
 
                 let topic = next_required(&mut seq, "Missing PUBLISH topic")?;
                 let packet_id = if qos > QoS::AtMostOnce {
@@ -152,12 +140,8 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
                     packet_id,
                     properties,
                     payload: &[],
-                    retain: if fixed_header & 1 != 0 {
-                        Retain::Retained
-                    } else {
-                        Retain::NotRetained
-                    },
-                    dup: fixed_header & (1 << 3) != 0,
+                    retain: fixed_header.publish_retain(),
+                    dup: fixed_header.publish_duplicate(),
                     qos,
                 };
 
@@ -401,10 +385,9 @@ mod test {
     #[test]
     fn deserialize_good_pubcomp() {
         let serialized_pubcomp: [u8; 6] = [
-            7 << 4, // PubComp
-            0x04,   // Remaining length
-            0x00,
-            0x05, // Identifier
+            0x70, // PUBCOMP fixed header
+            0x04, // Remaining length
+            0x00, 0x05, // Identifier
             0x92, // Response Code
             0x00, // Properties length
         ];
@@ -421,10 +404,9 @@ mod test {
     #[test]
     fn deserialize_short_pubcomp() {
         let serialized_pubcomp: [u8; 4] = [
-            7 << 4, // PubComp
-            0x02,   // Remaining length
-            0x00,
-            0x05, // Identifier
+            0x70, // PUBCOMP fixed header
+            0x02, // Remaining length
+            0x00, 0x05, // Identifier
         ];
         let packet = ReceivedPacket::from_buffer(&serialized_pubcomp).unwrap();
         match packet {
@@ -439,10 +421,9 @@ mod test {
     #[test]
     fn deserialize_good_pubrec() {
         let serialized_pubrec: [u8; 6] = [
-            5 << 4, // PubRec
-            0x04,   // Remaining length
-            0x00,
-            0x05, // Identifier
+            0x50, // PUBREC fixed header
+            0x04, // Remaining length
+            0x00, 0x05, // Identifier
             0x10, // Response Code
             0x00, // Properties length
         ];
@@ -459,10 +440,9 @@ mod test {
     #[test]
     fn deserialize_short_pubrec() {
         let serialized_pubrec: [u8; 4] = [
-            5 << 4, // PubRec
-            0x02,   // Remaining length
-            0x00,
-            0x05, // Identifier
+            0x50, // PUBREC fixed header
+            0x02, // Remaining length
+            0x00, 0x05, // Identifier
         ];
         let packet = ReceivedPacket::from_buffer(&serialized_pubrec).unwrap();
         match packet {
@@ -477,10 +457,9 @@ mod test {
     #[test]
     fn deserialize_good_pubrel() {
         let serialized_pubrel: [u8; 6] = [
-            6 << 4 | 0b10, // PubRec
-            0x04,          // Remaining length
-            0x00,
-            0x05, // Identifier
+            0x62, // PUBREL fixed header
+            0x04, // Remaining length
+            0x00, 0x05, // Identifier
             0x10, // Response Code
             0x00, // Properties length
         ];
@@ -497,10 +476,9 @@ mod test {
     #[test]
     fn deserialize_short_pubrel() {
         let serialized_pubrel: [u8; 4] = [
-            6 << 4 | 0b10, // PubRec
-            0x02,          // Remaining length
-            0x00,
-            0x05, // Identifier
+            0x62, // PUBREL fixed header
+            0x02, // Remaining length
+            0x00, 0x05, // Identifier
         ];
         let packet = ReceivedPacket::from_buffer(&serialized_pubrel).unwrap();
         match packet {
@@ -515,9 +493,9 @@ mod test {
     #[test]
     fn deserialize_disconnect_with_reason_only() {
         let serialized_disconnect: [u8; 3] = [
-            14 << 4, // Disconnect
-            0x01,    // Remaining length
-            0x82,    // Protocol Error
+            0xe0, // DISCONNECT fixed header
+            0x01, // Remaining length
+            0x82, // Protocol Error
         ];
         let packet = ReceivedPacket::from_buffer(&serialized_disconnect).unwrap();
         match packet {
@@ -531,10 +509,10 @@ mod test {
     #[test]
     fn deserialize_disconnect_with_explicit_empty_properties() {
         let serialized_disconnect: [u8; 4] = [
-            14 << 4, // Disconnect
-            0x02,    // Remaining length
-            0x00,    // Success
-            0x00,    // Properties length
+            0xe0, // DISCONNECT fixed header
+            0x02, // Remaining length
+            0x00, // Success
+            0x00, // Properties length
         ];
         let packet = ReceivedPacket::from_buffer(&serialized_disconnect).unwrap();
         match packet {
@@ -549,8 +527,8 @@ mod test {
     #[test]
     fn deserialize_disconnect_without_reason() {
         let serialized_disconnect: [u8; 2] = [
-            14 << 4, // Disconnect
-            0x00,    // Remaining length
+            0xe0, // DISCONNECT fixed header
+            0x00, // Remaining length
         ];
         let packet = ReceivedPacket::from_buffer(&serialized_disconnect).unwrap();
         match packet {

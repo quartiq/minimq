@@ -3,7 +3,7 @@ use embedded_io_async::Error as _;
 
 use crate::de::PacketReader;
 use crate::mqtt_client::outbound::{
-    CONTROL_PACKET_LEN, ControlAction, OutboundStep, SendState, check_control_packet_size,
+    CONTROL_PACKET_WORKSPACE, ControlAction, OutboundStep, SendState, check_control_packet_size,
     serialize_control_packet, serialize_pubrel,
 };
 use crate::{Connection, Error, InboundPublish, debug, error, trace, warn};
@@ -280,7 +280,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         step: OutboundStep,
         now: Instant,
     ) -> Result<bool, Error<IO::Error>> {
-        let mut small_buf = [0u8; CONTROL_PACKET_LEN];
+        let mut small_buf = [0u8; CONTROL_PACKET_WORKSPACE];
         let runtime = &mut self.session.runtime;
         let data = &mut self.session.data;
         let prepared = match step {
@@ -349,7 +349,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                         written,
                         step.len,
                         data.outbound.pending_control_len(),
-                        data.outbound.used(),
+                        data.outbound.retained_bytes(),
                         data.outbound.capacity(),
                         data.outbound.retained_len(),
                         data.outbound.pending_release_len()

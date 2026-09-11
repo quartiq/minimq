@@ -14,6 +14,7 @@ use std::{cell::RefCell, collections::VecDeque, future::poll_fn, rc::Rc, task::P
 use support::{block_on, init_host_logging, poll_once};
 
 const WAIT_STEPS: usize = 64;
+const QOS1_DUP_PUBLISH_HEADER: u8 = 0x3a;
 
 #[derive(Default)]
 struct MockIo {
@@ -920,14 +921,14 @@ fn subscribe_is_replayed_after_disconnect_until_suback() {
         &mut conn,
         &inspect,
         &[
-            0x8A, 0x0A, 0x00, 0x01, 0x00, 0x00, 0x04, b'd', b'a', b't', b'a', 0x00,
+            0x82, 0x0A, 0x00, 0x01, 0x00, 0x00, 0x04, b'd', b'a', b't', b'a', 0x00,
         ],
     );
 
     assert_eq!(
         inspect.tx().last().unwrap(),
         &vec![
-            0x8A, 0x0A, 0x00, 0x01, 0x00, 0x00, 0x04, b'd', b'a', b't', b'a', 0x00
+            0x82, 0x0A, 0x00, 0x01, 0x00, 0x00, 0x04, b'd', b'a', b't', b'a', 0x00
         ]
     );
 }
@@ -1406,7 +1407,7 @@ fn disconnect_with_sends_reason_and_marks_handle_dead() {
 }
 
 #[test]
-fn disconnect_uses_dedicated_control_storage_when_tx_arena_is_full() {
+fn disconnect_uses_dedicated_control_storage_when_tx_scratch_is_full() {
     let rx = Box::leak(Box::new([0; 128]));
     let tx = Box::leak(Box::new([0; 96]));
     let config = ConfigBuilder::new(Buffers::new(rx, tx))
@@ -1420,7 +1421,7 @@ fn disconnect_uses_dedicated_control_storage_when_tx_arena_is_full() {
     let connector = MockConnector::new(connection);
     let mut conn = expect_connected(&mut session, &connector);
 
-    let payload = [0u8; 80];
+    let payload = [0u8; 40];
     block_on(conn.publish(Publication::bytes("data", &payload).qos(QoS::AtLeastOnce))).unwrap();
 
     // `disconnect` marks the handle dead.
@@ -1538,14 +1539,58 @@ fn qos1_publish_replays_across_multiple_resumed_reconnects() {
         second_inspect
             .tx()
             .iter()
-            .any(|frame| frame.first() == Some(&0x3A))
+            .any(|frame| frame.first() == Some(&QOS1_DUP_PUBLISH_HEADER))
     );
     assert!(
         third_inspect
             .tx()
             .iter()
-            .any(|frame| frame.first() == Some(&0x3A))
+            .any(|frame| frame.first() == Some(&QOS1_DUP_PUBLISH_HEADER))
     );
+}
+
+#[test]
+fn admitted_qos1_publish_leaves_space_to_reconnect() {
+    const TX_LEN: usize = 256;
+    // This payload fits the transient encode space, but not retained state plus the next CONNECT.
+    const TOO_LARGE_PAYLOAD_LEN: usize = 240;
+    // This smaller payload is admitted and must remain replayable after reconnect.
+    const REPLAYABLE_PAYLOAD_LEN: usize = 180;
+    // MQTT PUBLISH type (3), QoS 1, with and without the DUP flag.
+    const PUBLISH_QOS1: u8 = 0b0011_0010;
+
+    let mut first = MockConnection::default();
+    let first_inspect = first.clone();
+    first.push_rx(&connack_assigned_client_id("assigned-client"));
+
+    let mut second = MockConnection::default();
+    let second_inspect = second.clone();
+    second.push_rx(&connack_session_present());
+
+    let connector = MockConnector::with_connections([first, second]);
+    let config = ConfigBuilder::new(Buffers::new(
+        Box::leak(Box::new([0; 64])),
+        Box::leak(Box::new([0; TX_LEN])),
+    ))
+    .session_expiry_interval(60);
+    let mut session = Session::new(config);
+
+    let mut conn = expect_connected(&mut session, &connector);
+    assert_eq!(
+        publish_qos1(&mut conn, "x", &[0; TOO_LARGE_PAYLOAD_LEN]),
+        Err(PubError::Session(Error::Resource(
+            ResourceError::BufferTooSmall
+        )))
+    );
+    publish_qos1_ok(&mut conn, "x", &[0; REPLAYABLE_PAYLOAD_LEN]);
+
+    let mut replay = first_inspect.tx().last().unwrap().clone();
+    assert_eq!(replay[0], PUBLISH_QOS1);
+    replay[0] = QOS1_DUP_PUBLISH_HEADER;
+    drop(conn);
+
+    let mut conn = expect_reconnected(&mut session, &connector);
+    wait_for_tx_frame(&mut conn, &second_inspect, &replay);
 }
 
 #[test]
@@ -1625,7 +1670,7 @@ fn fresh_session_after_reconnect_drops_stale_replay_state() {
         second_inspect
             .tx()
             .iter()
-            .all(|frame| frame.first() != Some(&0x3A))
+            .all(|frame| frame.first() != Some(&QOS1_DUP_PUBLISH_HEADER))
     );
 }
 
@@ -1662,7 +1707,7 @@ fn fresh_session_failed_connack_still_drops_stale_replay_state() {
         third_inspect
             .tx()
             .iter()
-            .all(|frame| frame.first() != Some(&0x3A))
+            .all(|frame| frame.first() != Some(&QOS1_DUP_PUBLISH_HEADER))
     );
 }
 
@@ -1798,7 +1843,7 @@ fn unsubscribe_replays_until_unsuback() {
     assert_eq!(
         inspect.tx().last().unwrap(),
         &vec![
-            0xAA, 0x09, 0x00, 0x01, 0x00, 0x00, 0x04, b'd', b'a', b't', b'a'
+            0xA2, 0x09, 0x00, 0x01, 0x00, 0x00, 0x04, b'd', b'a', b't', b'a'
         ]
     );
 }

@@ -2,11 +2,13 @@ use embassy_time::{Duration, Instant};
 use embedded_io_async::Error as _;
 use heapless::String;
 
+use crate::config::CLIENT_ID_CAPACITY;
 use crate::de::ReceivedPacket;
 use crate::mqtt_client::ConnectEvent;
-use crate::mqtt_client::outbound::write_packet;
+use crate::mqtt_client::outbound::write_all;
 use crate::packets::Connect;
 use crate::properties::Properties;
+use crate::ser::MqttSerializer;
 use crate::wire::Utf8String;
 use crate::{Error, PeerError, Property, QoS, debug, info, warn};
 
@@ -47,7 +49,7 @@ impl<'buf> Session<'buf> {
         debug!(
             "Resetting local session transport state and arming replay if needed control={=usize} tx_used={=usize} tx_capacity={=usize} retained={=usize} pending_release={=usize}",
             self.data.outbound.pending_control_len(),
-            self.data.outbound.used(),
+            self.data.outbound.retained_bytes(),
             self.data.outbound.capacity(),
             self.data.outbound.retained_len(),
             self.data.outbound.pending_release_len()
@@ -81,11 +83,10 @@ impl<'buf> Session<'buf> {
             self.packet_reader.buffer.len()
         );
 
-        {
+        let connect_workspace = {
             let buffer = self.data.outbound.scratch_space();
-            write_packet(
+            let (offset, packet) = MqttSerializer::encode_with_offset(
                 buffer,
-                connection,
                 &Connect {
                     keepalive,
                     properties: Properties::from_slice(&properties),
@@ -94,9 +95,15 @@ impl<'buf> Session<'buf> {
                     will,
                     clean_start,
                 },
-            )
-            .await?;
-        }
+            )?;
+            let workspace = offset + packet.len();
+            write_all(connection, packet).await?;
+            connection.flush().await.map_err(Error::Transport)?;
+            workspace
+        };
+        self.data
+            .outbound
+            .set_connect_workspace(connect_workspace)?;
 
         self.runtime.next_ping = None;
         self.runtime.ping_timeout = None;
@@ -152,13 +159,16 @@ impl<'buf> Session<'buf> {
         let mut max_qos = None;
         let mut maximum_packet_size = None;
         let mut keepalive_interval = self.runtime.keepalive_interval;
-        let mut assigned_client_id: Option<String<64>> = None;
+        let mut assigned_client_id: Option<String<CLIENT_ID_CAPACITY>> = None;
 
         let property_result = (|| {
             for property in ack.properties.iter() {
                 match property? {
                     Property::MaximumPacketSize(size) => maximum_packet_size = Some(size),
                     Property::AssignedClientIdentifier(id) => {
+                        if !client_id.is_empty() || assigned_client_id.is_some() {
+                            return Err(PeerError::InvalidPacket);
+                        }
                         assigned_client_id =
                             Some(id.try_into().map_err(|_| PeerError::InvalidPacket)?);
                     }
@@ -192,6 +202,11 @@ impl<'buf> Session<'buf> {
         self.runtime.max_qos = max_qos;
         self.runtime.maximum_packet_size = maximum_packet_size;
         if let Some(assigned_client_id) = assigned_client_id {
+            // The first CONNECT encoded an empty client ID, so the assigned ID adds only its bytes.
+            let connect_workspace = connect_workspace + assigned_client_id.len();
+            self.data
+                .outbound
+                .set_connect_workspace(connect_workspace)?;
             self.client_id = assigned_client_id;
         }
 

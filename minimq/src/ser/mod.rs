@@ -24,7 +24,7 @@ use crate::{
     publication::ToPayload,
     trace,
     varint::{VarintBuffer, write_mqtt_u32_varint},
-    wire::{ControlPacket, MessageType},
+    wire::{ControlPacket, FixedHeader},
 };
 use serde::Serialize;
 
@@ -94,7 +94,7 @@ impl<'a> MqttSerializer<'a> {
     ) -> Result<(usize, &'a [u8]), Error> {
         let mut serializer = Self::new(buf);
         packet.serialize(&mut serializer)?;
-        let (offset, packet) = serializer.finalize(T::MESSAGE_TYPE, packet.fixed_header_flags())?;
+        let (offset, packet) = serializer.finalize(packet.fixed_header())?;
         Ok((offset, packet))
     }
 
@@ -108,14 +108,14 @@ impl<'a> MqttSerializer<'a> {
             .serialize(&mut serializer)
             .map_err(PubError::Encode)?;
 
-        let flags = header.fixed_header_flags();
+        let fixed_header = header.fixed_header();
         let len = payload
             .serialize(serializer.remainder())
             .map_err(PubError::Payload)?;
         serializer.commit(len).map_err(PubError::Encode)?;
 
         let (offset, packet) = serializer
-            .finalize(MessageType::Publish, flags)
+            .finalize(fixed_header)
             .map_err(PubError::Encode)?;
         Ok((offset, packet))
     }
@@ -141,12 +141,11 @@ impl<'a> MqttSerializer<'a> {
     /// Finalize the packet, prepending the MQTT fixed header.
     ///
     /// # Args
-    /// * `typ` - The MQTT message type of the encoded packet.
-    /// * `flags` - The MQTT flags associated with the packet.
+    /// * `fixed_header` - The MQTT packet type and flags.
     ///
     /// # Returns
     /// A slice representing the serialized packet.
-    fn finalize(self, typ: MessageType, flags: u8) -> Result<(usize, &'a [u8]), Error> {
+    fn finalize(self, fixed_header: FixedHeader) -> Result<(usize, &'a [u8]), Error> {
         let len = self
             .index
             .checked_sub(MAX_FIXED_HEADER_SIZE)
@@ -164,8 +163,7 @@ impl<'a> MqttSerializer<'a> {
             .copy_from_slice(remaining_len);
 
         // Write the header
-        let header = ((typ as u8) << 4) | (flags & 0x0F);
-        self.buf[MAX_FIXED_HEADER_SIZE - remaining_len.len() - 1] = header;
+        self.buf[MAX_FIXED_HEADER_SIZE - remaining_len.len() - 1] = fixed_header.byte();
 
         let offset = MAX_FIXED_HEADER_SIZE - remaining_len.len() - 1;
         Ok((offset, &self.buf[offset..self.index]))

@@ -1,7 +1,7 @@
 //! Internal MQTT wire-format helpers.
 
 use crate::{
-    Retain,
+    QoS, Retain,
     packets::{
         ConnAck, Connect, Disconnect, PingReq, PubAck, PubComp, PubRec, PubRel, PublishHeader,
         SubAck, Subscribe, UnsubAck, Unsubscribe,
@@ -9,6 +9,21 @@ use crate::{
 };
 use num_enum::TryFromPrimitive;
 use serde::ser::SerializeStruct;
+
+const FIXED_HEADER_TYPE_SHIFT: u32 = 4;
+const FIXED_HEADER_FLAGS_MASK: u8 = (1 << FIXED_HEADER_TYPE_SHIFT) - 1;
+const PUBLISH_RETAIN_FLAG: u8 = 1 << 0;
+const PUBLISH_QOS_SHIFT: u8 = 1;
+const PUBLISH_QOS_MASK: u8 = 0b11 << PUBLISH_QOS_SHIFT;
+const PUBLISH_DUP_FLAG: u8 = 1 << 3;
+const REQUIRED_CONTROL_FLAGS: u8 = 0b0010;
+
+const CONNECT_CLEAN_START_FLAG: u8 = 1 << 1;
+const CONNECT_WILL_FLAG: u8 = 1 << 2;
+const CONNECT_WILL_QOS_SHIFT: u8 = 3;
+const CONNECT_WILL_RETAIN_FLAG: u8 = 1 << 5;
+const CONNECT_PASSWORD_FLAG: u8 = 1 << 6;
+const CONNECT_USER_NAME_FLAG: u8 = 1 << 7;
 
 /// MQTT binary data field.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -90,7 +105,7 @@ impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Utf8String<'a> {
     }
 }
 
-#[derive(Copy, Clone, Debug, TryFromPrimitive)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, TryFromPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub(crate) enum MessageType {
@@ -111,11 +126,75 @@ pub(crate) enum MessageType {
     Auth = 15,
 }
 
+impl MessageType {
+    const fn required_flags(self) -> u8 {
+        match self {
+            Self::PubRel | Self::Subscribe | Self::Unsubscribe => REQUIRED_CONTROL_FLAGS,
+            _ => 0,
+        }
+    }
+
+    const fn flags_valid(self, flags: u8) -> bool {
+        matches!(self, Self::Publish) || flags == self.required_flags()
+    }
+}
+
+#[derive(Copy, Clone)]
+pub(crate) struct FixedHeader(u8);
+
+impl FixedHeader {
+    const fn new(message_type: MessageType, flags: u8) -> Self {
+        debug_assert!(flags <= FIXED_HEADER_FLAGS_MASK);
+        Self(((message_type as u8) << FIXED_HEADER_TYPE_SHIFT) | flags)
+    }
+
+    pub(crate) const fn from_byte(byte: u8) -> Self {
+        Self(byte)
+    }
+
+    pub(crate) const fn byte(self) -> u8 {
+        self.0
+    }
+
+    pub(crate) fn message_type(self) -> Option<MessageType> {
+        MessageType::try_from(self.0 >> FIXED_HEADER_TYPE_SHIFT).ok()
+    }
+
+    pub(crate) const fn flags(self) -> u8 {
+        self.0 & FIXED_HEADER_FLAGS_MASK
+    }
+
+    pub(crate) fn flags_valid(self) -> bool {
+        self.message_type()
+            .is_some_and(|message_type| message_type.flags_valid(self.flags()))
+    }
+
+    pub(crate) fn publish_qos(self) -> Option<QoS> {
+        QoS::try_from((self.flags() & PUBLISH_QOS_MASK) >> PUBLISH_QOS_SHIFT).ok()
+    }
+
+    pub(crate) const fn publish_retain(self) -> Retain {
+        if self.flags() & PUBLISH_RETAIN_FLAG == 0 {
+            Retain::NotRetained
+        } else {
+            Retain::Retained
+        }
+    }
+
+    pub(crate) const fn publish_duplicate(self) -> bool {
+        self.flags() & PUBLISH_DUP_FLAG != 0
+    }
+
+    const fn with_publish_duplicate(self) -> Self {
+        Self(self.0 | PUBLISH_DUP_FLAG)
+    }
+}
+
 pub(crate) trait ControlPacket {
     const MESSAGE_TYPE: MessageType;
 
-    fn fixed_header_flags(&self) -> u8 {
-        0
+    fn fixed_header(&self) -> FixedHeader {
+        FixedHeader::new(Self::MESSAGE_TYPE, Self::MESSAGE_TYPE.required_flags())
     }
 }
 
@@ -128,16 +207,42 @@ impl ControlPacket for ConnAck<'_> {
 }
 
 impl PublishHeader<'_> {
-    pub(crate) fn fixed_header_flags(&self) -> u8 {
-        let mut flags = (self.qos as u8) << 1;
+    pub(crate) fn fixed_header(&self) -> FixedHeader {
+        let mut flags = (self.qos as u8) << PUBLISH_QOS_SHIFT;
         if self.retain == Retain::Retained {
-            flags |= 1;
+            flags |= PUBLISH_RETAIN_FLAG;
         }
         if self.dup {
-            flags |= 1 << 3;
+            flags |= PUBLISH_DUP_FLAG;
+        }
+        FixedHeader::new(MessageType::Publish, flags)
+    }
+}
+
+impl Connect<'_> {
+    pub(crate) fn flags(&self) -> u8 {
+        let mut flags = 0;
+        if self.clean_start {
+            flags |= CONNECT_CLEAN_START_FLAG;
+        }
+        if let Some(will) = &self.will {
+            flags |= CONNECT_WILL_FLAG | ((will.qos_level() as u8) << CONNECT_WILL_QOS_SHIFT);
+            if will.retained_flag() == Retain::Retained {
+                flags |= CONNECT_WILL_RETAIN_FLAG;
+            }
+        }
+        if self.auth.is_some() {
+            flags |= CONNECT_USER_NAME_FLAG | CONNECT_PASSWORD_FLAG;
         }
         flags
     }
+}
+
+/// Mark an encoded PUBLISH fixed header as a retransmission.
+pub(crate) fn mark_publish_duplicate(fixed_header: &mut u8) {
+    let header = FixedHeader::from_byte(*fixed_header);
+    debug_assert_eq!(header.message_type(), Some(MessageType::Publish));
+    *fixed_header = header.with_publish_duplicate().byte();
 }
 
 impl ControlPacket for PubAck<'_> {
@@ -150,10 +255,6 @@ impl ControlPacket for PubRec<'_> {
 
 impl ControlPacket for PubRel<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::PubRel;
-
-    fn fixed_header_flags(&self) -> u8 {
-        0b0010
-    }
 }
 
 impl ControlPacket for PubComp<'_> {
@@ -162,10 +263,6 @@ impl ControlPacket for PubComp<'_> {
 
 impl ControlPacket for Subscribe<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::Subscribe;
-
-    fn fixed_header_flags(&self) -> u8 {
-        0b0010 | ((self.dup as u8) << 3)
-    }
 }
 
 impl ControlPacket for SubAck<'_> {
@@ -174,10 +271,6 @@ impl ControlPacket for SubAck<'_> {
 
 impl ControlPacket for Unsubscribe<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::Unsubscribe;
-
-    fn fixed_header_flags(&self) -> u8 {
-        0b0010 | ((self.dup as u8) << 3)
-    }
 }
 
 impl ControlPacket for UnsubAck<'_> {

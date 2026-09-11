@@ -336,16 +336,10 @@ fn can_publish_qos1_false_when_retained_slots_full() {
     let mut session = session();
     let conn = live_connection(&mut session, MockConnection::default());
     for packet_id in 1u16..=8 {
-        let offset = (packet_id - 1) * 4;
         conn.session
             .data
             .outbound
-            .retain_packet(
-                crate::mqtt_client::OpKind::PublishAtLeastOnce,
-                packet_id,
-                offset as usize,
-                4,
-            )
+            .retain_packet(crate::mqtt_client::OpKind::PublishAtLeastOnce, packet_id, 4)
             .unwrap();
     }
 
