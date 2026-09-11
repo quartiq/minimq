@@ -2,7 +2,7 @@ use embassy_time::Instant;
 use embedded_io_async::Error as _;
 
 use crate::mqtt_client::OpKind;
-use crate::mqtt_client::outbound::{CONTROL_PACKET_LEN, write_all};
+use crate::mqtt_client::outbound::{CONTROL_PACKET_WORKSPACE, write_all};
 use crate::packets::{Disconnect, PublishHeader, Subscribe, Unsubscribe};
 use crate::properties::{Properties, PropertyContext};
 use crate::publication::{Publication, ToPayload};
@@ -28,7 +28,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         {
             return Err(Error::InvalidRequest);
         }
-        let mut buffer = [0u8; CONTROL_PACKET_LEN];
+        let mut buffer = [0u8; CONTROL_PACKET_WORKSPACE];
         let packet = MqttSerializer::encode(&mut buffer, &disconnect)?;
         self.session.runtime.require_packet_size(packet.len())?;
         let result = match write_all(&mut self.io, packet).await {

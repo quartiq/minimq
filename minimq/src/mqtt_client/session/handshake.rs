@@ -2,6 +2,7 @@ use embassy_time::{Duration, Instant};
 use embedded_io_async::Error as _;
 use heapless::String;
 
+use crate::config::CLIENT_ID_CAPACITY;
 use crate::de::ReceivedPacket;
 use crate::mqtt_client::ConnectEvent;
 use crate::mqtt_client::outbound::write_all;
@@ -158,7 +159,7 @@ impl<'buf> Session<'buf> {
         let mut max_qos = None;
         let mut maximum_packet_size = None;
         let mut keepalive_interval = self.runtime.keepalive_interval;
-        let mut assigned_client_id: Option<String<64>> = None;
+        let mut assigned_client_id: Option<String<CLIENT_ID_CAPACITY>> = None;
 
         let property_result = (|| {
             for property in ack.properties.iter() {

@@ -14,6 +14,7 @@ use std::{cell::RefCell, collections::VecDeque, future::poll_fn, rc::Rc, task::P
 use support::{block_on, init_host_logging, poll_once};
 
 const WAIT_STEPS: usize = 64;
+const QOS1_DUP_PUBLISH_HEADER: u8 = 0x3a;
 
 #[derive(Default)]
 struct MockIo {
@@ -1538,13 +1539,13 @@ fn qos1_publish_replays_across_multiple_resumed_reconnects() {
         second_inspect
             .tx()
             .iter()
-            .any(|frame| frame.first() == Some(&0x3A))
+            .any(|frame| frame.first() == Some(&QOS1_DUP_PUBLISH_HEADER))
     );
     assert!(
         third_inspect
             .tx()
             .iter()
-            .any(|frame| frame.first() == Some(&0x3A))
+            .any(|frame| frame.first() == Some(&QOS1_DUP_PUBLISH_HEADER))
     );
 }
 
@@ -1557,7 +1558,6 @@ fn admitted_qos1_publish_leaves_space_to_reconnect() {
     const REPLAYABLE_PAYLOAD_LEN: usize = 180;
     // MQTT PUBLISH type (3), QoS 1, with and without the DUP flag.
     const PUBLISH_QOS1: u8 = 0b0011_0010;
-    const PUBLISH_QOS1_DUP: u8 = 0b0011_1010;
 
     let mut first = MockConnection::default();
     let first_inspect = first.clone();
@@ -1586,7 +1586,7 @@ fn admitted_qos1_publish_leaves_space_to_reconnect() {
 
     let mut replay = first_inspect.tx().last().unwrap().clone();
     assert_eq!(replay[0], PUBLISH_QOS1);
-    replay[0] = PUBLISH_QOS1_DUP;
+    replay[0] = QOS1_DUP_PUBLISH_HEADER;
     drop(conn);
 
     let mut conn = expect_reconnected(&mut session, &connector);
@@ -1670,7 +1670,7 @@ fn fresh_session_after_reconnect_drops_stale_replay_state() {
         second_inspect
             .tx()
             .iter()
-            .all(|frame| frame.first() != Some(&0x3A))
+            .all(|frame| frame.first() != Some(&QOS1_DUP_PUBLISH_HEADER))
     );
 }
 
@@ -1707,7 +1707,7 @@ fn fresh_session_failed_connack_still_drops_stale_replay_state() {
         third_inspect
             .tx()
             .iter()
-            .all(|frame| frame.first() != Some(&0x3A))
+            .all(|frame| frame.first() != Some(&QOS1_DUP_PUBLISH_HEADER))
     );
 }
 

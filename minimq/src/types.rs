@@ -2,6 +2,15 @@
 use crate::{QoS, wire::Utf8String};
 use serde::Serialize;
 
+const SUBSCRIPTION_QOS_MASK: u8 = 0b11;
+const SUBSCRIPTION_NO_LOCAL_FLAG: u8 = 1 << 2;
+const SUBSCRIPTION_RETAIN_AS_PUBLISHED_FLAG: u8 = 1 << 3;
+const SUBSCRIPTION_RETAIN_HANDLING_SHIFT: u8 = 4;
+const _: () = {
+    assert!((QoS::ExactlyOnce as u8) <= SUBSCRIPTION_QOS_MASK);
+    assert!((RetainHandling::Never as u8) <= SUBSCRIPTION_QOS_MASK);
+};
+
 /// Username/password authentication data used in `CONNECT`.
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct Auth<'a> {
@@ -89,14 +98,14 @@ impl SubscriptionOptions {
 
 impl serde::Serialize for SubscriptionOptions {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut value = (self.maximum_qos as u8) & 0b11;
+        let mut value = self.maximum_qos as u8;
         if self.no_local {
-            value |= 1 << 2;
+            value |= SUBSCRIPTION_NO_LOCAL_FLAG;
         }
         if self.retain_as_published {
-            value |= 1 << 3;
+            value |= SUBSCRIPTION_RETAIN_AS_PUBLISHED_FLAG;
         }
-        value |= (self.retain_behavior as u8) << 4;
+        value |= (self.retain_behavior as u8) << SUBSCRIPTION_RETAIN_HANDLING_SHIFT;
         serializer.serialize_u8(value)
     }
 }

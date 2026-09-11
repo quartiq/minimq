@@ -7,7 +7,8 @@ use heapless::Vec;
 
 use super::{Io, OpKind};
 
-pub(super) const CONTROL_PACKET_LEN: usize = 9;
+/// Serializer workspace for a fixed header and a four-byte acknowledgement body.
+pub(super) const CONTROL_PACKET_WORKSPACE: usize = MAX_FIXED_HEADER_SIZE + 4;
 pub(super) const MAX_RETAINED: usize = 8;
 pub(super) const MAX_PENDING_CONTROL: usize = 8;
 pub(super) const MAX_PENDING_RELEASE: usize = 8;
@@ -550,7 +551,7 @@ pub(super) fn check_control_packet_size(
     maximum_packet_size: Option<u32>,
     action: ControlAction,
 ) -> Result<(), ProtocolError> {
-    let mut buffer = [0u8; CONTROL_PACKET_LEN];
+    let mut buffer = [0u8; CONTROL_PACKET_WORKSPACE];
     let len = encode_control_packet(&mut buffer, action)?.len();
     require_packet_size(maximum_packet_size, len)
 }
@@ -560,7 +561,7 @@ pub(super) fn check_pubrel_size(
     packet_id: u16,
     reason: ReasonCode,
 ) -> Result<(), ProtocolError> {
-    let mut buffer = [0u8; CONTROL_PACKET_LEN];
+    let mut buffer = [0u8; CONTROL_PACKET_WORKSPACE];
     let len = encode_pubrel(&mut buffer, packet_id, reason)?.len();
     require_packet_size(maximum_packet_size, len)
 }
