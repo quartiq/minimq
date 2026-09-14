@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [UNRELEASED](https://github.com/quartiq/minimq/compare/mqtt-staging-v0.1.1...HEAD) - DATE
 
+## Fixed
+
+* Handle MQTT publish-buffer exhaustion without panicking.
+
 ## [0.1.1](https://github.com/quartiq/minimq/compare/0ae37e5...mqtt-staging-v0.1.1) - 2026-09-08
 
 ## Fixed
