@@ -244,26 +244,32 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             }
             Err(Error::Peer(err)) => Err(Error::Peer(err)),
             Err(Error::Resource(err)) => Err(Error::Resource(err)),
-            Err(Error::InvalidRequest | Error::NotReady | Error::WriteZero) => {
-                unreachable!("packet handler returned local I/O state")
-            }
+            Err(Error::InvalidRequest) => Err(Error::InvalidRequest),
+            Err(Error::NotReady) => Err(Error::NotReady),
+            Err(Error::WriteZero) => Err(Error::WriteZero),
             Err(Error::Transport(never)) => match never {},
         }
     }
 
-    pub(super) fn decode_inbound_publish(&self, packet_length: usize) -> InboundPublish<'_> {
-        let buffer = &self.session.packet_reader.buffer[..];
-        let ReceivedPacket::Publish(info) = ReceivedPacket::from_buffer(&buffer[..packet_length])
-            .expect("inbound packet must remain decodable")
-        else {
-            unreachable!("inbound event must be a PUBLISH");
+    pub(super) fn decode_inbound_publish(
+        &self,
+        packet_length: usize,
+    ) -> Result<InboundPublish<'_>, ProtocolError> {
+        let buffer = self
+            .session
+            .packet_reader
+            .buffer
+            .get(..packet_length)
+            .ok_or(ProtocolError::MalformedPacket)?;
+        let ReceivedPacket::Publish(info) = ReceivedPacket::from_buffer(buffer)? else {
+            return Err(ProtocolError::UnexpectedPacket);
         };
-        InboundPublish::new(
+        Ok(InboundPublish::new(
             info.topic.0,
             info.payload,
             info.properties,
             info.retain,
             info.qos,
-        )
+        ))
     }
 }

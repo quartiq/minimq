@@ -709,7 +709,7 @@ impl Service {
                 log_status(code, status);
                 Ok(op)
             }
-            Err(PubError::Payload(_)) => unreachable!(),
+            Err(PubError::Payload(_)) => Err(ResourceError::BufferTooSmall.into()),
             Err(PubError::Session(err)) => Err(err),
         }
     }

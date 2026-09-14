@@ -94,7 +94,7 @@ pub(super) struct SessionData<'a> {
 impl<'a> SessionData<'a> {
     pub(super) fn new(outbound: &'a mut [u8]) -> Self {
         Self {
-            packet_id: NonZeroU16::new(1).unwrap(),
+            packet_id: NonZeroU16::MIN,
             generation: 0,
             outbound: Outbound::new(outbound),
             pending_server_packet_ids: Vec::new(),
@@ -109,7 +109,7 @@ impl<'a> SessionData<'a> {
     pub(super) fn reset(&mut self) {
         self.session_present = false;
         self.generation = self.generation.wrapping_add(1);
-        self.packet_id = NonZeroU16::new(1).unwrap();
+        self.packet_id = NonZeroU16::MIN;
         self.outbound.clear_inflight();
         self.pending_server_packet_ids.clear();
     }

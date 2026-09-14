@@ -195,7 +195,9 @@ impl Service {
             .retain_as_published()
             .ignore_local_messages();
         let mut rpc_filter = self.rpc_topic.clone();
-        rpc_filter.push_str(RPC_FILTER_SUFFIX).unwrap();
+        rpc_filter
+            .push_str(RPC_FILTER_SUFFIX)
+            .map_err(|_| ResourceError::BufferTooSmall)?;
         match connection
             .subscribe(&[TopicFilter::new(&rpc_filter).options(options)], &[])
             .await
