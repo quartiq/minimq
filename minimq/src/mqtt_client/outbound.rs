@@ -289,8 +289,10 @@ impl<'a> Outbound<'a> {
         payload: P,
     ) -> Result<usize, PubError<P::Error, E>> {
         let start = self.retained_bytes();
+        // Adaptive payloads must see the retained budget, including encoder workspace.
+        let end = self.retained_capacity();
         let (offset, packet) =
-            MqttSerializer::encode_publish_with_offset(&mut self.buf[start..], header, payload)?;
+            MqttSerializer::encode_publish_with_offset(&mut self.buf[start..end], header, payload)?;
         let len = packet.len();
         self.pack_encoded(offset, len)
             .map_err(|err| PubError::Session(Error::Resource(err)))?;

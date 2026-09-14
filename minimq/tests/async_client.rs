@@ -1554,8 +1554,6 @@ fn admitted_qos1_publish_leaves_space_to_reconnect() {
     const TX_LEN: usize = 256;
     // This payload fits the transient encode space, but not retained state plus the next CONNECT.
     const TOO_LARGE_PAYLOAD_LEN: usize = 240;
-    // This smaller payload is admitted and must remain replayable after reconnect.
-    const REPLAYABLE_PAYLOAD_LEN: usize = 180;
     // MQTT PUBLISH type (3), QoS 1, with and without the DUP flag.
     const PUBLISH_QOS1: u8 = 0b0011_0010;
 
@@ -1578,11 +1576,17 @@ fn admitted_qos1_publish_leaves_space_to_reconnect() {
     let mut conn = expect_connected(&mut session, &connector);
     assert_eq!(
         publish_qos1(&mut conn, "x", &[0; TOO_LARGE_PAYLOAD_LEN]),
-        Err(PubError::Session(Error::Resource(
-            ResourceError::BufferTooSmall
-        )))
+        Err(PubError::Payload(()))
     );
-    publish_qos1_ok(&mut conn, "x", &[0; REPLAYABLE_PAYLOAD_LEN]);
+    assert!(conn.is_connected());
+    // QoS0 may still use transient space reserved against retained packets.
+    block_on(conn.publish(Publication::bytes("x", &[0; TOO_LARGE_PAYLOAD_LEN]))).unwrap();
+    let publication = Publication::new("x", |buffer: &mut [u8]| {
+        buffer.fill(0x55);
+        Ok::<_, ()>(buffer.len())
+    })
+    .qos(QoS::AtLeastOnce);
+    block_on(conn.publish(publication)).unwrap();
 
     let mut replay = first_inspect.tx().last().unwrap().clone();
     assert_eq!(replay[0], PUBLISH_QOS1);
