@@ -116,7 +116,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     /// the underlying transport I/O futures are cancel-safe.
     pub async fn drive(&mut self) -> Result<Option<InboundPublish<'_>>, Error<IO::Error>> {
         Ok(match self.drive_packet().await? {
-            Progress::Inbound(packet_length) => Some(self.decode_inbound_publish(packet_length)),
+            Progress::Inbound(packet_length) => Some(self.decode_inbound_publish(packet_length)?),
             Progress::Idle | Progress::Advanced => None,
         })
     }
@@ -136,21 +136,18 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     /// treated as transport failure and disconnect the session.
     pub async fn poll(&mut self) -> Result<Option<InboundPublish<'_>>, Error<IO::Error>> {
         match self.wait_for_progress().await? {
-            Progress::Inbound(packet_length) => {
-                Ok(Some(self.decode_inbound_publish(packet_length)))
-            }
-            Progress::Advanced => Ok(None),
-            Progress::Idle => unreachable!("wait_for_progress only returns after session progress"),
+            Some(packet_length) => Ok(Some(self.decode_inbound_publish(packet_length)?)),
+            None => Ok(None),
         }
     }
 
-    async fn wait_for_progress(&mut self) -> Result<Progress, Error<IO::Error>> {
+    async fn wait_for_progress(&mut self) -> Result<Option<usize>, Error<IO::Error>> {
         loop {
             match self.drive_packet().await? {
                 Progress::Inbound(packet_length) => {
-                    return Ok(Progress::Inbound(packet_length));
+                    return Ok(Some(packet_length));
                 }
-                Progress::Advanced => return Ok(Progress::Advanced),
+                Progress::Advanced => return Ok(None),
                 Progress::Idle => {}
             }
 
@@ -173,14 +170,8 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     /// progress.
     pub async fn recv(&mut self) -> Result<InboundPublish<'_>, Error<IO::Error>> {
         loop {
-            match self.wait_for_progress().await? {
-                Progress::Inbound(packet_length) => {
-                    return Ok(self.decode_inbound_publish(packet_length));
-                }
-                Progress::Advanced => {}
-                Progress::Idle => {
-                    unreachable!("wait_for_progress only returns after session progress")
-                }
+            if let Some(packet_length) = self.wait_for_progress().await? {
+                return Ok(self.decode_inbound_publish(packet_length)?);
             }
         }
     }

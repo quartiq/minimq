@@ -34,7 +34,6 @@
 //! appropriate.
 //!
 //! Other types are explicitly not implemented and there is no plan to implement them.
-use core::convert::TryInto;
 use serde::de::{DeserializeSeed, IntoDeserializer, Visitor};
 
 use crate::{trace, varint::read_mqtt_u32_varint};
@@ -118,6 +117,17 @@ impl<'a> MqttDeserializer<'a> {
         Ok(data)
     }
 
+    /// Attempt to take a fixed-size byte array from the buffer.
+    fn try_take_array<const N: usize>(&mut self) -> Result<[u8; N], Error> {
+        let data = self
+            .buf
+            .get(self.index..)
+            .and_then(|data| data.first_chunk())
+            .ok_or(Error::InsufficientData)?;
+        self.index += N;
+        Ok(*data)
+    }
+
     /// Pop a single byte from the data buffer.
     fn pop(&mut self) -> Result<u8, Error> {
         if self.len() == 0 {
@@ -131,7 +141,7 @@ impl<'a> MqttDeserializer<'a> {
 
     /// Read a 16-bit integer from the data buffer.
     fn read_u16(&mut self) -> Result<u16, Error> {
-        Ok(u16::from_be_bytes([self.pop()?, self.pop()?]))
+        Ok(u16::from_be_bytes(self.try_take_array()?))
     }
 
     /// Read the number of remaining bytes in the data buffer.
@@ -175,11 +185,11 @@ impl<'de> serde::de::Deserializer<'de> for &'_ mut MqttDeserializer<'de> {
     }
 
     fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_i16(i16::from_be_bytes(self.try_take_n(2)?.try_into().unwrap()))
+        visitor.visit_i16(i16::from_be_bytes(self.try_take_array()?))
     }
 
     fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_i32(i32::from_be_bytes(self.try_take_n(4)?.try_into().unwrap()))
+        visitor.visit_i32(i32::from_be_bytes(self.try_take_array()?))
     }
 
     fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
@@ -191,7 +201,7 @@ impl<'de> serde::de::Deserializer<'de> for &'_ mut MqttDeserializer<'de> {
     }
 
     fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_u32(u32::from_be_bytes(self.try_take_n(4)?.try_into().unwrap()))
+        visitor.visit_u32(u32::from_be_bytes(self.try_take_array()?))
     }
 
     fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
