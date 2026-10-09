@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [UNRELEASED](https://github.com/quartiq/minimq/compare/mqtt-rpc-v0.1.1...HEAD) - DATE
 
+### Fixed
+
+* Complete subscription startup on resumed sessions and retry temporary TX-buffer exhaustion.
+
 ## [0.1.1](https://github.com/quartiq/minimq/compare/mqtt-rpc-v0.1.0...mqtt-rpc-v0.1.1) - 2026-09-15
 
 ## [0.1.0](https://github.com/quartiq/minimq/compare/v0.13.0...mqtt-rpc-v0.1.0) - 2026-09-08
