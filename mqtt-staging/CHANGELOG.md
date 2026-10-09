@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [UNRELEASED](https://github.com/quartiq/minimq/compare/mqtt-staging-v0.1.3...HEAD) - DATE
 
+## Fixed
+
+* Preserve queued MQTT work through cancellation and temporary capacity limits.
+* Preserve subscription startup across status updates and session resume.
+* Ignore retained staging commands.
+
 ## [0.1.3](https://github.com/quartiq/minimq/compare/mqtt-staging-v0.1.2...mqtt-staging-v0.1.3) - 2026-10-09
 
 ## [0.1.2](https://github.com/quartiq/minimq/compare/mqtt-staging-v0.1.1...mqtt-staging-v0.1.2) - 2026-09-15
