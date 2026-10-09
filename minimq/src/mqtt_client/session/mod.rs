@@ -134,11 +134,9 @@ impl<'buf> Session<'buf> {
 ///
 /// The handle owns the transport and borrows the [`Session`] for the duration of the connection.
 /// All network operations (`drive`, `poll`, `recv`, `publish`, `subscribe`, `unsubscribe`,
-/// `disconnect`) live here; session-state queries (`is_pending`, `is_complete`, `can_publish`, …)
-/// are reachable through the [`Self::session`] method.
+/// `disconnect`) live here. Operation-state queries are also available through [`Self::session`].
 ///
-/// Note that dropping or forgetting the handle is an *ungraceful* MQTT close: **no `DISCONNECT`
-/// packet is sent** (a sync `Drop` cannot perform the async write).
+/// Dropping the handle sends no `DISCONNECT`. Call [`Self::disconnect`] first for a graceful close.
 ///
 /// Cancellation guarantees are documented on each network operation. In particular, QoS 1/2
 /// publishes preserve their retained session state, while a QoS 0 publish writes directly from

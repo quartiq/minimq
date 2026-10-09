@@ -14,7 +14,7 @@ use crate::{Connection, Error, Io, Op, Property, PubError, QoS, ResourceError, d
 impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     /// Write the `DISCONNECT` over the transport. The caller drops the transport afterwards.
     ///
-    /// Cancel-safe if the underlying transport write/flush futures are cancel-safe.
+    /// Drop the connection if this operation is cancelled.
     pub async fn disconnect_with(
         &mut self,
         disconnect: Disconnect<'_>,
@@ -45,6 +45,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     /// This is the graceful counterpart to simply dropping the handle: it sends the MQTT
     /// `DISCONNECT` so the broker closes cleanly and suppresses the Will. Just dropping
     /// the handle skips this and is treated by the broker as an abnormal disconnect.
+    /// Drop the connection if this operation is cancelled.
     pub async fn disconnect(&mut self) -> Result<(), Error<IO::Error>> {
         self.disconnect_with(Disconnect::success()).await
     }
