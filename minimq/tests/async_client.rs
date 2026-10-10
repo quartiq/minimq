@@ -1458,7 +1458,7 @@ fn outbound_operations_reject_invalid_property_contexts() {
 }
 
 #[test]
-fn disconnect_survives_cancellation_during_pending_write() {
+fn disconnect_retries_when_cancelled_before_writing() {
     let mut connection = MockConnection::default();
     let mut inspect = connection.clone();
     connection.push_rx(&connack());

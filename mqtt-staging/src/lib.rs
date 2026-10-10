@@ -35,11 +35,11 @@ struct Manifest<'a> {
     fnv1a64: u64,
 }
 
-/// Immediate result of one cooperative `step()`.
+/// Immediate result of one cooperative [`Service::step`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "inspect whether staging work is still pending"]
 pub enum Step {
-    /// No queued staging work remains after this step.
+    /// No queued or in-flight MQTT work remains. Storage work may still be pending.
     Quiescent,
     /// Staging still has queued or in-flight MQTT work.
     Pending,
@@ -50,7 +50,7 @@ pub enum Step {
 pub enum CreateError {
     /// A derived protocol topic does not fit the fixed topic buffer.
     Topic(ResourceError),
-    /// The maximum chunk size or storage write size cannot support aligned writes.
+    /// Chunk and write sizes must be nonzero, with chunk size a multiple of write size.
     InvalidChunkSize,
 }
 
@@ -106,7 +106,7 @@ pub enum StatusCode {
     Offset,
     /// The object or chunk exceeds a configured limit.
     Oversize,
-    /// The MQTT RX packet budget cannot carry a configured chunk.
+    /// The chunk exceeds the chunk-size limit or cannot fit the MQTT RX budget.
     Mtu,
     /// The chunk does not meet the storage write alignment.
     Unaligned,
@@ -114,7 +114,7 @@ pub enum StatusCode {
     Storage,
     /// The object was staged.
     Complete,
-    /// The request or service state was invalid.
+    /// The transfer was aborted, or the request or service state was invalid.
     Error,
 }
 
@@ -182,7 +182,8 @@ pub struct StagingWrite<'a> {
     pub payload: &'a [u8],
     /// Manifest size, excluding any final erased-storage padding.
     pub size: u32,
-    /// Expected FNV-1a checksum. Present only on the final chunk.
+    /// Expected FNV-1a checksum of `size` object bytes, excluding padding.
+    /// Present only on the final chunk; the application must verify it.
     pub fnv1a64: Option<u64>,
 }
 
@@ -199,12 +200,13 @@ pub enum Handle<'a> {
     Request(StagingRequest<'a>),
 }
 
-/// Cooperative MQTT staging service.
+/// Cooperative MQTT staging service for one object in application-owned storage.
 pub struct Service {
     prefix: TopicString,
     inflight: Option<InFlightAction>,
     pending: Option<Action>,
     startup_publish: Option<StatusCode>,
+    subscribed: bool,
     state: State,
     transfer: Option<Transfer>,
     request: Option<PendingRequest>,
@@ -234,6 +236,7 @@ impl Service {
             inflight: None,
             pending: None,
             startup_publish: None,
+            subscribed: false,
             state: State::Idle,
             transfer: None,
             request: None,
@@ -246,27 +249,28 @@ impl Service {
 
     /// Begin staging startup for one MQTT connect event.
     ///
-    /// Pure local state update. Cancel-safe.
+    /// Call after each connection, then drive [`Self::step`]. Transfer progress
+    /// and outstanding storage requests survive reconnects.
     pub fn begin_startup(&mut self, event: ConnectEvent) {
         let replay = self.replay_status();
-        match event {
-            ConnectEvent::Connected => {
-                self.inflight = None;
-                self.startup_publish = replay;
-                self.queue(Action::Subscribe);
+        if event == ConnectEvent::Connected {
+            self.inflight = None;
+            self.subscribed = false;
+        }
+        if self.subscribed {
+            self.startup_publish = None;
+            if let Some(code) = replay {
+                self.queue(Action::Publish(code));
             }
-            ConnectEvent::Reconnected => {
-                self.startup_publish = None;
-                if let Some(code) = replay {
-                    self.queue(Action::Publish(code));
-                }
-            }
+        } else {
+            self.startup_publish = replay;
+            self.queue(Action::Subscribe);
         }
     }
 
     /// Return the current staging status.
     ///
-    /// Pure query. Cancel-safe.
+    /// The code reflects the current phase, not the last published rejection.
     pub fn status(&self) -> Status<'_> {
         self.status_with(self.current_code())
     }
@@ -305,11 +309,11 @@ impl Service {
 
     /// Abort an active staging transfer.
     ///
-    /// Pure local state update. Cancel-safe.
-    ///
     /// Returns `true` if a staging transfer was active and is now marked as
     /// failed. A later `step()` or reconnect startup replay will publish
     /// `error` status for the same transfer.
+    /// Application-owned storage work is not cancelled or undone; a late
+    /// [`Self::complete_request`] is ignored.
     pub fn abort(&mut self) -> bool {
         if !matches!(self.state, State::Preparing | State::Ready | State::Writing) {
             return false;
@@ -322,31 +326,29 @@ impl Service {
         );
         self.state = State::Error;
         self.request = None;
-        if matches!(self.inflight.as_ref(), Some(inflight) if inflight.action == Action::Subscribe)
-            || self.pending == Some(Action::Subscribe)
-        {
-            self.startup_publish = Some(StatusCode::Error);
-        } else {
-            self.queue(Action::Publish(StatusCode::Error));
-        }
+        self.queue(Action::Publish(StatusCode::Error));
         true
     }
 
     /// Handle one inbound publish.
     ///
-    /// Pure local state update returning chunk data borrowed from `inbound`.
-    /// This is cancel-safe.
+    /// Returned chunk data borrows `inbound`; consume or copy it before driving
+    /// the connection again. Report storage results with [`Self::complete_request`].
     pub fn handle<'a>(&mut self, inbound: &InboundPublish<'a>) -> Handle<'a> {
         self.handle_publish_with_properties(
             inbound.topic(),
             inbound.payload(),
             inbound.properties(),
+            inbound.retained(),
         )
     }
 
     /// Complete one previously emitted storage request.
     ///
-    /// Pure local state update. Cancel-safe.
+    /// Report success only after the storage operation finishes, including
+    /// checksum verification for the final chunk. Until completion or
+    /// [`Self::abort`], no further storage request is emitted.
+    /// Does nothing when no request is outstanding.
     pub fn complete_request(&mut self, success: bool) {
         let Some(request) = self.request.take() else {
             return;
@@ -399,13 +401,18 @@ impl Service {
         topic: &str,
         payload: &'a [u8],
         properties: &Properties<'_>,
+        retained: bool,
     ) -> Handle<'a> {
-        if topic.strip_prefix(self.prefix.as_str()) == Some(MANIFEST_SUFFIX) {
+        let suffix = topic.strip_prefix(self.prefix.as_str());
+        if !matches!(suffix, Some(MANIFEST_SUFFIX | CHUNK_SUFFIX)) {
+            return Handle::Unhandled;
+        }
+        if retained {
+            return Handle::Consumed;
+        }
+        if suffix == Some(MANIFEST_SUFFIX) {
             debug!("staging manifest received payload={=usize}B", payload.len());
             return self.handle_manifest(payload);
-        }
-        if topic.strip_prefix(self.prefix.as_str()) != Some(CHUNK_SUFFIX) {
-            return Handle::Unhandled;
         }
         let Some(chunk) = chunk_properties(properties) else {
             warn!("Rejecting staging chunk without required properties");
@@ -416,13 +423,13 @@ impl Service {
 
     /// Advance one queued MQTT operation.
     ///
-    /// This is the cooperative queue-drain API. It performs at most one local
-    /// queued subscribe or status-publish step and does not wait for future
-    /// inbound reads on its own.
+    /// Starts at most one subscribe or status publication, without reading
+    /// inbound packets. On [`Step::Pending`], drive [`Connection::poll`] before
+    /// retrying to allow acknowledgements and incoming traffic to progress.
     ///
-    /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
-    /// The current action stays at the front of the local queue until the MQTT
-    /// operation is known to have completed or been invalidated.
+    /// Cancellation preserves the queued action, but retrying may duplicate
+    /// an already queued MQTT packet. Requires cancel-safe transport I/O and
+    /// QoS 1 status publications (leave QoS autodowngrade disabled).
     pub async fn step<IO>(
         &mut self,
         connection: &mut Connection<'_, '_, IO>,
@@ -441,29 +448,32 @@ impl Service {
                 self.queue(inflight.action);
                 return Err(MqttError::Disconnected);
             }
-            if inflight.action == Action::Subscribe
-                && let Some(code) = self.startup_publish.take()
-            {
-                self.queue(Action::Publish(code));
+            if inflight.action == Action::Subscribe {
+                self.subscribed = true;
+                if let Some(code) = self.startup_publish.take() {
+                    self.queue(Action::Publish(code));
+                }
             }
         }
 
-        let Some(action) = self.pending.take() else {
+        let Some(action) = self.pending else {
             return Ok(Step::Quiescent);
         };
         let op = match self.start_action(connection, action).await {
             Ok(op) => op,
-            Err(error) => {
-                self.pending = Some(action);
-                return Err(error);
+            Err(MqttError::NotReady | MqttError::Resource(ResourceError::InflightExhausted)) => {
+                return Ok(Step::Pending);
             }
+            Err(MqttError::Resource(ResourceError::BufferTooSmall))
+                if !connection.session().is_publish_quiescent() =>
+            {
+                return Ok(Step::Pending);
+            }
+            Err(error) => return Err(error),
         };
-        self.inflight = op.map(|op| InFlightAction { action, op });
-        Ok(if self.inflight.is_none() && self.pending.is_none() {
-            Step::Quiescent
-        } else {
-            Step::Pending
-        })
+        self.pending = None;
+        self.inflight = Some(InFlightAction { action, op });
+        Ok(Step::Pending)
     }
 
     fn handle_manifest<'a>(&mut self, payload: &'a [u8]) -> Handle<'a> {
@@ -618,11 +628,12 @@ impl Service {
     }
 
     fn queue(&mut self, action: Action) {
-        if matches!(
-            (self.inflight.as_ref(), action),
-            (Some(inflight), Action::Subscribe)
-                if inflight.action == Action::Subscribe
-        ) {
+        if self.pending == Some(Action::Subscribe)
+            || matches!(self.inflight.as_ref(), Some(inflight) if inflight.action == Action::Subscribe)
+        {
+            if let Action::Publish(code) = action {
+                self.startup_publish = Some(code);
+            }
             return;
         }
         self.pending = Some(action);
@@ -644,7 +655,7 @@ impl Service {
         &mut self,
         connection: &mut Connection<'_, '_, IO>,
         action: Action,
-    ) -> Result<Option<Op>, MqttError<IO::Error>>
+    ) -> Result<Op, MqttError<IO::Error>>
     where
         IO: Io,
     {
@@ -658,16 +669,18 @@ impl Service {
                         SubscriptionOptions::default()
                             .maximum_qos(QoS::AtLeastOnce)
                             .retain_behavior(RetainHandling::Never)
+                            .retain_as_published()
                             .ignore_local_messages(),
                     ),
                     TopicFilter::new(chunk_topic.as_str()).options(
                         SubscriptionOptions::default()
                             .maximum_qos(QoS::AtLeastOnce)
                             .retain_behavior(RetainHandling::Never)
+                            .retain_as_published()
                             .ignore_local_messages(),
                     ),
                 ];
-                Ok(Some(connection.subscribe(&filters, &[]).await?))
+                connection.subscribe(&filters, &[]).await
             }
             Action::Publish(code) => self.publish_status(connection, code).await,
         }
@@ -677,7 +690,7 @@ impl Service {
         &self,
         connection: &mut Connection<'_, '_, IO>,
         code: StatusCode,
-    ) -> Result<Option<Op>, MqttError<IO::Error>>
+    ) -> Result<Op, MqttError<IO::Error>>
     where
         IO: Io,
     {
@@ -705,10 +718,11 @@ impl Service {
             )
             .await
         {
-            Ok(op) => {
+            Ok(Some(op)) => {
                 log_status(code, status);
                 Ok(op)
             }
+            Ok(None) => Err(MqttError::InvalidRequest),
             Err(PubError::Payload(_)) => Err(ResourceError::BufferTooSmall.into()),
             Err(PubError::Session(err)) => Err(err),
         }
@@ -896,6 +910,9 @@ mod tests {
     extern crate std;
 
     use super::*;
+    use embassy_futures::{block_on, poll_once};
+    use embedded_io_async::{ErrorType, Read, Write};
+    use minimq::{Buffers, ConfigBuilder, Session};
     use std::sync::OnceLock;
 
     const ID: &[u8] = b"7ea690cc8c2cd8ed";
@@ -951,6 +968,7 @@ mod tests {
             service.manifest_topic().as_str(),
             payload,
             &Properties::from_slice(&[]),
+            false,
         )
     }
 
@@ -963,6 +981,7 @@ mod tests {
             service.chunk_topic().as_str(),
             payload,
             &Properties::from_slice(&properties),
+            false,
         )
     }
 
@@ -999,6 +1018,7 @@ mod tests {
 
     fn ready_service() -> Service {
         let mut service = service(128);
+        service.subscribed = true;
         service.state = State::Ready;
         service.transfer = Some(Transfer {
             id: "7ea690cc8c2cd8ed".try_into().unwrap(),
@@ -1007,6 +1027,152 @@ mod tests {
             fnv1a64: 0,
         });
         service
+    }
+
+    struct TestIo<'a> {
+        rx: &'a [u8],
+        writes: usize,
+    }
+    impl ErrorType for TestIo<'_> {
+        type Error = std::io::Error;
+    }
+    impl Read for TestIo<'_> {
+        async fn read(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
+            std::io::Read::read(&mut self.rx, buffer)
+        }
+    }
+    impl Write for TestIo<'_> {
+        async fn write(&mut self, buffer: &[u8]) -> Result<usize, Self::Error> {
+            // Pause the first MQTT write after CONNECT.
+            self.writes += 1;
+            if self.writes == 2 {
+                std::future::pending::<()>().await;
+            }
+            Ok(buffer.len())
+        }
+        async fn flush(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn cancelled_step_retains_action_for_retry() {
+        for action in [Action::Subscribe, Action::Publish(StatusCode::Accepted)] {
+            let mut service = ready_service();
+            service.queue(action);
+            let (mut rx, mut tx) = ([0; 128], [0; 1024]);
+            let mut session = Session::new(ConfigBuilder::new(Buffers::new(&mut rx, &mut tx)));
+            let mut connection = block_on(session.connect(TestIo {
+                rx: &[0x20, 0x03, 0x00, 0x00, 0x00],
+                writes: 0,
+            }))
+            .unwrap();
+            assert!(poll_once(service.step(&mut connection)).is_pending());
+            assert_eq!(service.pending, Some(action));
+            assert_eq!(
+                block_on(service.step(&mut connection)).unwrap(),
+                Step::Pending
+            );
+            assert!(service.pending.is_none());
+            assert!(service.inflight.is_some());
+        }
+    }
+
+    #[test]
+    fn backpressure_waits_but_undersized_buffers_fail() {
+        // Broker quota, occupied TX arena, and an undersized empty arena.
+        for (tx_size, payload_size, quota, fits) in [
+            (1024, 1, 1, true),
+            (512, 384, 32, true),
+            (128, 16, 32, false),
+        ] {
+            let mut service = ready_service();
+            let action = Action::Publish(StatusCode::Accepted);
+            service.queue(action);
+            let (mut rx, mut tx) = ([0; 128], [0; 1024]);
+            let mut session = Session::new(ConfigBuilder::new(Buffers::new(
+                &mut rx,
+                &mut tx[..tx_size],
+            )));
+            let packets = [0x20, 6, 0, 0, 3, 0x21, 0, quota, 0x40, 2, 0, 1];
+            let mut connection = block_on(session.connect(TestIo {
+                rx: &packets,
+                writes: 0,
+            }))
+            .unwrap();
+            let payload = [0; 384];
+            assert!(
+                poll_once(connection.publish(
+                    Publication::bytes("other", &payload[..payload_size]).qos(QoS::AtLeastOnce)
+                ))
+                .is_pending()
+            );
+            assert_eq!(
+                block_on(service.step(&mut connection)).unwrap(),
+                Step::Pending
+            );
+            assert_eq!(service.pending, Some(action));
+            block_on(connection.poll()).unwrap();
+            let result = block_on(service.step(&mut connection));
+            if fits {
+                assert_eq!(result.unwrap(), Step::Pending);
+                assert_eq!(service.pending, None);
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(MqttError::Resource(ResourceError::BufferTooSmall))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn status_requires_a_qos_one_operation() {
+        let mut service = ready_service();
+        service.queue(Action::Publish(StatusCode::Accepted));
+        let (mut rx, mut tx) = ([0; 128], [0; 1024]);
+        let config = ConfigBuilder::new(Buffers::new(&mut rx, &mut tx)).autodowngrade_qos();
+        let mut session = Session::new(config);
+        let mut connection = block_on(session.connect(TestIo {
+            rx: &[0x20, 5, 0, 0, 2, 0x24, 0],
+            writes: 2,
+        }))
+        .unwrap();
+        assert!(matches!(
+            block_on(service.step(&mut connection)),
+            Err(MqttError::InvalidRequest)
+        ));
+    }
+
+    #[test]
+    fn retained_commands_do_not_start_storage_work() {
+        let properties = [
+            Property::CorrelationData(ID),
+            Property::UserProperty("offset", "32"),
+        ];
+        for (mut service, suffix, payload) in [
+            (
+                service(128),
+                MANIFEST_SUFFIX,
+                br#"{"id":"id","size":4,"fnv1a64":0}"#.as_slice(),
+            ),
+            (ready_service(), CHUNK_SUFFIX, [0; SLOT].as_slice()),
+        ] {
+            let state = service.state;
+            let topic = topic(&service.prefix, suffix).unwrap();
+            assert!(matches!(
+                service.handle_publish_with_properties(
+                    &topic,
+                    payload,
+                    &Properties::from_slice(&properties),
+                    true,
+                ),
+                Handle::Consumed
+            ));
+            assert_eq!(service.state, state);
+            assert_eq!(service.request, None);
+            assert_eq!(service.pending, None);
+        }
     }
 
     #[test]
@@ -1023,10 +1189,17 @@ mod tests {
         service.begin_startup(ConnectEvent::Connected);
         assert_eq!(service.pending, Some(Action::Subscribe));
         assert_eq!(service.startup_publish, Some(StatusCode::Accepted));
+        assert!(service.abort());
+        assert_eq!(service.pending, Some(Action::Subscribe));
+        assert_eq!(service.startup_publish, Some(StatusCode::Error));
     }
 
     #[test]
     fn reconnected_startup_replays_current_status_without_subscribe() {
+        let mut idle = service(128);
+        idle.begin_startup(ConnectEvent::Reconnected);
+        assert_eq!(idle.pending, Some(Action::Subscribe));
+
         let mut service = ready_service();
         service.begin_startup(ConnectEvent::Reconnected);
         assert_eq!(service.pending, Some(Action::Publish(StatusCode::Accepted)));
@@ -1233,6 +1406,7 @@ mod tests {
                     service.chunk_topic().as_str(),
                     &[1, 2, 3, 4],
                     &Properties::from_slice(&[]),
+                    false,
                 ),
                 Handle::Consumed
             ));

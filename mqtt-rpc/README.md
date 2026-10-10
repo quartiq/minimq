@@ -19,7 +19,7 @@ The [`py`](py/) directory contains the corresponding Python requester and comman
 - Responses are QoS 1, non-retained, and carry one `code` User Property. `Ok` means success;
   applications define other codes.
 - Request and response payloads are opaque to MQTT RPC.
-- QoS 1 provides at-least-once delivery. Application methods with side effects must be idempotent;
+- QoS 1 provides per-hop at-least-once delivery. Methods with side effects must be idempotent;
   Correlation Data routes replies but is not a durable deduplication record.
 
 The requester chooses the MQTT response topic. Before responding, the application
@@ -29,7 +29,8 @@ or reject targets outside its allowed response-topic tree.
 ## Device use
 
 After every successful `Session::connect`, tell the service whether the broker resumed the MQTT
-session and drive its subscription to completion. Then pass each inbound publication to `handle`:
+session and drive its subscription to completion. Resume skips only previously completed startup.
+Then pass each inbound publication to `handle`:
 
 ```rust,no_run
 use minimq::{Connection, Io};
@@ -54,3 +55,6 @@ async fn run<IO: Io>(connection: &mut Connection<'_, '_, IO>) {
     }
 }
 ```
+
+Leave QoS autodowngrade disabled: replies require QoS 1. `respond()` returns a queued operation;
+drive the connection to obtain the broker acknowledgement.

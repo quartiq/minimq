@@ -153,9 +153,10 @@ impl Service {
     }
 
     /// Begin service startup for a newly connected or resumed MQTT session.
+    /// A resumed session skips subscription only if startup previously completed.
     pub fn begin_connection(&mut self, event: ConnectEvent) {
         self.subscribe = None;
-        self.ready = matches!(event, ConnectEvent::Reconnected);
+        self.ready &= matches!(event, ConnectEvent::Reconnected);
     }
 
     /// Return whether the request subscription is active.
@@ -204,13 +205,15 @@ impl Service {
         {
             Ok(op) => self.subscribe = Some(op),
             Err(MqttError::NotReady | MqttError::Resource(ResourceError::InflightExhausted)) => {}
+            Err(MqttError::Resource(ResourceError::BufferTooSmall))
+                if !connection.session().is_publish_quiescent() => {}
             Err(err) => return Err(err),
         }
         Ok(false)
     }
 
     /// Classify an inbound publication and retain the response destination for valid requests.
-    pub fn handle<'a>(&self, inbound: &'a InboundPublish<'a>) -> Handle<'a> {
+    pub fn handle<'a>(&self, inbound: &InboundPublish<'a>) -> Handle<'a> {
         let Some(method) = self.method(inbound.topic()) else {
             return Handle::Unhandled;
         };
@@ -265,7 +268,12 @@ impl Service {
 /// `code` is attached as the [`RESPONSE_CODE_PROPERTY`] MQTT user property. Use
 /// [`SUCCESS_CODE`] for success; other values are application-defined failures. Responses use
 /// QoS 1, are never retained, and expire after [`RESPONSE_EXPIRY_SECS`]. Payload interpretation
-/// and payload-format properties remain application-owned.
+/// remains application-owned. To attach payload-format properties, build a publication
+/// with [`ResponseTarget::publication`] instead.
+///
+/// Requires broker support for QoS 1; leave automatic QoS downgrade disabled.
+/// Returns `Some(Op)` after enqueueing; drive the connection to obtain the broker acknowledgement.
+/// Cancellation may enqueue a response without returning its operation handle.
 pub async fn respond<IO, P>(
     connection: &mut Connection<'_, '_, IO>,
     target: &ResponseTarget,
@@ -288,11 +296,27 @@ where
                 .qos(QoS::AtLeastOnce),
         )
         .await
+        .and_then(|op| {
+            op.ok_or(PubError::Session(MqttError::InvalidRequest))
+                .map(Some)
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resume_requires_completed_startup() {
+        let mut service = Service::new("device").unwrap();
+        service.begin_connection(ConnectEvent::Reconnected);
+        assert!(!service.is_ready());
+        service.ready = true;
+        service.begin_connection(ConnectEvent::Reconnected);
+        assert!(service.is_ready());
+        service.begin_connection(ConnectEvent::Connected);
+        assert!(!service.is_ready());
+    }
 
     #[test]
     fn joins_prefix() {

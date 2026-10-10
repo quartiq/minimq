@@ -64,13 +64,19 @@ Here `firmware.write()` can be a thin call to Embassy
 application decides whether to call `mark_updated()` and reboot.
 
 Reconnects preserve transfer state only while the same `Service` remains alive.
-A device reset starts from idle unless the application restores that state.
+A new service starts from idle; transfer progress is not persisted.
 
-Call `begin_startup()` after each MQTT connection, `step()` until it is
-quiescent, and route inbound publishes through `handle()`. `StagingWrite` borrows
-Minimq's current RX packet. A concurrent worker must copy that payload once
-before the next connection operation; a synchronous worker may consume it in
-place.
+Call `begin_startup()` after each MQTT connection, then drive `step()`.
+Session resume skips only a previously completed subscription. When `step()`
+returns `Step::Pending`, poll the connection and route inbound publishes through
+`handle()` before retrying. `Step::Quiescent` means the MQTT work is drained,
+not that storage work or the transfer is complete.
+
+`StagingWrite` borrows Minimq's current RX packet. Consume the payload before the
+next connection operation, or copy it if MQTT must continue while storage runs.
+Report each storage result with `complete_request()`; for the final chunk,
+success includes verifying the checksum. `abort()` ends the transfer without
+cancelling or undoing application-owned storage work.
 
 ## Protocol
 
@@ -79,6 +85,9 @@ place.
 | `<prefix>/manifest` | host | JSON manifest |
 | `<prefix>/status` | device | JSON state and next-chunk properties |
 | `<prefix>/chunk` | host | object bytes |
+
+Manifest and chunk publications must be non-retained. Leave QoS autodowngrade
+disabled: status publication completion requires a QoS 1 broker acknowledgement.
 
 ```json
 {"id":"85944171f73967e8","size":6,"fnv1a64":9625390261332436968}
@@ -93,14 +102,14 @@ device echoes it in status and as MQTT `CorrelationData`. Status also contains
 
 The state path is `idle -> preparing -> ready <-> writing -> complete`; an
 active transfer may instead end in `error`. QoS 1 manifest and chunk duplicates
-are idempotent. Chunks are stop-and-wait and sequential; future offsets fail,
-and final alignment padding must be `0xff`. A new transfer requires a new
-service instance after `complete` or `error`.
+are idempotent. Chunks are stop-and-wait and sequential; future offsets are
+rejected, and final alignment padding must be `0xff`. A new transfer requires
+a new service instance after `complete` or `error`.
 
 ## Tests
 
 ```console
-python -m unittest discover -s py/tests -p 'test_*.py'
+PYTHONPATH=py python -m unittest discover -s py/tests -p 'test_*.py'
 cargo test --all-targets
 BROKER=localhost:1883 cargo test --test end_to_end -- --ignored
 ```
