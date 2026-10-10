@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mqtt-rpc"
-version = "0.1.1"
+version = "0.1.2"
 description = "Async MQTT 5 request/response client"
 readme = "README.md"
 requires-python = ">=3.11"
