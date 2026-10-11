@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [UNRELEASED](https://github.com/quartiq/minimq/compare/minimq-v0.13.4...HEAD) - DATE
 
+### Changed
+
+* Admit QoS 1/2 publications before draining queued acknowledgements and flush outbound bursts
+  once. Transports must make write progress without an intervening flush, including when
+  their transmit buffer is full.
+
+### Fixed
+
+* Preserve MQTT packet ordering across cancelled writes and disconnects.
+
 ## [0.13.4](https://github.com/quartiq/minimq/compare/minimq-v0.13.3...minimq-v0.13.4) - 2026-10-09
 
 ## [0.13.3](https://github.com/quartiq/minimq/compare/minimq-v0.13.2...minimq-v0.13.3) - 2026-09-15

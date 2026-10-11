@@ -11,6 +11,11 @@ use embedded_io_async::{ErrorType, Read, Write};
 
 /// Transport trait required by [`Connection`].
 ///
+/// Outbound packets are written as a burst before flushing. Writes must make progress
+/// without requiring an intervening `flush()`, including when the transport's buffer fills.
+/// Buffered transports must emit data as needed; adapters that only free space on explicit
+/// flush are unsupported. A flush must drain accepted bytes, but need not wait for MQTT ACKs.
+///
 /// Ordinary lack of inbound data must leave the read future pending. If `read()` returns
 /// `TimedOut` or `Interrupted`, [`Connection::poll`] treats that as
 /// transport failure and disconnects the connection.

@@ -44,21 +44,13 @@ struct RetainedPacket {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(super) enum SendState {
+enum SendState {
     Write { written: usize },
     Flush,
     Sent,
 }
 
 impl SendState {
-    fn is_fresh(self) -> bool {
-        matches!(self, Self::Write { written: 0 })
-    }
-
-    fn is_in_progress(self) -> bool {
-        matches!(self, Self::Write { written: 1.. } | Self::Flush)
-    }
-
     fn set_written(&mut self, written: usize, len: usize) {
         *self = if written >= len {
             Self::Flush
@@ -67,11 +59,10 @@ impl SendState {
         };
     }
 
-    fn matches_priority(self, in_progress: bool) -> bool {
-        if in_progress {
-            self.is_in_progress()
-        } else {
-            self.is_fresh()
+    fn write_offset(self, in_progress: bool) -> Option<usize> {
+        match self {
+            Self::Write { written } if (written != 0) == in_progress => Some(written),
+            _ => None,
         }
     }
 }
@@ -81,20 +72,21 @@ pub(super) struct RetainedStep {
     pub(super) packet_id: u16,
     pub(super) offset: usize,
     pub(super) len: usize,
-    pub(super) state: SendState,
+    pub(super) written: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub(super) struct ReleaseStep {
     pub(super) packet_id: u16,
     pub(super) reason: ReasonCode,
-    pub(super) state: SendState,
+    pub(super) written: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub(super) struct ControlStep {
+    pub(super) index: usize,
     pub(super) action: ControlAction,
-    pub(super) state: SendState,
+    pub(super) written: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -332,33 +324,48 @@ impl<'a> Outbound<'a> {
         Ok(())
     }
 
+    pub(super) fn complete_flush(&mut self) {
+        self.pending_control.retain(|p| p.state != SendState::Flush);
+        for p in &mut self.pending_release {
+            if p.state == SendState::Flush {
+                p.state = SendState::Sent;
+            }
+        }
+        for p in &mut self.retained {
+            if p.state == SendState::Flush {
+                p.state = SendState::Sent;
+            }
+        }
+    }
+
     pub(super) fn next_step(&self) -> Option<OutboundStep> {
         for in_progress in [true, false] {
-            for entry in &self.pending_control {
-                if entry.state.matches_priority(in_progress) {
+            for (index, entry) in self.pending_control.iter().enumerate() {
+                if let Some(written) = entry.state.write_offset(in_progress) {
                     return Some(OutboundStep::Control(ControlStep {
+                        index,
                         action: entry.action,
-                        state: entry.state,
+                        written,
                     }));
                 }
             }
             for entry in &self.pending_release {
-                if entry.state.matches_priority(in_progress) {
+                if let Some(written) = entry.state.write_offset(in_progress) {
                     return Some(OutboundStep::Release(ReleaseStep {
                         packet_id: entry.packet_id,
                         reason: entry.reason,
-                        state: entry.state,
+                        written,
                     }));
                 }
             }
             let mut offset = 0;
             for entry in &self.retained {
-                if entry.state.matches_priority(in_progress) {
+                if let Some(written) = entry.state.write_offset(in_progress) {
                     return Some(OutboundStep::Retained(RetainedStep {
                         packet_id: entry.packet_id,
                         offset,
                         len: entry.len,
-                        state: entry.state,
+                        written,
                     }));
                 }
                 offset += entry.len;
@@ -367,38 +374,13 @@ impl<'a> Outbound<'a> {
         None
     }
 
-    pub(super) fn set_control_written(
-        &mut self,
-        action: ControlAction,
-        written: usize,
-        len: usize,
-    ) -> bool {
-        if let Some(entry) = self
-            .pending_control
-            .iter_mut()
-            .find(|entry| entry.action == action)
-        {
+    pub(super) fn set_control_written(&mut self, index: usize, written: usize, len: usize) -> bool {
+        if let Some(entry) = self.pending_control.get_mut(index) {
             entry.state.set_written(written, len);
             true
         } else {
             false
         }
-    }
-
-    pub(super) fn flush_control(&mut self, action: ControlAction) -> bool {
-        let found = if let Some(entry) = self
-            .pending_control
-            .iter_mut()
-            .find(|entry| entry.action == action)
-        {
-            entry.state = SendState::Sent;
-            true
-        } else {
-            false
-        };
-        self.pending_control
-            .retain(|entry| entry.state != SendState::Sent);
-        found
     }
 
     pub(super) fn set_retained_written(
@@ -419,19 +401,6 @@ impl<'a> Outbound<'a> {
         }
     }
 
-    pub(super) fn flush_retained(&mut self, packet_id: u16) -> bool {
-        if let Some(entry) = self
-            .retained
-            .iter_mut()
-            .find(|entry| entry.packet_id == packet_id)
-        {
-            entry.state = SendState::Sent;
-            true
-        } else {
-            false
-        }
-    }
-
     pub(super) fn set_release_written(
         &mut self,
         packet_id: u16,
@@ -444,19 +413,6 @@ impl<'a> Outbound<'a> {
             .find(|entry| entry.packet_id == packet_id)
         {
             entry.state.set_written(written, len);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub(super) fn flush_release(&mut self, packet_id: u16) -> bool {
-        if let Some(entry) = self
-            .pending_release
-            .iter_mut()
-            .find(|entry| entry.packet_id == packet_id)
-        {
-            entry.state = SendState::Sent;
             true
         } else {
             false
@@ -612,7 +568,7 @@ pub(super) async fn write_all<C: Io>(
 
 #[cfg(test)]
 mod tests {
-    use super::{ControlAction, MAX_FIXED_HEADER_SIZE, Outbound, OutboundStep, SendState};
+    use super::{ControlAction, MAX_FIXED_HEADER_SIZE, Outbound, OutboundStep};
     use crate::mqtt_client::OpKind;
     use crate::{
         Error, Properties, PubError, ReasonCode, ResourceError,
@@ -685,14 +641,14 @@ mod tests {
             reason: ReasonCode::Success,
         };
         outbound.queue_control(action).unwrap();
-        outbound.set_control_written(action, 5, 5);
+        outbound.set_control_written(0, 5, 5);
 
         outbound.arm_replay();
 
         assert!(matches!(
             outbound.next_step(),
             Some(OutboundStep::Control(step))
-                if step.action == action && step.state == SendState::Write { written: 0 }
+                if step.action == action && step.written == 0
         ));
     }
 
