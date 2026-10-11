@@ -64,9 +64,12 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         let mut advanced = false;
         loop {
             // The peer can observe written ACKs before flush completes and refill
-            // its receive window. Release our ACK metadata before admitting more.
-            if self.session.data.outbound.pending_control_len() == MAX_PENDING_CONTROL {
-                advanced |= self.service(Instant::now()).await?;
+            // its receive window. Release our ACK metadata before admitting more,
+            // but process buffered input before checking the PINGRESP deadline.
+            if self.session.packet_reader.packet_available()
+                && self.session.data.outbound.pending_control_len() == MAX_PENDING_CONTROL
+            {
+                advanced |= self.service_outbound_once(Instant::now()).await?;
                 continue;
             }
             if self.session.packet_reader.packet_available() {

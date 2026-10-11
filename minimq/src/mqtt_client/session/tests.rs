@@ -173,6 +173,31 @@ fn written_ack_burst_frees_metadata_before_refilled_inbound_window() {
 }
 
 #[test]
+fn full_ack_queue_preserves_buffered_pingresp_before_timeout_check() {
+    use crate::mqtt_client::outbound::{ControlAction, MAX_PENDING_CONTROL};
+    let mut session = session();
+    let mut conn = live_connection(&mut session, MockConnection::default());
+    for packet_id in 1..=MAX_PENDING_CONTROL as u16 {
+        conn.session
+            .data
+            .outbound
+            .queue_control(ControlAction::PubAck {
+                packet_id,
+                reason: crate::ReasonCode::Success,
+            })
+            .unwrap();
+    }
+    conn.io.push_rx(&[0xD0, 0]);
+    block_on(conn.read_packet()).unwrap();
+    conn.session.runtime.ping_timeout = Some(Instant::now());
+
+    assert!(block_on(conn.drive()).unwrap().is_none());
+    assert!(conn.is_connected());
+    assert_eq!(conn.session.runtime.ping_timeout, None);
+    assert_eq!(conn.session.data.outbound.pending_control_len(), 0);
+}
+
+#[test]
 fn long_keepalive_schedules_ping_before_expiry() {
     let mut session = session();
     let now = Instant::now();
