@@ -3,32 +3,26 @@ use embedded_io_async::Error as _;
 
 use crate::de::PacketReader;
 use crate::mqtt_client::outbound::{
-    CONTROL_PACKET_WORKSPACE, ControlAction, OutboundStep, SendState, check_control_packet_size,
-    serialize_control_packet, serialize_pubrel,
+    CONTROL_PACKET_WORKSPACE, ControlAction, MAX_PENDING_CONTROL, OutboundStep,
+    check_control_packet_size, serialize_control_packet, serialize_pubrel,
 };
 use crate::{Connection, Error, InboundPublish, debug, error, trace, warn};
 
-use super::Io;
 use super::state::ROUND_TRIP_TIMEOUT_MS;
+use super::{FlushState, Io};
 
 #[derive(Copy, Clone)]
-enum FlushedPacket {
-    Control(ControlAction),
+enum Packet {
+    Control(usize),
     Release(u16),
     Retained(u16),
 }
 
 struct WriteStep<'a> {
-    packet: FlushedPacket,
+    packet: Packet,
     bytes: &'a [u8],
     written: usize,
     len: usize,
-}
-
-enum PreparedStep<'a> {
-    Write(WriteStep<'a>),
-    Flush(FlushedPacket),
-    Done,
 }
 
 #[derive(Copy, Clone)]
@@ -69,6 +63,15 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         }
         let mut advanced = false;
         loop {
+            // The peer can observe written ACKs before flush completes and refill
+            // its receive window. Release our ACK metadata before admitting more,
+            // but process buffered input before checking the PINGRESP deadline.
+            if self.session.packet_reader.packet_available()
+                && self.session.data.outbound.pending_control_len() == MAX_PENDING_CONTROL
+            {
+                advanced |= self.service_outbound_once(Instant::now()).await?;
+                continue;
+            }
             if self.session.packet_reader.packet_available() {
                 match self.process_received_packet()? {
                     Some(packet_length) => return Ok(Progress::Inbound(packet_length)),
@@ -92,7 +95,9 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                 }
             }
 
-            if self.session.data.outbound.next_step().is_none() {
+            if self.session.data.outbound.next_step().is_none()
+                && self.flush_state == FlushState::Clean
+            {
                 return Ok(if advanced {
                     Progress::Advanced
                 } else {
@@ -234,34 +239,32 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     }
 
     async fn service_outbound_once(&mut self, now: Instant) -> Result<bool, Error<IO::Error>> {
-        self.maybe_queue_pingreq(now)?;
-        let Some(step) = self.session.data.outbound.next_step() else {
-            return Ok(false);
-        };
-        self.perform_outbound_step(step, now).await
-    }
-
-    fn complete_flush(&mut self, packet: FlushedPacket, now: Instant) {
-        let runtime = &mut self.session.runtime;
-        let data = &mut self.session.data;
-        if matches!(packet, FlushedPacket::Control(ControlAction::PingReq)) {
-            runtime.ping_timeout = Some(now + Duration::from_millis(ROUND_TRIP_TIMEOUT_MS));
+        if self.flush_state == FlushState::Flushing {
+            self.flush_current().await?;
+            return Ok(true);
         }
-        runtime.note_outbound_activity(now);
-        let found = match packet {
-            FlushedPacket::Control(action) => data.outbound.flush_control(action),
-            FlushedPacket::Release(packet_id) => data.outbound.flush_release(packet_id),
-            FlushedPacket::Retained(packet_id) => data.outbound.flush_retained(packet_id),
-        };
-        debug_assert!(found, "completed outbound packet no longer tracked");
+        if let Some(step) = self.session.data.outbound.next_step() {
+            return self.perform_outbound_step(step).await;
+        }
+        if self.flush_state == FlushState::Dirty {
+            self.flush_current().await?;
+            return Ok(true);
+        }
+        // Pending traffic already supplies keepalive activity. Drain it before
+        // admitting an idle PINGREQ, especially when the control queue is full.
+        self.maybe_queue_pingreq(now)?;
+        if let Some(step) = self.session.data.outbound.next_step() {
+            return self.perform_outbound_step(step).await;
+        }
+        Ok(false)
     }
 
-    fn set_written(&mut self, packet: FlushedPacket, written: usize, len: usize) {
+    fn set_written(&mut self, packet: Packet, written: usize, len: usize) {
         let out = &mut self.session.data.outbound;
         let found = match packet {
-            FlushedPacket::Control(action) => out.set_control_written(action, written, len),
-            FlushedPacket::Release(packet_id) => out.set_release_written(packet_id, written, len),
-            FlushedPacket::Retained(packet_id) => out.set_retained_written(packet_id, written, len),
+            Packet::Control(index) => out.set_control_written(index, written, len),
+            Packet::Release(packet_id) => out.set_release_written(packet_id, written, len),
+            Packet::Retained(packet_id) => out.set_retained_written(packet_id, written, len),
         };
         debug_assert!(found, "outbound packet no longer tracked");
     }
@@ -269,105 +272,76 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     async fn perform_outbound_step(
         &mut self,
         step: OutboundStep,
-        now: Instant,
     ) -> Result<bool, Error<IO::Error>> {
         let mut small_buf = [0u8; CONTROL_PACKET_WORKSPACE];
         let runtime = &mut self.session.runtime;
         let data = &mut self.session.data;
-        let prepared = match step {
-            OutboundStep::Control(step) => match step.state {
-                SendState::Write { written } => {
-                    trace!(
-                        "Driving control packet {} progress_from={=usize} control={=usize} retained={=usize} pending_release={=usize}",
-                        step.action,
-                        written,
-                        data.outbound.pending_control_len(),
-                        data.outbound.retained_len(),
-                        data.outbound.pending_release_len()
-                    );
-                    let packet = serialize_control_packet(
-                        &mut small_buf,
-                        step.action,
-                        runtime.maximum_packet_size,
-                    )?;
-                    PreparedStep::Write(WriteStep {
-                        packet: FlushedPacket::Control(step.action),
-                        bytes: packet,
-                        written,
-                        len: packet.len(),
-                    })
+        let ping =
+            matches!(step, OutboundStep::Control(step) if step.action == ControlAction::PingReq);
+        let packet = match step {
+            OutboundStep::Control(step) => {
+                trace!(
+                    "Driving control packet {} progress_from={=usize} control={=usize} retained={=usize} pending_release={=usize}",
+                    step.action,
+                    step.written,
+                    data.outbound.pending_control_len(),
+                    data.outbound.retained_len(),
+                    data.outbound.pending_release_len()
+                );
+                let packet = serialize_control_packet(
+                    &mut small_buf,
+                    step.action,
+                    runtime.maximum_packet_size,
+                )?;
+                WriteStep {
+                    packet: Packet::Control(step.index),
+                    bytes: packet,
+                    written: step.written,
+                    len: packet.len(),
                 }
-                SendState::Flush => {
-                    trace!("Flushing control packet {}", step.action);
-                    PreparedStep::Flush(FlushedPacket::Control(step.action))
-                }
-                SendState::Sent => PreparedStep::Done,
-            },
-            OutboundStep::Release(step) => match step.state {
-                SendState::Write { written } => {
-                    trace!(
-                        "Driving PUBREL write packet_id={=u16} progress_from={=usize} control={=usize} retained={=usize} pending_release={=usize}",
-                        step.packet_id,
-                        written,
-                        data.outbound.pending_control_len(),
-                        data.outbound.retained_len(),
-                        data.outbound.pending_release_len()
-                    );
-                    let packet = serialize_pubrel(
-                        &mut small_buf,
-                        step.packet_id,
-                        step.reason,
-                        runtime.maximum_packet_size,
-                    )?;
-                    PreparedStep::Write(WriteStep {
-                        packet: FlushedPacket::Release(step.packet_id),
-                        bytes: packet,
-                        written,
-                        len: packet.len(),
-                    })
-                }
-                SendState::Flush => {
-                    trace!("Flushing PUBREL packet packet_id={=u16}", step.packet_id);
-                    PreparedStep::Flush(FlushedPacket::Release(step.packet_id))
-                }
-                SendState::Sent => PreparedStep::Done,
-            },
-            OutboundStep::Retained(step) => match step.state {
-                SendState::Write { written } => {
-                    debug!(
-                        "Driving retained packet write packet_id={=u16} progress {=usize}/{=usize} control={=usize} tx_used={=usize} tx_capacity={=usize} retained={=usize} pending_release={=usize}",
-                        step.packet_id,
-                        written,
-                        step.len,
-                        data.outbound.pending_control_len(),
-                        data.outbound.retained_bytes(),
-                        data.outbound.capacity(),
-                        data.outbound.retained_len(),
-                        data.outbound.pending_release_len()
-                    );
-                    runtime.require_packet_size(step.len)?;
-                    PreparedStep::Write(WriteStep {
-                        packet: FlushedPacket::Retained(step.packet_id),
-                        bytes: data.outbound.retained_packet(step.offset, step.len),
-                        written,
-                        len: step.len,
-                    })
-                }
-                SendState::Flush => {
-                    debug!("Flushing retained packet packet_id={=u16}", step.packet_id);
-                    PreparedStep::Flush(FlushedPacket::Retained(step.packet_id))
-                }
-                SendState::Sent => PreparedStep::Done,
-            },
-        };
-
-        let packet = match prepared {
-            PreparedStep::Write(packet) => packet,
-            PreparedStep::Flush(packet) => {
-                self.flush_current(packet, now).await?;
-                return Ok(true);
             }
-            PreparedStep::Done => return Ok(false),
+            OutboundStep::Release(step) => {
+                trace!(
+                    "Driving PUBREL write packet_id={=u16} progress_from={=usize} control={=usize} retained={=usize} pending_release={=usize}",
+                    step.packet_id,
+                    step.written,
+                    data.outbound.pending_control_len(),
+                    data.outbound.retained_len(),
+                    data.outbound.pending_release_len()
+                );
+                let packet = serialize_pubrel(
+                    &mut small_buf,
+                    step.packet_id,
+                    step.reason,
+                    runtime.maximum_packet_size,
+                )?;
+                WriteStep {
+                    packet: Packet::Release(step.packet_id),
+                    bytes: packet,
+                    written: step.written,
+                    len: packet.len(),
+                }
+            }
+            OutboundStep::Retained(step) => {
+                debug!(
+                    "Driving retained packet write packet_id={=u16} progress {=usize}/{=usize} control={=usize} tx_used={=usize} tx_capacity={=usize} retained={=usize} pending_release={=usize}",
+                    step.packet_id,
+                    step.written,
+                    step.len,
+                    data.outbound.pending_control_len(),
+                    data.outbound.retained_bytes(),
+                    data.outbound.capacity(),
+                    data.outbound.retained_len(),
+                    data.outbound.pending_release_len()
+                );
+                runtime.require_packet_size(step.len)?;
+                WriteStep {
+                    packet: Packet::Retained(step.packet_id),
+                    bytes: data.outbound.retained_packet(step.offset, step.len),
+                    written: step.written,
+                    len: step.len,
+                }
+            }
         };
 
         if !self.live {
@@ -392,40 +366,36 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             }
             Err(err) => return Err(err),
         };
+        self.flush_state = FlushState::Dirty;
         let written = written + count;
         self.set_written(packet, written, len);
-        if written < len {
-            return Ok(true);
+        if ping && written == len {
+            self.session.runtime.ping_timeout =
+                Some(Instant::now() + Duration::from_millis(ROUND_TRIP_TIMEOUT_MS));
         }
-        self.flush_current(packet, now).await?;
         Ok(true)
     }
 
-    async fn flush_current(
-        &mut self,
-        packet: FlushedPacket,
-        now: Instant,
-    ) -> Result<(), Error<IO::Error>> {
+    async fn flush_current(&mut self) -> Result<(), Error<IO::Error>> {
         if !self.live {
             return Err(Error::Disconnected);
         }
+        self.flush_state = FlushState::Flushing;
         if let Err(err) = self.io.flush().await {
-            warn!("Outbound packet flush failed: {}", err.kind());
+            warn!("Outbound flush failed: {}", err.kind());
             self.handle_disconnect();
             return Err(Error::Transport(err));
         }
-        self.complete_flush(packet, now);
+        let now = Instant::now();
+        self.session.data.outbound.complete_flush();
+        self.session.runtime.note_outbound_activity(now);
+        self.flush_state = FlushState::Clean;
         Ok(())
     }
 
     pub(super) async fn flush_outbound(&mut self) -> Result<(), Error<IO::Error>> {
-        loop {
-            self.maybe_queue_pingreq(Instant::now())?;
-            let Some(step) = self.session.data.outbound.next_step() else {
-                return Ok(());
-            };
-            self.perform_outbound_step(step, Instant::now()).await?;
-        }
+        while self.service_outbound_once(Instant::now()).await? {}
+        Ok(())
     }
 }
 

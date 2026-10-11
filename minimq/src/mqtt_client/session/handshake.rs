@@ -42,6 +42,7 @@ impl<'buf> Session<'buf> {
             io,
             event,
             live: true,
+            flush_state: super::FlushState::Clean,
         })
     }
 

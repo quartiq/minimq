@@ -129,6 +129,14 @@ impl<'buf> Session<'buf> {
     }
 }
 
+// Transport progress survives both packet ACK removal and cancellation of a flush.
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub(super) enum FlushState {
+    Clean,
+    Dirty,
+    Flushing,
+}
+
 /// A live MQTT connection over a transport `IO`, returned by
 /// [`Session::connect`](Session::connect).
 ///
@@ -146,6 +154,7 @@ pub struct Connection<'a, 'buf, IO> {
     pub(super) io: IO,
     pub(super) event: ConnectEvent,
     pub(super) live: bool,
+    pub(super) flush_state: FlushState,
 }
 
 impl<'buf, IO: Io> Connection<'_, 'buf, IO> {

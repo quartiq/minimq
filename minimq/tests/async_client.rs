@@ -26,6 +26,12 @@ struct MockIo {
     pending_reads: usize,
     pending_writes: usize,
     pending_flushes: usize,
+    buffered: Vec<u8>,
+    flush_groups: Vec<Vec<u8>>,
+    flush_error: Option<ErrorKind>,
+    write_limit: Option<usize>,
+    buffer_capacity: Option<usize>,
+    automatic_flushes: usize,
 }
 
 #[derive(Clone, Default)]
@@ -131,8 +137,19 @@ impl Write for MockConnection {
                 }
                 *remaining -= 1;
             }
-            inner.tx.push(buf.to_vec());
-            Poll::Ready(Ok(buf.len()))
+            // Model a streaming buffered transport: a full buffer emits data without flush().
+            if inner.buffer_capacity == Some(inner.buffered.len()) {
+                inner.buffered.clear();
+                inner.automatic_flushes += 1;
+            }
+            let count = buf.len().min(inner.write_limit.unwrap_or(usize::MAX)).min(
+                inner
+                    .buffer_capacity
+                    .map_or(usize::MAX, |capacity| capacity - inner.buffered.len()),
+            );
+            inner.tx.push(buf[..count].to_vec());
+            inner.buffered.extend_from_slice(&buf[..count]);
+            Poll::Ready(Ok(count))
         })
         .await
     }
@@ -145,6 +162,11 @@ impl Write for MockConnection {
                 cx.waker().wake_by_ref();
                 return Poll::Pending;
             }
+            if let Some(error) = inner.flush_error.take() {
+                return Poll::Ready(Err(error));
+            }
+            let bytes = std::mem::take(&mut inner.buffered);
+            inner.flush_groups.push(bytes);
             Poll::Ready(Ok(()))
         })
         .await
@@ -1087,21 +1109,63 @@ fn fresh_session_clears_pending_inbound_qos2_state() {
 }
 
 #[test]
-fn full_retained_outbound_still_sends_puback() {
-    let mut connection = MockConnection::default();
-    let inspect = connection.clone();
-    connection.push_rx(&connack());
-    connection.push_rx(&inbound_publish_qos1(9, "data", b"x"));
-    let connector = MockConnector::new(connection);
-    let mut session = session();
-    let mut conn = expect_connected(&mut session, &connector);
+fn rejected_publish_drains_queued_puback() {
+    let oversized = [0; 1152];
+    for (ack, inflight, payload, expected) in [
+        (
+            connack().to_vec(),
+            None,
+            b"x".as_slice(),
+            PubError::Session(Error::Resource(ResourceError::InflightExhausted)),
+        ),
+        (
+            connack_receive_max(2).to_vec(),
+            Some(2),
+            b"x".as_slice(),
+            PubError::Session(Error::NotReady),
+        ),
+        (
+            connack().to_vec(),
+            Some(0),
+            oversized.as_slice(),
+            PubError::Payload(()),
+        ),
+        (
+            connack_max_packet_size(8).to_vec(),
+            Some(0),
+            b"x".as_slice(),
+            PubError::Session(Error::Resource(ResourceError::PacketTooLarge)),
+        ),
+    ] {
+        let mut connection = MockConnection::default();
+        let inspect = connection.clone();
+        connection.push_rx(&ack);
+        connection.push_rx(&inbound_publish_qos1(9, "data", b"x"));
+        let connector = MockConnector::new(connection);
+        let mut session = session();
+        let mut conn = expect_connected(&mut session, &connector);
 
-    let capacity = fill_inflight_publish_slots(&mut conn);
-    assert!(capacity > 0);
+        if let Some(count) = inflight {
+            for _ in 0..count {
+                publish_qos1_ok(&mut conn, "data", b"x");
+            }
+        } else {
+            assert!(fill_inflight_publish_slots(&mut conn) > 0);
+        }
+        with_inbound(&mut conn, |message| assert_eq!(message.topic(), "data"));
+        let before = inspect.tx();
+        assert!(!before.iter().any(|frame| frame == &outbound_puback(9)));
 
-    with_inbound(&mut conn, |message| assert_eq!(message.topic(), "data"));
-
-    wait_for_tx_frame(&mut conn, &inspect, &outbound_puback(9));
+        assert_eq!(publish_qos1(&mut conn, "data", payload), Err(expected));
+        assert_eq!(
+            &inspect.tx()[before.len()..],
+            &[outbound_puback(9).to_vec()]
+        );
+        assert_eq!(
+            inspect.inner.borrow().flush_groups.last().unwrap(),
+            &outbound_puback(9)
+        );
+    }
 }
 
 #[test]
@@ -1912,4 +1976,163 @@ fn inbound_publish_exposes_response_helpers() {
         let _ = message.reply("ok").unwrap().qos(QoS::AtLeastOnce);
         let _ = follow_up;
     });
+}
+
+#[test]
+fn publish_flushes_inbound_ack_and_publication_together() {
+    let mut io = MockConnection::default();
+    let mut inspect = io.clone();
+    io.push_rx(&connack());
+    let mut session = session();
+    let mut conn = block_on(session.connect(io)).unwrap();
+    inspect.push_rx(&inbound_publish_qos1(9, "set", b"x"));
+    assert_eq!(block_on(conn.recv()).unwrap().payload(), b"x");
+    let op = publish_qos1(&mut conn, "data", b"y").unwrap().unwrap();
+    let expected = [
+        outbound_puback(9).as_slice(),
+        &inbound_publish_qos1(1, "data", b"y"),
+    ]
+    .concat();
+    assert_eq!(inspect.inner.borrow().flush_groups[1..], [expected]);
+    assert!(conn.is_pending(&op));
+    inspect.push_rx(&puback(1));
+    assert!(poll_now(&mut conn).unwrap().is_none());
+    assert!(conn.is_complete(&op));
+}
+
+#[test]
+fn resumed_replay_flushes_eight_publications_once() {
+    let mut first = MockConnection::default();
+    let inspect_first = first.clone();
+    first.push_rx(&connack());
+    let mut session = session();
+    let mut conn = block_on(session.connect(first)).unwrap();
+    for value in 0..8 {
+        publish_qos1_ok(&mut conn, "data", &[value]);
+    }
+    let mut expected = inspect_first.tx()[1..].to_vec();
+    for packet in &mut expected {
+        packet[0] |= 0x08;
+    }
+    drop(conn);
+    let mut second = MockConnection::default();
+    let inspect_second = second.clone();
+    second.push_rx(&connack_session_present());
+    let mut conn = block_on(session.connect(second)).unwrap();
+    assert!(block_on(conn.drive()).unwrap().is_none());
+    assert_eq!(
+        inspect_second.inner.borrow().flush_groups[1..],
+        [expected.concat()]
+    );
+    assert_eq!(inspect_second.tx()[1..], expected);
+}
+
+#[test]
+fn cancelled_flush_finishes_before_new_publication_writes() {
+    let mut io = MockConnection::default();
+    let mut inspect = io.clone();
+    io.push_rx(&connack());
+    let mut session = session();
+    let mut conn = block_on(session.connect(io)).unwrap();
+    inspect.inner.borrow_mut().write_limit = Some(3);
+    inspect.pend_flushes(2);
+    assert!(
+        poll_once(
+            Box::pin(conn.publish(Publication::bytes("first", b"one").qos(QoS::AtLeastOnce)))
+                .as_mut()
+        )
+        .is_pending()
+    );
+    let first = inspect.tx();
+    assert!(
+        poll_once(
+            Box::pin(conn.publish(Publication::bytes("second", b"two").qos(QoS::AtLeastOnce)))
+                .as_mut()
+        )
+        .is_pending()
+    );
+    assert_eq!(inspect.tx(), first);
+    assert!(block_on(conn.drive()).unwrap().is_none());
+    let expected = [
+        inbound_publish_qos1(1, "first", b"one"),
+        inbound_publish_qos1(2, "second", b"two"),
+    ];
+    assert_eq!(inspect.inner.borrow().flush_groups[1..], expected);
+    assert_eq!(inspect.tx()[1..].concat(), expected.concat());
+}
+
+#[test]
+fn disconnect_finishes_a_cancelled_publication_before_terminal_packet() {
+    let mut io = MockConnection::default();
+    let mut inspect = io.clone();
+    io.push_rx(&connack());
+    let mut session = session();
+    let mut conn = block_on(session.connect(io)).unwrap();
+    inspect.pend_flushes(1);
+    assert!(
+        poll_once(
+            Box::pin(conn.publish(Publication::bytes("data", b"x").qos(QoS::AtLeastOnce),))
+                .as_mut()
+        )
+        .is_pending()
+    );
+    block_on(conn.disconnect()).unwrap();
+    let expected = [
+        inbound_publish_qos1(1, "data", b"x"),
+        disconnect_req().to_vec(),
+    ];
+    assert_eq!(inspect.tx()[1..].concat(), expected.concat());
+    assert_eq!(inspect.inner.borrow().flush_groups[1..], expected);
+}
+
+#[test]
+fn flush_failure_disconnects_and_replays_retained_publication() {
+    let mut first = MockConnection::default();
+    let inspect_first = first.clone();
+    first.push_rx(&connack());
+    let mut session = session();
+    let mut conn = block_on(session.connect(first)).unwrap();
+    inspect_first.inner.borrow_mut().flush_error = Some(ErrorKind::ConnectionReset);
+    assert!(matches!(
+        publish_qos1(&mut conn, "data", b"x"),
+        Err(PubError::Session(Error::Transport(
+            ErrorKind::ConnectionReset
+        )))
+    ));
+    assert!(!conn.is_connected());
+    drop(conn);
+    let mut second = MockConnection::default();
+    let mut inspect_second = second.clone();
+    second.push_rx(&connack_session_present());
+    let mut conn = block_on(session.connect(second)).unwrap();
+    assert!(block_on(conn.drive()).unwrap().is_none());
+    let mut expected = inbound_publish_qos1(1, "data", b"x");
+    expected[0] |= 0x08;
+    assert_eq!(inspect_second.inner.borrow().flush_groups[1..], [expected]);
+    inspect_second.push_rx(&puback(1));
+    assert!(poll_now(&mut conn).unwrap().is_none());
+    assert!(conn.session().is_publish_quiescent());
+}
+
+#[test]
+fn streaming_buffer_can_fill_partway_through_a_burst() {
+    let mut io = MockConnection::default();
+    let mut inspect = io.clone();
+    io.push_rx(&connack());
+    let mut session = session();
+    let mut conn = block_on(session.connect(io)).unwrap();
+    inspect.inner.borrow_mut().buffer_capacity = Some(12);
+    inspect.push_rx(&inbound_publish_qos1(9, "set", b"x"));
+    assert_eq!(block_on(conn.recv()).unwrap().payload(), b"x");
+    publish_qos1_ok(&mut conn, "data", b"y");
+    let expected = [
+        outbound_puback(9).as_slice(),
+        &inbound_publish_qos1(1, "data", b"y"),
+    ]
+    .concat();
+    assert_eq!(inspect.tx()[1..].concat(), expected);
+    let inner = inspect.inner.borrow();
+    assert_eq!(inner.automatic_flushes, 1);
+    assert_eq!(inner.flush_groups.len(), 2); // CONNECT, then the whole MQTT burst.
+    assert!(inner.buffered.is_empty());
 }

@@ -31,6 +31,9 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         let mut buffer = [0u8; CONTROL_PACKET_WORKSPACE];
         let packet = MqttSerializer::encode(&mut buffer, &disconnect)?;
         self.session.runtime.require_packet_size(packet.len())?;
+        // A cancelled publication can leave a packet prefix or suspended flush.
+        // Finish that stream progress before writing the terminal packet.
+        self.flush_outbound().await?;
         let result = match write_all(&mut self.io, packet).await {
             Ok(()) => self.io.flush().await.map_err(Error::Transport),
             Err(err) => Err(err),
@@ -149,6 +152,10 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
 
     /// Send a `PUBLISH`.
     ///
+    /// QoS 1/2 publications join any queued outbound acknowledgements before one transport flush.
+    /// A suspended flush is resumed before further writes. Admission happens before transport I/O,
+    /// so cancellation can retain a publication without returning its operation handle.
+    ///
     /// QoS 1 and 2 retain the encoded packet in the session TX buffer until broker ack and are
     /// cancel-safe if the underlying transport I/O futures are cancel-safe.
     /// They return `Some(Op)` so the caller can check completion with
@@ -170,7 +177,6 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         if !self.live {
             return Err(Error::Disconnected.into());
         }
-        self.flush_outbound().await?;
 
         let Publication {
             topic,
@@ -196,11 +202,15 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             qos,
             dup: false,
         };
-        if packet_id.is_some() {
-            self.require_retained_slot()?;
+        if packet_id.is_some()
+            && let Err(err) = self.require_retained_slot()
+        {
+            self.flush_outbound().await?;
+            return Err(err.into());
         }
 
         if !self.can_publish(qos) {
+            self.flush_outbound().await?;
             return Err(Error::NotReady.into());
         }
 
@@ -210,12 +220,22 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             } else {
                 OpKind::PublishAtLeastOnce
             };
-            let len = self
+            let encoded = self
                 .session
                 .data
                 .outbound
-                .encode_publish(&header, payload)?;
-            self.session.runtime.require_packet_size(len)?;
+                .encode_publish(&header, payload)
+                .and_then(|len| {
+                    self.session.runtime.require_packet_size(len)?;
+                    Ok(len)
+                });
+            let len = match encoded {
+                Ok(len) => len,
+                Err(err) => {
+                    self.flush_outbound().await?;
+                    return Err(err);
+                }
+            };
             self.session
                 .data
                 .outbound
@@ -238,6 +258,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             )));
         }
 
+        self.flush_outbound().await?;
         let packet = MqttSerializer::encode_publish(
             self.session.data.outbound.scratch_space(),
             &header,
