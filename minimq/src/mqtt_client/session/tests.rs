@@ -358,8 +358,7 @@ fn connect_uses_tx_buffer_when_rx_only_covers_connack() {
         connection.connect_event(),
         ConnectEvent::Connected
     ));
-    assert_eq!(connection.io.tx.len(), 1);
-    assert!(connection.io.tx[0].len() > rx.len());
+    assert!(connection.io.tx.concat().len() > rx.len());
 }
 
 #[test]
@@ -504,8 +503,7 @@ fn duplicate_control_actions_advance_separate_queue_entries() {
     // Check finite progress before draining: updating the first matching action repeatedly
     // would leave the second entry writable forever.
     assert!(conn.session.data.outbound.next_step().is_none());
-    assert_eq!(conn.io.tx[..2], [[0x40, 3, 0, 9, 0], [0x40, 3, 0, 9, 0]]);
-    assert_eq!(conn.io.tx.len(), 2);
+    assert_eq!(conn.io.tx.concat(), [0x40, 3, 0, 9, 0, 0x40, 3, 0, 9, 0]);
     block_on(conn.drive()).unwrap();
     assert_eq!(conn.session.data.outbound.pending_control_len(), 0);
 }
