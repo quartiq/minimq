@@ -53,7 +53,9 @@ async def _request_response(broker, trailing_slash):
         async with Client(broker, service_prefix) as rpc:
             assert await rpc.request("ping", b"ping") == b"pong"
             assert await rpc.request("/ping", b"ping") == b"pong"
-            with pytest.raises(RemoteError, match="Failed: failed"):
+            with pytest.raises(RemoteError) as error:
                 await rpc.request("ping", b"fail")
+            assert error.value.code == "Failed"
+            assert error.value.payload == b"failed"
     finally:
         await device.disconnect()

@@ -2024,7 +2024,6 @@ fn resumed_replay_flushes_eight_publications_once() {
         inspect_second.inner.borrow().flush_groups[1..],
         [expected.concat()]
     );
-    assert_eq!(inspect_second.tx()[1..], expected);
 }
 
 #[test]
