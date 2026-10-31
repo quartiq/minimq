@@ -29,12 +29,10 @@ or reject targets outside its allowed response-topic tree.
 
 ## Device use
 
-After every successful `Session::connect`, tell the service whether the broker resumed the MQTT
-session and drive its subscription to completion. Resume skips only previously completed startup.
-`handle_completion()` reports whether it recognized the operation; `step()` reports broker
-rejection. Route completions before the next step. An ended operation without a routed
-outcome produces `MissingCompletion`.
-Then pass each inbound publication to `handle`:
+After connecting, call `begin_connection()` with the connect event. Drive `step()` until ready,
+routing completions through `handle_completion()`. It returns whether the operation belongs
+to this service; `step()` reports rejection or `MissingCompletion` for an omitted outcome.
+Resume skips previously completed startup. Pass inbound publications to `handle()`:
 
 ```rust,no_run
 use minimq::{Connection, Io};

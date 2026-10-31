@@ -182,31 +182,27 @@ and marks the connection disconnected. Drop it to release the transport.
 
 ### Timeouts and cancellation
 
-Use transport write/flush deadlines to bound stalled output. Await MQTT operations to
-completion; on a transport error, drop the connection and reconnect. A deadline for each
-write call bounds that call: partial writes can make a complete publication take longer.
-Choose the budget for your transport and application's recovery needs.
+Bound stalled output with transport write/flush deadlines. Await MQTT operations fully;
+on a transport error, drop the connection and reconnect. Per-write deadlines allow a
+publication to take longer when partial writes keep making progress.
 
-Between publications, keep calling [`Connection::poll()`] to service acknowledgements and
-keepalive. A healthy idle connection can keep `poll()` pending indefinitely: PINGRESP is
-handled internally, rather than returned as an application event. Let MQTT manage idle
-reads. An application-event timeout measures absence of events, not connection health.
+Between publications, call [`Connection::poll()`] to service acknowledgements and keepalive.
+Let MQTT manage idle reads: a healthy connection can keep `poll()` pending indefinitely
+because PINGRESP is handled internally. A timeout on `poll()` measures application-event
+silence, not connection health.
 
 The [publish-only QoS 0 example](examples/publish_only.rs) demonstrates output deadlines,
 polling between samples, and reconnection. Run it against a local broker with
 `cargo run -p minimq --example publish_only` (`BROKER` defaults to `127.0.0.1:1883`).
 
-When racing `poll()` against other work, the transport must support cancellation and reuse
-of its read, write and flush futures: dropping a pending future must allow subsequent I/O
-to resume without losing input or repeating output. Minimq preserves its protocol progress,
-including completed partial writes. QoS 0 publication uses temporary packet storage: await it fully,
-or discard the connection if it is cancelled. Likewise discard a connection after cancelling
-disconnect. Cancelling `Session::connect()` drops the supplied transport and permits retry.
-An I/O deadline cancels the underlying I/O future; after expiry the example discards the
-transport, rather than attempting to resume it.
+Racing `poll()` against other work requires cancellation-safe transport reads, writes and
+flushes: subsequent I/O must resume without losing input or repeating output. Minimq
+preserves its protocol progress. Discard the connection after cancelling QoS 0 publication
+or disconnect, or after an I/O deadline expires. Cancelling `Session::connect()` drops
+the supplied transport and permits retry.
 
-[`Connection::drive()`] advances local work without waiting for new input or future session
-deadlines. It can still await transport writes and flushes, so output deadlines apply there too.
+[`Connection::drive()`] advances local work, awaiting writes and flushes as needed, without
+waiting for new input or future session deadlines.
 
 ## Buffers
 

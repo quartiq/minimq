@@ -172,10 +172,9 @@ impl Service {
 
     /// Advance subscription startup without consuming inbound publications.
     ///
-    /// Returns `Ok(true)` when the service is ready. The caller must continue driving the MQTT
-    /// connection between calls while this returns `Ok(false)`.
-    /// Route each completion through [`Self::handle_completion`] first; an ended operation
-    /// without its outcome produces [`MqttError::MissingCompletion`].
+    /// Returns `Ok(true)` when ready. After `Ok(false)`, poll the connection and route
+    /// completions through [`Self::handle_completion`] before retrying.
+    /// An omitted completion produces [`MqttError::MissingCompletion`].
     /// A broker rejection is returned until [`Self::begin_connection`] starts another attempt.
     pub async fn step<IO: Io>(
         &mut self,
@@ -234,11 +233,10 @@ impl Service {
             return false;
         }
         self.subscribe = None;
-        if let Err(error) = outcome.check() {
-            self.failure = Some(error);
-            return true;
+        match outcome.check() {
+            Ok(()) => self.ready = true,
+            Err(error) => self.failure = Some(error),
         }
-        self.ready = true;
         true
     }
 

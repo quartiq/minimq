@@ -423,17 +423,14 @@ impl Service {
     /// Record a completion, returning whether it belongs to this service.
     /// The next [`Self::step`] reports any broker rejection.
     pub fn handle_completion(&mut self, op: minimq::Op, outcome: &minimq::Outcome<'_>) -> bool {
-        let Some(inflight) = self.inflight.as_ref().filter(|inflight| inflight.op == op) else {
+        let Some(inflight) = self.inflight.take_if(|inflight| inflight.op == op) else {
             return false;
         };
         let action = inflight.action;
-        self.inflight = None;
-        if let Err(err) = outcome.check() {
+        if let Err(error) = outcome.check() {
             self.queue(action);
-            self.failure = Some(err);
-            return true;
-        }
-        if action == Action::Subscribe {
+            self.failure = Some(error);
+        } else if action == Action::Subscribe {
             self.subscribed = true;
             if let Some(code) = self.startup_publish.take() {
                 self.queue(Action::Publish(code));
@@ -444,10 +441,9 @@ impl Service {
 
     /// Advance one queued MQTT operation.
     ///
-    /// Starts at most one subscribe or status publication, without reading
-    /// inbound packets. On [`Step::Pending`], route the events from [`Connection::poll`] before
-    /// retrying to allow acknowledgements and incoming traffic to progress.
-    /// An ended operation without a routed outcome produces [`MqttError::MissingCompletion`].
+    /// Starts at most one subscription or status publication. On [`Step::Pending`],
+    /// poll the connection and route its events before retrying.
+    /// An omitted completion produces [`MqttError::MissingCompletion`].
     /// A broker rejection is returned until [`Self::begin_startup`] starts another attempt.
     ///
     /// Cancellation preserves the queued action, but retrying may duplicate

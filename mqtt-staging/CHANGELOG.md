@@ -10,11 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-* Broker rejection stops MQTT work until `begin_startup()` starts another attempt.
-
-* **Breaking:** route Minimq completion events to `Service::handle_completion` before
-  advancing queued work. The hook reports whether it recognized the operation; `step()` reports
-  broker rejection. Missing completion routing produces `MissingCompletion` instead of waiting.
+* **Breaking:** route completion events through `Service::handle_completion()` before `step()`.
+  Rejection stops MQTT work until `begin_startup()` restarts it; omitted outcomes produce
+  `MissingCompletion`.
 
 ### Fixed
 
