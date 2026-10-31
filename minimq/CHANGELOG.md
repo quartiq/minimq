@@ -16,8 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 * QoS 2 publications count toward the local in-flight limit until `PUBCOMP`.
-  Applications can encounter `Error::NotReady` earlier while acknowledgements are pending.
-* Operation-handle equality now uses the session generation and packet identifier.
+  Local capacity can become exhausted earlier while acknowledgements are pending.
 * Reduce linked code size and per-session RAM usage.
 
 ### Fixed
@@ -26,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Respect the broker's send quota during reconnect replay and cancelled writes.
 * Apply broker keepalive overrides to the current connection.
 * Deliver inbound QoS 2 publications only after reserving acknowledgement and tracking
-  capacity. Close the connection when inbound QoS 2 storage is exhausted.
+  capacity. Mark the connection disconnected when inbound QoS 2 storage is exhausted.
 
 ## [0.13.5](https://github.com/quartiq/minimq/compare/minimq-v0.13.4...minimq-v0.13.5) - 2026-10-11
 

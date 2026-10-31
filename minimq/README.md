@@ -133,7 +133,8 @@ versions simultaneously.
 - MQTT 3.1.1 `clean_session: true` starts fresh on every connection.
 - MQTT 3.1.1 `clean_session: false` requests persistent broker state on every connection,
   including the first. It requires a nonempty, stable client ID. Local in-flight messages
-  live in the `Session` and survive transport reconnects for that session's lifetime.
+  live in the `Session` and are replayed when the broker resumes the session. A fresh
+  broker session clears local in-flight state.
 - MQTT 5 starts clean on the first connection and requests resumption on reconnect.
   `session_expiry_interval()` controls broker state lifetime after disconnect (default zero).
 
@@ -163,7 +164,6 @@ Dropping the connection releases the session for a later reconnect. Call
   here.
 - [`ConnectEvent::Reconnected`] means the broker resumed the existing MQTT session. Existing
   subscriptions and in-flight QoS state were kept.
-- [`Connection::recv()`] yields one inbound publish.
 
 After a disconnect or transport/protocol error, drop the connection and call
 [`Session::connect()`] with a fresh transport when ready to reconnect.
@@ -173,7 +173,7 @@ invalidation, within the packet-identifier reuse window described in its rustdoc
 Handle broker errors reported while driving the connection.
 
 A transport write returning `Ok(0)` for a non-empty buffer produces [`Error::WriteZero`]
-and closes the connection.
+and marks the connection disconnected. Drop it to release the transport.
 
 For cooperative driving:
 - use [`Connection::drive()`] for immediate local progress without waiting for future inbound reads
@@ -197,7 +197,8 @@ You supply two buffers.
 QoS 2 publications occupy an in-flight slot until `PUBCOMP`; their encoded payload
 space is freed on `PUBREC`.
 
-An oversized inbound packet or exhausted inbound QoS 2 storage closes the connection.
+An oversized inbound packet or exhausted inbound QoS 2 storage marks the connection
+disconnected. Drop it to release the transport.
 
 If `tx` is exhausted, `publish()` and other outbound operations can return [`Error::NotReady`].
 

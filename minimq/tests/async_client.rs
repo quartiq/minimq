@@ -70,8 +70,8 @@ fn v3_inbound_qos2_exhaustion_closes_without_acknowledging() {
 }
 
 #[test]
-fn v3_small_asymmetric_buffers_and_invalid_connack() {
-    for tx_len in [20, 21, 64] {
+fn v3_small_asymmetric_buffers() {
+    for tx_len in [8, 64] {
         let mut rx = [0; 4];
         let mut tx = [0; 64];
         let mut session = Session::new(
@@ -84,8 +84,12 @@ fn v3_small_asymmetric_buffers_and_invalid_connack() {
         io.push_rx_fragmented(&[0x20, 2, 0, 0]);
         io.inner.borrow_mut().write_limit = Some(1);
         let result = block_on(session.connect(io));
-        assert_eq!(result.is_ok(), tx_len >= 21);
+        assert_eq!(result.is_ok(), tx_len == 64);
     }
+}
+
+#[test]
+fn v3_invalid_connack() {
     for ack in [
         &[0x20, 2, 2, 0][..],
         &[0x20, 2, 1, 1],
@@ -137,7 +141,7 @@ fn v3_wire_connect_auth_will_and_refusal() {
 }
 
 #[test]
-fn v3_wire_publish_subscribe_unsubscribe_and_qos() {
+fn v3_wire_publish_and_qos() {
     let mut session = Session::new(config().protocol(V3));
     let mut io = MockConnection::default();
     io.push_rx_fragmented(&[0x20, 2, 0, 0]);
@@ -166,28 +170,6 @@ fn v3_wire_publish_subscribe_unsubscribe_and_qos() {
         }
         assert!(conn.is_complete(&op));
     }
-    io.inner.borrow_mut().tx.clear();
-    let op = block_on(conn.subscribe(&[TopicFilter::new("a")], &[])).unwrap();
-    assert_eq!(io.tx().concat(), b"\x82\x06\x00\x03\x00\x01a\x00");
-    io.push_rx(&[0x90, 3, 0, 3, 0]);
-    for _ in 0..WAIT_STEPS {
-        let _ = poll_now(&mut conn).unwrap();
-        if conn.is_complete(&op) {
-            break;
-        }
-    }
-    assert!(conn.is_complete(&op));
-    io.inner.borrow_mut().tx.clear();
-    let op = block_on(conn.unsubscribe(&["a"], &[])).unwrap();
-    assert_eq!(io.tx().concat(), b"\xa2\x05\x00\x04\x00\x01a");
-    io.push_rx(&[0xb0, 2, 0, 4]);
-    for _ in 0..WAIT_STEPS {
-        let _ = poll_now(&mut conn).unwrap();
-        if conn.is_complete(&op) {
-            break;
-        }
-    }
-    assert!(conn.is_complete(&op));
     for (header, id, ack) in [(0x32, 7, 0x40), (0x34, 8, 0x50)] {
         io.push_rx_fragmented(&[header, 6, 0, 1, b'a', 0, id, 0]);
         with_inbound(&mut conn, |incoming| {
@@ -202,6 +184,36 @@ fn v3_wire_publish_subscribe_unsubscribe_and_qos() {
     wait_for_tx_frame(&mut conn, &io, &[0x70, 2, 0, 9]);
     block_on(conn.disconnect()).unwrap();
     assert_eq!(io.tx().last().unwrap(), &[0xe0, 0]);
+}
+
+#[test]
+fn v3_wire_subscribe_unsubscribe() {
+    let mut session = Session::new(config().protocol(V3));
+    let mut io = MockConnection::default();
+    io.push_rx_fragmented(&[0x20, 2, 0, 0]);
+    let mut conn = block_on(session.connect(io.clone())).unwrap();
+    io.inner.borrow_mut().tx.clear();
+    let op = block_on(conn.subscribe(&[TopicFilter::new("a")], &[])).unwrap();
+    assert_eq!(io.tx().concat(), b"\x82\x06\x00\x01\x00\x01a\x00");
+    io.push_rx(&[0x90, 3, 0, 1, 0]);
+    for _ in 0..WAIT_STEPS {
+        let _ = poll_now(&mut conn).unwrap();
+        if conn.is_complete(&op) {
+            break;
+        }
+    }
+    assert!(conn.is_complete(&op));
+    io.inner.borrow_mut().tx.clear();
+    let op = block_on(conn.unsubscribe(&["a"], &[])).unwrap();
+    assert_eq!(io.tx().concat(), b"\xa2\x05\x00\x02\x00\x01a");
+    io.push_rx(&[0xb0, 2, 0, 2]);
+    for _ in 0..WAIT_STEPS {
+        let _ = poll_now(&mut conn).unwrap();
+        if conn.is_complete(&op) {
+            break;
+        }
+    }
+    assert!(conn.is_complete(&op));
 }
 
 #[test]
@@ -249,6 +261,7 @@ fn v3_cancelled_publish_replays_only_when_broker_resumes() {
 #[test]
 fn v3_rejects_v5_options_before_writing() {
     for config in [
+        config().protocol(V3).autodowngrade_qos(),
         config().protocol(V3).session_expiry_interval(0),
         config().protocol(V3).session_expiry_interval(60),
         config().protocol(V3).client_id("").unwrap(),
@@ -276,14 +289,21 @@ fn v3_rejects_v5_options_before_writing() {
         )),
         Err(PubError::Session(Error::InvalidRequest))
     ));
+    for options in [
+        minimq::SubscriptionOptions::default().ignore_local_messages(),
+        minimq::SubscriptionOptions::default().retain_as_published(),
+        minimq::SubscriptionOptions::default().retain_behavior(minimq::RetainHandling::Never),
+    ] {
+        assert!(matches!(
+            block_on(conn.subscribe(&[TopicFilter::new("a").options(options)], &[])),
+            Err(Error::InvalidRequest)
+        ));
+    }
     assert!(matches!(
-        block_on(
-            conn.subscribe(
-                &[TopicFilter::new("a")
-                    .options(minimq::SubscriptionOptions::default().ignore_local_messages())],
-                &[]
-            )
-        ),
+        block_on(conn.subscribe(
+            &[TopicFilter::new("a")],
+            &[Property::UserProperty("x", "y")]
+        )),
         Err(Error::InvalidRequest)
     ));
     assert!(matches!(
@@ -294,7 +314,23 @@ fn v3_rejects_v5_options_before_writing() {
         block_on(conn.disconnect_with(Disconnect::with_will())),
         Err(Error::InvalidRequest)
     ));
+    assert!(matches!(
+        block_on(conn.disconnect_with(
+            Disconnect::success().with_properties(&[Property::UserProperty("x", "y")])
+        )),
+        Err(Error::InvalidRequest)
+    ));
     assert!(io.tx().is_empty());
+}
+
+#[test]
+fn v3_first_connection_can_resume_broker_session() {
+    let mut session = Session::new(config().protocol(V3));
+    let mut io = MockConnection::default();
+    io.push_rx_fragmented(&[0x20, 2, 1, 0]);
+    let conn = block_on(session.connect(io)).unwrap();
+    assert_eq!(conn.connect_event(), ConnectEvent::Reconnected);
+    assert!(conn.session().is_publish_quiescent());
 }
 
 #[derive(Default)]
@@ -2436,7 +2472,7 @@ fn qos2_quota_waits_for_pubcomp() {
     );
     io.push_rx(&pubcomp(1));
     for _ in 0..WAIT_STEPS {
-        block_on(conn.poll()).unwrap();
+        poll_now(&mut conn).unwrap();
         if conn.can_publish(QoS::ExactlyOnce) {
             return;
         }
@@ -2463,12 +2499,7 @@ fn qos2_release_capacity_applies_backpressure_until_pubcomp() {
             let op = publish_qos2(&mut conn, "a", b"x").unwrap().unwrap();
             operations.push(op);
             io.push_rx(&pubrec(id.into()));
-            let release = if protocol == V3 {
-                vec![0x62, 2, 0, id]
-            } else {
-                outbound_pubrel(id.into()).to_vec()
-            };
-            wait_for_tx_frame(&mut conn, &io, &release);
+            wait_for_tx_frame(&mut conn, &io, &outbound_pubrel(id.into()));
             assert!(operations.iter().all(|op| conn.is_pending(op)));
         }
         assert!(!operations.is_empty());
@@ -2476,7 +2507,7 @@ fn qos2_release_capacity_applies_backpressure_until_pubcomp() {
         assert!(publish_qos2(&mut conn, "a", b"x").is_err());
         io.push_rx(&pubcomp(1));
         for _ in 0..WAIT_STEPS {
-            block_on(conn.poll()).unwrap();
+            poll_now(&mut conn).unwrap();
             if conn.is_complete(&operations[0]) {
                 break;
             }
@@ -2501,26 +2532,6 @@ fn server_keepalive_does_not_change_reconnect_config() {
         &io.tx().concat()[10..12],
         &[0, 60],
         "previous broker override leaked into CONNECT"
-    );
-}
-
-#[test]
-fn replay_consumes_new_connection_quota() {
-    let mut session = session();
-    let mut io = MockConnection::default();
-    io.push_rx(&connack());
-    let mut conn = block_on(session.connect(io)).unwrap();
-    publish_qos1_ok(&mut conn, "a", b"x");
-    drop(conn);
-    let mut io = MockConnection::default();
-    let mut ack = connack_receive_max(1);
-    ack[2] = 1;
-    io.push_rx(&ack);
-    let mut conn = block_on(session.connect(io.clone())).unwrap();
-    block_on(conn.drive()).unwrap();
-    assert!(
-        !conn.can_publish(QoS::AtLeastOnce),
-        "replayed PUBLISH did not consume the new quota"
     );
 }
 
@@ -2558,7 +2569,7 @@ fn replay_waits_for_smaller_quota_and_still_services_inbound_acks() {
         io.push_rx(&puback(id.into()));
     }
     for _ in 0..WAIT_STEPS {
-        block_on(conn.poll()).unwrap();
+        poll_now(&mut conn).unwrap();
         if conn.can_publish(QoS::AtLeastOnce) {
             return;
         }

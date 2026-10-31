@@ -24,14 +24,18 @@ async fn both_protocols_qos_will_and_sessions() {
     init_host_logging();
     let broker = std::env::var("BROKER").expect("set BROKER=host:port");
     timeout(Duration::from_secs(15), async {
-        for protocol in [
-            minimq::Protocol::V5,
-            minimq::Protocol::V3_1_1 {
-                clean_session: false,
-            },
-            minimq::Protocol::V3_1_1 {
-                clean_session: true,
-            },
+        use minimq::Protocol::{V3_1_1, V5};
+        let persistent = V3_1_1 {
+            clean_session: false,
+        };
+        let clean = V3_1_1 {
+            clean_session: true,
+        };
+        for (protocol, publisher_protocol) in [
+            (V5, V5),
+            (persistent, persistent),
+            (clean, clean),
+            (V5, persistent),
         ] {
             let id = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -45,7 +49,7 @@ async fn both_protocols_qos_will_and_sessions() {
             let mut subscriber = Session::new(subscriber_config);
             let mut publisher = Session::new(
                 config(&format!("minimq-pub-{id}"))
-                    .protocol(protocol)
+                    .protocol(publisher_protocol)
                     .will(
                         minimq::Will::new(&topic, b"gone", &[])
                             .unwrap()
@@ -67,11 +71,7 @@ async fn both_protocols_qos_will_and_sessions() {
                 .connect(FromTokio::new(TcpStream::connect(&broker).await.unwrap()))
                 .await
                 .unwrap();
-            if protocol
-                == (minimq::Protocol::V3_1_1 {
-                    clean_session: true,
-                })
-            {
+            if protocol == clean {
                 assert_eq!(sub.connect_event(), ConnectEvent::Connected);
                 let op = sub.subscribe(&filters, &[]).await.unwrap();
                 complete(&mut sub, op).await;
