@@ -13,6 +13,12 @@ protocol crates likewise leave dispatch, storage, activation, and reboot policy
 to their applications. Each package has an independent version and release
 boundary.
 
+## Testing
+
+Run the local-broker interoperability test with
+`BROKER=localhost:1883 cargo test -p minimq --test real_broker -- --ignored`.
+It covers both MQTT versions, QoS 0/1/2, wills, and fresh/resumed sessions.
+
 ## Releasing
 
 Packages are released independently with `cargo release -p <package> <level>`;

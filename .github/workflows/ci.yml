@@ -115,6 +115,7 @@ jobs:
           sudo apt-get install -y mosquitto mosquitto-clients
           sudo service mosquitto start
       - run: cargo test --workspace --all-targets --all-features
+      - run: cargo test -p minimq --test real_broker --all-features -- --ignored
       - run: python -m pytest -q -o cache_dir=/tmp/mqtt-rpc-pytest mqtt-rpc/py/tests
       - run: cargo test -p mqtt-staging --test end_to_end -- --ignored
 
