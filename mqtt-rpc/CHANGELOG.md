@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [UNRELEASED](https://github.com/quartiq/minimq/compare/mqtt-rpc-v0.1.2...HEAD) - DATE
 
+### Fixed
+
+* Reject MQTT 3.1.1 connections with `InvalidRequest` at service startup and response
+  publication. MQTT RPC requires MQTT 5.
+
 ## [0.1.2](https://github.com/quartiq/minimq/compare/mqtt-rpc-v0.1.1...mqtt-rpc-v0.1.2) - 2026-10-10
 
 ### Fixed

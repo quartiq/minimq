@@ -127,25 +127,23 @@ let session = Session::new(config);
 # Ok::<(), minimq::ConfigError>(())
 ```
 
-The selection is fixed for the session's lifetime, including reconnects. Separate sessions can
-use different versions simultaneously; there is no automatic fallback.
+Every connection uses the session's selected protocol. Separate sessions can use different
+versions simultaneously.
 
 - MQTT 3.1.1 `clean_session: true` starts fresh on every connection.
 - MQTT 3.1.1 `clean_session: false` requests persistent broker state on every connection,
-  including the first. It requires a nonempty, stable client ID. A new local `Session` cannot
-  restore in-flight messages from a previous process or device boot.
-- MQTT 5 keeps its existing clean-start/reconnect behavior and `session_expiry_interval()`
-  setting (default zero). Expiry is never translated to MQTT 3.1.1 persistence.
+  including the first. It requires a nonempty, stable client ID. Local in-flight messages
+  live in the `Session` and survive transport reconnects for that session's lifetime.
+- MQTT 5 starts clean on the first connection and requests resumption on reconnect.
+  `session_expiry_interval()` controls broker state lifetime after disconnect (default zero).
 
 For MQTT 3.1.1, `connect()` rejects explicitly configured session expiry, automatic QoS downgrade,
 or Will properties before writing. Publish/subscribe/unsubscribe properties, MQTT 5 subscription
 options, and non-success disconnect reasons are rejected with `Error::InvalidRequest`.
-Empty property slices and default subscription options work with either version. Only ordinary
-username/password authentication is supported.
+Empty property slices and default subscription options work with either version. Both versions
+support username/password authentication.
 
-MQTT 3.1.1 has no negotiated receive maximum, maximum packet size, or QoS limit. Local buffer
-and in-flight limits still apply, and QoS 0/1/2 are available. An oversized inbound packet or
-exhausted inbound QoS 2 storage closes the connection without acknowledging the message.
+MQTT 3.1.1 supports QoS 0/1/2 within the configured buffers and local in-flight limits.
 Miniconf and MQTT RPC require MQTT 5.
 
 You provide packet buffers plus an already-established transport, and a loop that explicitly
@@ -167,22 +165,15 @@ Dropping the connection releases the session for a later reconnect. Call
   subscriptions and in-flight QoS state were kept.
 - [`Connection::recv()`] yields one inbound publish.
 
-If [`Connection::recv()`] or [`Connection::poll()`] returns [`Error::Disconnected`], the caller
-discards the handle and decides
-when to call
-[`Session::connect()`] with a fresh transport again.
-Other transport/protocol errors mark the handle dead; callers should handle the error and reconnect
-rather than retrying network operations on that handle.
+After a disconnect or transport/protocol error, drop the connection and call
+[`Session::connect()`] with a fresh transport when ready to reconnect.
 
-Operation handles ([`Op`]) belong to their originating session. Check them while
-driving the connection and discard completed or invalidated handles. They are not
-historical records: MQTT packet identifiers wrap and are reused, so callers must
-not leave handles unchecked across identifier reuse. Completion does not imply
-success; handle errors reported by the connection as well.
+Track each operation handle ([`Op`]) on its originating session until completion or
+invalidation, within the packet-identifier reuse window described in its rustdoc.
+Handle broker errors reported while driving the connection.
 
-A transport write returning `Ok(0)` for a non-empty buffer produces [`Error::WriteZero`] and also
-marks the connection dead. This is intentionally conservative: an earlier write may already have
-sent a packet prefix, so restarting that packet on the same byte stream is not safe.
+A transport write returning `Ok(0)` for a non-empty buffer produces [`Error::WriteZero`]
+and closes the connection.
 
 For cooperative driving:
 - use [`Connection::drive()`] for immediate local progress without waiting for future inbound reads
@@ -203,19 +194,12 @@ You supply two buffers.
   plus the larger of the `CONNECT` workspace and the largest temporary packet-encoding workspace.
   Minimq keeps enough TX capacity free to reconnect without discarding admitted state.
 
-QoS 2 publications occupy an in-flight slot until `PUBCOMP`, although their encoded
-payload space is freed on `PUBREC`. Broker send quota is consumed when a QoS 1/2
-PUBLISH starts writing and restored by `PUBACK`, `PUBCOMP`, or a negative `PUBREC`.
-Resumed publications obey the new connection's quota; acknowledgements and keepalive
-can still progress while publications wait for quota. A broker's MQTT 5 keepalive
-override applies only to that connection; reconnect advertises the configured interval.
+QoS 2 publications occupy an in-flight slot until `PUBCOMP`; their encoded payload
+space is freed on `PUBREC`.
 
-Exhausting inbound QoS 2 capacity closes the connection without acknowledging the
-excess publication, in either protocol.
+An oversized inbound packet or exhausted inbound QoS 2 storage closes the connection.
 
 If `tx` is exhausted, `publish()` and other outbound operations can return [`Error::NotReady`].
-Malformed broker varints and undersized local encode buffers are rejected with errors rather than
-causing panics.
 
 Use [`Buffers::split()`] if you prefer one contiguous slab.
 

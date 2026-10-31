@@ -25,16 +25,14 @@ impl<T> Io for T where T: Read + Write + ErrorType {}
 
 /// Handle for one outbound MQTT operation accepted into local session state.
 ///
-/// Query this handle only on its originating [`Session`] (or a [`Connection`]
-/// borrowing that session). Check it while driving the connection and discard it
-/// once it completes or is invalidated. Completion means no longer pending, not
-/// necessarily successful: broker rejection is reported by the driving operation.
+/// Query this handle on its originating [`Session`] (or a [`Connection`] borrowing
+/// it), and discard it after completion or invalidation. Completion means the
+/// operation has left local pending state; driving the connection reports broker errors.
 ///
 /// Handles use MQTT packet identifiers, which cycle through 1..=65535 and can be
-/// reused after an operation ends. They are not permanent operation identities.
-/// The caller must not leave a handle unchecked across packet-identifier reuse
-/// or use it for historical status queries: an old handle can then appear pending
-/// for a different operation. Failed requests can also advance identifier allocation.
+/// reused after an operation ends. Check completion before its identifier is reused:
+/// an old handle can then refer to a different operation. Failed requests can also
+/// advance identifier allocation.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Op {
     packet_id: u16,
