@@ -174,6 +174,12 @@ when to call
 Other transport/protocol errors mark the handle dead; callers should handle the error and reconnect
 rather than retrying network operations on that handle.
 
+Operation handles ([`Op`]) belong to their originating session. Check them while
+driving the connection and discard completed or invalidated handles. They are not
+historical records: MQTT packet identifiers wrap and are reused, so callers must
+not leave handles unchecked across identifier reuse. Completion does not imply
+success; handle errors reported by the connection as well.
+
 A transport write returning `Ok(0)` for a non-empty buffer produces [`Error::WriteZero`] and also
 marks the connection dead. This is intentionally conservative: an earlier write may already have
 sent a packet prefix, so restarting that packet on the same byte stream is not safe.

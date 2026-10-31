@@ -202,16 +202,16 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     }
 
     /// Return the underlying transport, consuming this handle.
-    pub fn into_inner(mut self) -> IO {
-        self.handle_disconnect();
+    pub fn into_inner(self) -> IO {
         self.io
     }
 
     /// Mark this connection dead without sending MQTT `DISCONNECT`.
     ///
     /// Use this when the application knows the transport can no longer be used.
+    /// Drop the handle and transport afterwards. The next [`Session::connect`]
+    /// prepares session state for a new connection.
     pub fn handle_disconnect(&mut self) {
         self.live = false;
-        self.session.handle_disconnect();
     }
 }

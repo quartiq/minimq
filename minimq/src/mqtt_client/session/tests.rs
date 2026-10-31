@@ -461,6 +461,28 @@ fn timed_out_read_disconnects_session() {
 }
 
 #[test]
+fn reconnect_discards_partial_input_and_expired_keepalive() {
+    let mut session = session();
+    let mut io = MockConnection::default();
+    io.push_rx(&[0x30, 7, 0]); // Incomplete PUBLISH followed by a transport timeout.
+    let mut conn = live_connection(&mut session, io);
+    conn.session.runtime.ping_timeout = Some(Instant::now());
+    assert!(matches!(
+        block_on(conn.read_packet()),
+        Err(Error::Transport(ErrorKind::TimedOut))
+    ));
+    assert!(!conn.is_connected());
+    drop(conn);
+
+    let mut io = MockConnection::default();
+    io.push_rx(&[0x20, 3, 0, 0, 0]);
+    let mut conn = block_on(session.connect(io)).unwrap();
+    assert!(block_on(conn.drive()).unwrap().is_none());
+    assert!(conn.is_connected());
+    assert_eq!(conn.io.tx.len(), 1); // CONNECT only; no stale keepalive traffic.
+}
+
+#[test]
 fn can_publish_false_after_disconnect() {
     let mut session = session();
     let mut conn = live_connection(&mut session, MockConnection::default());

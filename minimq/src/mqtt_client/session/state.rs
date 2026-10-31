@@ -38,11 +38,6 @@ impl RuntimeState {
         }
     }
 
-    pub(super) fn reset_transport(&mut self) {
-        self.next_ping = None;
-        self.ping_timeout = None;
-    }
-
     pub(super) fn note_outbound_activity(&mut self, now: Instant) {
         self.next_ping = self
             .keepalive_send_interval()

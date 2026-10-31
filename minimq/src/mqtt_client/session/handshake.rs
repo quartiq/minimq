@@ -21,10 +21,10 @@ impl<'buf> Session<'buf> {
     /// connected session and borrows this session; all network operations are driven through it.
     /// On handshake failure (or cancellation) `io` is dropped and the session is left disconnected.
     ///
-    /// All state carried across reconnects (in-flight QoS replay, keepalive timers, the inbound
-    /// packet reader) is reset here, at the start of every `connect`, so it does not matter how a
-    /// previous [`Connection`] ended — dropped, `mem::forget`-ed, or errored. A previous handle that
-    /// was merely dropped did not send a `DISCONNECT`. MQTT 5 and persistent MQTT 3.1.1
+    /// Each attempt resets the packet reader and keepalive timers and prepares in-flight
+    /// packets for replay, regardless of how the previous connection ended. CONNACK decides
+    /// whether session state survives. Dropping a handle sends no `DISCONNECT`.
+    /// MQTT 5 and persistent MQTT 3.1.1
     /// sessions resume broker state when available ([`ConnectEvent::Reconnected`]); otherwise
     /// a fresh session is started ([`ConnectEvent::Connected`]). MQTT 3.1.1 clean sessions
     /// always start fresh.
@@ -43,10 +43,11 @@ impl<'buf> Session<'buf> {
         {
             return Err(Error::InvalidRequest);
         }
-        // We are not guaranteed that any of those 3 calls have been made after
-        // the previous `connect` call.
+        // This is the sole reset boundary, including after a cancelled handshake
+        // or a dropped connection that never reported an error.
         self.packet_reader.reset();
-        self.runtime.reset_transport();
+        self.runtime.next_ping = None;
+        self.runtime.ping_timeout = None;
         self.data.outbound.arm_replay();
         let event = self.connect_handshake(&mut io).await?;
         Ok(Connection {
@@ -56,20 +57,6 @@ impl<'buf> Session<'buf> {
             live: true,
             flush_state: super::FlushState::Clean,
         })
-    }
-
-    pub(super) fn handle_disconnect(&mut self) {
-        debug!(
-            "Resetting local session transport state and arming replay if needed control={=usize} tx_used={=usize} tx_capacity={=usize} retained={=usize} pending_release={=usize}",
-            self.data.outbound.pending_control_len(),
-            self.data.outbound.retained_bytes(),
-            self.data.outbound.capacity(),
-            self.data.outbound.retained_len(),
-            self.data.outbound.pending_release_len()
-        );
-        self.data.outbound.arm_replay();
-        self.runtime.reset_transport();
-        self.packet_reader.reset();
     }
 
     async fn connect_handshake<IO: Io>(
@@ -122,16 +109,12 @@ impl<'buf> Session<'buf> {
             .outbound
             .set_connect_workspace(connect_workspace)?;
 
-        self.runtime.next_ping = None;
-        self.runtime.ping_timeout = None;
-
         if let Err(err) = fill_packet_reader(&mut self.packet_reader, connection).await {
             match &err {
                 Error::Transport(err) => warn!("Transport read failed: {}", err.kind()),
                 Error::Disconnected => warn!("Transport returned EOF during CONNECT"),
                 _ => {}
             }
-            self.handle_disconnect();
             return Err(err);
         }
 
@@ -139,7 +122,6 @@ impl<'buf> Session<'buf> {
             Ok(packet) => packet,
             Err(err) => {
                 warn!("Failed to decode inbound packet: {}", err);
-                self.handle_disconnect();
                 return Err(err.into());
             }
         };
@@ -150,13 +132,9 @@ impl<'buf> Session<'buf> {
                     "Received broker DISCONNECT during CONNECT reason={}",
                     disconnect.reason_code()
                 );
-                self.handle_disconnect();
                 return Err(Error::Disconnected);
             }
-            _ => {
-                self.handle_disconnect();
-                return Err(Error::Peer(PeerError::InvalidPacket));
-            }
+            _ => return Err(Error::Peer(PeerError::InvalidPacket)),
         };
 
         if let Err(err) = ack.reason_code.as_result() {
@@ -210,10 +188,7 @@ impl<'buf> Session<'buf> {
             }
             Ok(())
         })();
-        if let Err(err) = property_result {
-            self.handle_disconnect();
-            return Err(Error::Peer(err));
-        }
+        property_result.map_err(Error::Peer)?;
 
         self.runtime.keepalive_interval = keepalive_interval;
         self.runtime.send_quota = send_quota;
@@ -240,7 +215,6 @@ impl<'buf> Session<'buf> {
 
         self.data.mark_session_present();
         self.runtime.note_outbound_activity(Instant::now());
-        self.runtime.ping_timeout = None;
         if resumed {
             info!("Connected and resumed existing broker session");
             Ok(ConnectEvent::Reconnected)
