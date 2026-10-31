@@ -16,7 +16,10 @@ mod will;
 mod wire;
 
 pub use config::{Buffers, ConfigBuilder, Protocol};
-pub use mqtt_client::{ConnectEvent, Connection, InboundPublish, Io, Op, Session};
+pub use mqtt_client::{
+    ConnectEvent, Connection, Event, InboundPublish, Io, Op, Outcome, Session, SubscribeResults,
+    UnsubscribeResults,
+};
 pub use packets::Disconnect;
 pub use properties::{Properties, Property};
 pub use publication::{OwnedResponseTarget, Publication, ToPayload};

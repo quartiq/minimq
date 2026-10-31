@@ -3,8 +3,8 @@ use core::convert::Infallible;
 use crate::de::ReceivedPacket;
 use crate::mqtt_client::outbound::{ControlAction, PacketKind, check_control_packet_size};
 use crate::{
-    Connection, Error, InboundPublish, Io, PeerError, ProtocolError, QoS, ReasonCode,
-    ResourceError, debug, info, trace, warn,
+    Connection, Error, Event, InboundPublish, Io, Op, Outcome, PeerError, ProtocolError, QoS,
+    ReasonCode, ResourceError, SubscribeResults, UnsubscribeResults, debug, info, trace, warn,
 };
 
 use super::state::{RuntimeState, SessionData};
@@ -19,6 +19,11 @@ impl<'a> SessionData<'a> {
         match packet {
             ReceivedPacket::ConnAck(_) => return Err(ProtocolError::UnexpectedPacket.into()),
             ReceivedPacket::SubAck(ack) => {
+                self.outbound.validate_response_count(
+                    PacketKind::Subscribe,
+                    ack.packet_id,
+                    ack.codes.len(),
+                )?;
                 if !self
                     .outbound
                     .ack_packet(PacketKind::Subscribe, ack.packet_id)
@@ -27,11 +32,16 @@ impl<'a> SessionData<'a> {
                     return Ok(false);
                 }
                 debug!("Processed SUBACK packet_id={=u16}", ack.packet_id);
-                for &code in ack.codes {
-                    ReasonCode::from(code).as_result()?;
-                }
+                return Ok(true);
             }
             ReceivedPacket::UnsubAck(ack) => {
+                if protocol.is_v5() {
+                    self.outbound.validate_response_count(
+                        PacketKind::Unsubscribe,
+                        ack.packet_id,
+                        ack.codes.len(),
+                    )?;
+                }
                 if !self
                     .outbound
                     .ack_packet(PacketKind::Unsubscribe, ack.packet_id)
@@ -43,9 +53,7 @@ impl<'a> SessionData<'a> {
                     return Ok(false);
                 }
                 debug!("Processed UNSUBACK packet_id={=u16}", ack.packet_id);
-                for &code in ack.codes {
-                    ReasonCode::from(code).as_result()?;
-                }
+                return Ok(true);
             }
             ReceivedPacket::PingResp => {
                 trace!("Received PINGRESP");
@@ -67,7 +75,7 @@ impl<'a> SessionData<'a> {
                     "Processed PUBACK packet_id={=u16} send_quota={=u16}",
                     ack.packet_id, runtime.send_quota
                 );
-                ack.reason.code().as_result()?;
+                return Ok(true);
             }
             ReceivedPacket::PubRec(rec) => {
                 if !rec.reason.code().success() {
@@ -79,7 +87,7 @@ impl<'a> SessionData<'a> {
                             .send_quota
                             .saturating_add(1)
                             .min(runtime.max_send_quota);
-                        rec.reason.code().as_result()?;
+                        return Ok(true);
                     }
                 } else {
                     check_control_packet_size(
@@ -106,7 +114,7 @@ impl<'a> SessionData<'a> {
                     .send_quota
                     .saturating_add(1)
                     .min(runtime.max_send_quota);
-                comp.reason.code().as_result()?;
+                return Ok(true);
             }
             ReceivedPacket::PubRel(rel) => {
                 let reason = if let Some(index) = self
@@ -250,27 +258,51 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         }
     }
 
-    pub(super) fn decode_inbound_publish(
-        &self,
-        packet_length: usize,
-    ) -> Result<InboundPublish<'_>, ProtocolError> {
+    pub(super) fn decode_event(&self, packet_length: usize) -> Result<Event<'_>, ProtocolError> {
         let buffer = self
             .session
             .packet_reader
             .buffer
             .get(..packet_length)
             .ok_or(ProtocolError::MalformedPacket)?;
-        let ReceivedPacket::Publish(info) =
-            ReceivedPacket::from_buffer(buffer, self.session.protocol)?
-        else {
-            return Err(ProtocolError::UnexpectedPacket);
+        let packet = ReceivedPacket::from_buffer(buffer, self.session.protocol)?;
+        let (packet_id, outcome) = match packet {
+            ReceivedPacket::Publish(info) => {
+                return Ok(Event::Publish(InboundPublish::new(
+                    info.topic.0,
+                    info.payload,
+                    info.properties,
+                    info.retain,
+                    info.qos,
+                )));
+            }
+            ReceivedPacket::SubAck(ack) => (
+                ack.packet_id,
+                Outcome::Subscribe(SubscribeResults(ack.codes)),
+            ),
+            ReceivedPacket::UnsubAck(ack) => (
+                ack.packet_id,
+                Outcome::Unsubscribe(UnsubscribeResults(
+                    self.session.protocol.is_v5().then_some(ack.codes),
+                )),
+            ),
+            ReceivedPacket::PubAck(ack) => (
+                ack.packet_id,
+                Outcome::Publish(super::super::broker_result(ack.reason.code())),
+            ),
+            ReceivedPacket::PubRec(ack) => (
+                ack.packet_id,
+                Outcome::Publish(super::super::broker_result(ack.reason.code())),
+            ),
+            ReceivedPacket::PubComp(ack) => (
+                ack.packet_id,
+                Outcome::Publish(super::super::broker_result(ack.reason.code())),
+            ),
+            _ => return Err(ProtocolError::UnexpectedPacket),
         };
-        Ok(InboundPublish::new(
-            info.topic.0,
-            info.payload,
-            info.properties,
-            info.retain,
-            info.qos,
-        ))
+        Ok(Event::Completed {
+            op: Op::new(packet_id, self.session.data.generation()),
+            outcome,
+        })
     }
 }

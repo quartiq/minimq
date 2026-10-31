@@ -26,8 +26,7 @@ impl<T> Io for T where T: Read + Write + ErrorType {}
 /// Handle for one outbound MQTT operation accepted into local session state.
 ///
 /// Query this handle on its originating [`Session`] (or a [`Connection`] borrowing
-/// it), and discard it after completion or invalidation. Completion means the
-/// operation has left local pending state; driving the connection reports broker errors.
+/// it), and discard it after completion or invalidation. Completion is reported by [`Event::Completed`], including broker rejections.
 ///
 /// Handles use MQTT packet identifiers, which cycle through 1..=65535 and can be
 /// reused after an operation ends. Check completion before its identifier is reused:
@@ -39,6 +38,85 @@ pub struct Op {
     generation: u32,
 }
 
+/// Application-visible progress on an MQTT connection.
+#[derive(Debug)]
+pub enum Event<'a> {
+    /// A publication received from the broker.
+    Publish(InboundPublish<'a>),
+    /// A broker acknowledgement ended an outbound operation, successfully or otherwise.
+    Completed {
+        /// The operation accepted by this session.
+        op: Op,
+        /// The broker's result, including any rejection.
+        outcome: Outcome<'a>,
+    },
+}
+
+/// The broker's result for an outbound operation.
+#[derive(Debug)]
+pub enum Outcome<'a> {
+    /// Completion of a QoS 1 or 2 exchange with the broker.
+    Publish(Result<(), crate::ReasonCode>),
+    /// Results in the order of the requested topic filters.
+    Subscribe(SubscribeResults<'a>),
+    /// Acknowledgement of an unsubscribe request.
+    Unsubscribe(UnsubscribeResults<'a>),
+}
+
+impl Outcome<'_> {
+    /// Check that every part of the operation succeeded, returning the first rejection.
+    pub fn check(&self) -> Result<(), crate::PeerError> {
+        let result = match self {
+            Self::Publish(result) => *result,
+            Self::Subscribe(results) => results.iter().try_for_each(|result| result.map(|_| ())),
+            Self::Unsubscribe(results) => results
+                .per_filter()
+                .into_iter()
+                .flatten()
+                .try_for_each(|result| result),
+        };
+        result.map_err(crate::PeerError::Rejected)
+    }
+}
+
+/// Validated SUBACK results, borrowed from the receive buffer.
+#[derive(Debug)]
+pub struct SubscribeResults<'a>(pub(crate) &'a [u8]);
+
+impl SubscribeResults<'_> {
+    /// Granted QoS or rejection for each requested topic filter, in request order.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = Result<QoS, crate::ReasonCode>> + '_ {
+        self.0.iter().map(|&code| match code {
+            0 => Ok(QoS::AtMostOnce),
+            1 => Ok(QoS::AtLeastOnce),
+            2 => Ok(QoS::ExactlyOnce),
+            _ => Err(crate::ReasonCode::from(code)),
+        })
+    }
+}
+
+/// Validated UNSUBACK results, borrowed from the receive buffer.
+#[derive(Debug)]
+pub struct UnsubscribeResults<'a>(pub(crate) Option<&'a [u8]>);
+
+impl UnsubscribeResults<'_> {
+    /// MQTT 5 results in request order. MQTT 3.1.1 acknowledges the whole request
+    /// successfully and supplies no per-filter results, returning `None` here.
+    pub fn per_filter(
+        &self,
+    ) -> Option<impl ExactSizeIterator<Item = Result<(), crate::ReasonCode>> + '_> {
+        self.0.map(|codes| {
+            codes
+                .iter()
+                .map(|&code| broker_result(crate::ReasonCode::from(code)))
+        })
+    }
+}
+
+pub(crate) fn broker_result(code: crate::ReasonCode) -> Result<(), crate::ReasonCode> {
+    if code.success() { Ok(()) } else { Err(code) }
+}
+
 impl Op {
     pub(crate) fn new(packet_id: u16, generation: u32) -> Self {
         Self {
@@ -48,17 +126,7 @@ impl Op {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum OpStatus {
-    /// The operation is still present in local in-flight state.
-    Pending,
-    /// The operation is no longer pending in this session generation.
-    Complete,
-    /// The local session state that could complete this operation was discarded.
-    Invalidated,
-}
-
-/// Inbound MQTT `PUBLISH` surfaced by [`Connection::recv`] and by
+/// Inbound MQTT `PUBLISH` surfaced by [`Connection::poll`] and by
 /// [`Connection::drive`] / [`Connection::poll`] when they return `Some(...)`.
 #[derive(Debug)]
 pub struct InboundPublish<'a> {
@@ -150,7 +218,7 @@ impl<'a> InboundPublish<'a> {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ConnectEvent {
     /// The broker created a fresh session.
-    Connected,
+    SessionCreated,
     /// The broker resumed the existing session.
-    Reconnected,
+    SessionResumed,
 }

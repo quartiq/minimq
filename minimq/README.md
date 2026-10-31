@@ -29,7 +29,7 @@ configuration trees over MQTT.
 - [`Disconnect`]: graceful disconnect options
 - [`Io`]: transport boundary for an established byte stream
 - [`Session`]: the client you drive
-- [`InboundPublish`]: output of [`Connection::recv()`]
+- [`Event`]: a received [`InboundPublish`] or a correlated operation outcome
 
 ## Example
 
@@ -55,7 +55,7 @@ configuration trees over MQTT.
 # }
 # async fn open_io(_addr: SocketAddr) -> Result<MyIo, io::Error> { todo!() }
 use core::net::SocketAddr;
-use minimq::{Buffers, ConfigBuilder, ConnectEvent, Error, Session, TopicFilter};
+use minimq::{Buffers, ConfigBuilder, ConnectEvent, Error, Event, Session, TopicFilter};
 
 async fn run() {
     let rx = &mut [0u8; 256];
@@ -74,17 +74,20 @@ async fn run() {
         // reconnect.
         let mut conn = session.connect(io).await.unwrap();
         match conn.connect_event() {
-            ConnectEvent::Connected => {
+            ConnectEvent::SessionCreated => {
                 conn.subscribe(&[TopicFilter::new("demo/in")], &[])
                     .await
                     .unwrap();
             }
-            ConnectEvent::Reconnected => {}
+            ConnectEvent::SessionResumed => {}
         }
 
         loop {
-            match conn.recv().await {
-                Ok(message) => println!("topic={}", message.topic()),
+            match conn.poll().await {
+                Ok(Event::Publish(message)) => println!("topic={}", message.topic()),
+                Ok(Event::Completed { op, outcome }) => {
+                    println!("operation {op:?}: {:?}", outcome.check());
+                }
                 Err(Error::Disconnected) => break,
                 Err(err) => panic!("{err}"),
             }
@@ -153,16 +156,17 @@ passes that transport into [`Session::connect()`] to establish or resume the bro
 [`Session::connect()`] takes ownership of the provided transport and performs the unbounded MQTT
 `CONNECT` / `CONNACK` handshake. It returns a [`Connection`] that borrows the session. Once
 connected:
-- [`Connection::recv()`] blocks until the next inbound publish arrives or the connection is lost.
-- [`Connection::poll()`] blocks until any session progress happens and returns `Ok(None)` for
-  internal-only progress such as ACK handling, replay, or keepalive traffic.
+- [`Connection::poll()`] waits for an [`Event`], servicing acknowledgements, replay, and keepalive.
+- [`Event::Publish`] contains a borrowed incoming publication.
+- [`Event::Completed`] pairs an [`Op`] with its [`Outcome`]. Check the outcome before advancing
+  application work; subscription results follow the order of the requested filters.
 
 Dropping the connection releases the session for a later reconnect. Call
 [`Connection::disconnect()`] first for a graceful MQTT close.
 
-- [`ConnectEvent::Connected`] means the broker created a fresh session. Re-establish subscriptions
+- [`ConnectEvent::SessionCreated`] means the broker created a fresh session. Re-establish subscriptions
   here.
-- [`ConnectEvent::Reconnected`] means the broker resumed the existing MQTT session. Existing
+- [`ConnectEvent::SessionResumed`] means the broker resumed the existing MQTT session. Existing
   subscriptions and in-flight QoS state were kept.
 
 After a disconnect or transport/protocol error, drop the connection and call
@@ -170,7 +174,8 @@ After a disconnect or transport/protocol error, drop the connection and call
 
 Track each operation handle ([`Op`]) on its originating session until completion or
 invalidation, within the packet-identifier reuse window described in its rustdoc.
-Handle broker errors reported while driving the connection.
+Broker rejections arrive in completion outcomes; connection failures are returned by `poll()`.
+A fresh broker session invalidates pending operations from the previous session.
 
 A transport write returning `Ok(0)` for a non-empty buffer produces [`Error::WriteZero`]
 and marks the connection disconnected. Drop it to release the transport.
@@ -178,7 +183,7 @@ and marks the connection disconnected. Drop it to release the transport.
 For cooperative driving:
 - use [`Connection::drive()`] for immediate local progress without waiting for future inbound reads
   or future session deadlines
-- wrap cancel-safe blocking [`Connection::poll()`] or [`Connection::recv()`] in an external timeout
+- wrap cancel-safe blocking [`Connection::poll()`] in an external timeout
   such as [`embassy_time::with_timeout()`] or [`embassy_time::with_deadline()`]
 - if you need real wall-clock limits, enforce them in the transport's `read`, `write`, and
   `flush` futures; using the same budget as minimq's internal MQTT round-trip timeout keeps

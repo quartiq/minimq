@@ -67,7 +67,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     /// Send a `SUBSCRIBE`.
     ///
     /// Call this after [`Session::connect`](crate::Session::connect). A resumed
-    /// [`ConnectEvent::Reconnected`](crate::ConnectEvent::Reconnected)
+    /// [`ConnectEvent::SessionResumed`](crate::ConnectEvent::SessionResumed)
     /// already kept broker-side subscriptions.
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
     pub async fn subscribe(
@@ -103,10 +103,12 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             topics,
         })?;
         self.session.runtime.require_packet_size(len)?;
-        self.session
-            .data
-            .outbound
-            .retain_packet(PacketKind::Subscribe, packet_id, len)?;
+        self.session.data.outbound.retain_packet(
+            PacketKind::Subscribe,
+            packet_id,
+            len,
+            topics.len(),
+        )?;
         debug!(
             "Enqueued SUBSCRIBE packet_id={=u16} len={=usize} tx_used={=usize}",
             packet_id,
@@ -119,9 +121,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
 
     /// Send an `UNSUBSCRIBE`.
     ///
-    /// Returns an operation handle that can be checked with [`Connection::is_pending`](Self::is_pending),
-    /// [`Connection::is_complete`](Self::is_complete), or
-    /// [`Connection::is_invalidated`](Self::is_invalidated).
+    /// Returns the handle correlated with the eventual [`crate::Event::Completed`].
     ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
     pub async fn unsubscribe(
@@ -155,10 +155,12 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             topics,
         })?;
         self.session.runtime.require_packet_size(len)?;
-        self.session
-            .data
-            .outbound
-            .retain_packet(PacketKind::Unsubscribe, packet_id, len)?;
+        self.session.data.outbound.retain_packet(
+            PacketKind::Unsubscribe,
+            packet_id,
+            len,
+            topics.len(),
+        )?;
         debug!(
             "Enqueued UNSUBSCRIBE packet_id={=u16} len={=usize} tx_used={=usize}",
             packet_id,
@@ -177,10 +179,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     ///
     /// QoS 1 and 2 retain the encoded packet in the session TX buffer until broker ack and are
     /// cancel-safe if the underlying transport I/O futures are cancel-safe.
-    /// They return `Some(Op)` so the caller can check completion with
-    /// [`Connection::is_pending`](Self::is_pending),
-    /// [`Connection::is_complete`](Self::is_complete), or
-    /// [`Connection::is_invalidated`](Self::is_invalidated).
+    /// They return `Some(Op)`, correlated with the eventual [`crate::Event::Completed`].
     ///
     /// QoS 0 bypasses retained outbound state, encodes into temporary TX scratch space, and writes
     /// directly to the transport. It therefore does not consume replay/in-flight slots and only
@@ -288,7 +287,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         self.session
             .data
             .outbound
-            .retain_packet(kind, packet_id, len)?;
+            .retain_packet(kind, packet_id, len, 0)?;
         debug!(
             "Enqueued PUBLISH packet_id={=u16} qos={} len={=usize} send_quota={=u16}/{=u16} tx_used={=usize}",
             packet_id,

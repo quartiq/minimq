@@ -25,8 +25,8 @@ impl<'buf> Session<'buf> {
     /// packets for replay, regardless of how the previous connection ended. CONNACK decides
     /// whether session state survives. Dropping a handle sends no `DISCONNECT`.
     /// MQTT 5 and persistent MQTT 3.1.1
-    /// sessions resume broker state when available ([`ConnectEvent::Reconnected`]); otherwise
-    /// a fresh session is started ([`ConnectEvent::Connected`]). MQTT 3.1.1 clean sessions
+    /// sessions resume broker state when available ([`ConnectEvent::SessionResumed`]); otherwise
+    /// a fresh session is started ([`ConnectEvent::SessionCreated`]). MQTT 3.1.1 clean sessions
     /// always start fresh.
     pub async fn connect<IO: Io>(
         &mut self,
@@ -217,10 +217,10 @@ impl<'buf> Session<'buf> {
         self.runtime.note_outbound_activity(Instant::now());
         if resumed {
             info!("Connected and resumed existing broker session");
-            Ok(ConnectEvent::Reconnected)
+            Ok(ConnectEvent::SessionResumed)
         } else {
             info!("Connected with a fresh broker session");
-            Ok(ConnectEvent::Connected)
+            Ok(ConnectEvent::SessionCreated)
         }
     }
 }

@@ -41,11 +41,19 @@ async fn run<IO: Io>(connection: &mut Connection<'_, '_, IO>) {
     let mut rpc = Service::new("dt/device").unwrap();
     rpc.begin_connection(connection.connect_event());
     while !rpc.step(connection).await.unwrap() {
-        let _ = connection.poll().await.unwrap();
+        if let minimq::Event::Completed { op, outcome } = connection.poll().await.unwrap() {
+            rpc.handle_completion(op, &outcome).unwrap();
+        }
     }
 
     loop {
-        let inbound = connection.recv().await.unwrap();
+        let inbound = match connection.poll().await.unwrap() {
+            minimq::Event::Publish(inbound) => inbound,
+            minimq::Event::Completed { outcome, .. } => {
+                outcome.check().unwrap();
+                continue;
+            }
+        };
         if let Handle::Request(request) = rpc.handle(&inbound) {
             assert_eq!(request.method(), "ping");
             let target = request.into_response_target();

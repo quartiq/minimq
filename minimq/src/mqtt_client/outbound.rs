@@ -60,6 +60,7 @@ struct RetainedPacket {
     kind: PacketKind,
     packet_id: u16,
     len: usize,
+    response_count: usize,
     state: SendState,
 }
 
@@ -244,6 +245,20 @@ impl<'a> Outbound<'a> {
         true
     }
 
+    pub(super) fn validate_response_count(
+        &self,
+        kind: PacketKind,
+        packet_id: u16,
+        count: usize,
+    ) -> Result<(), ProtocolError> {
+        if self.retained.iter().any(|entry| {
+            entry.kind == kind && entry.packet_id == packet_id && entry.response_count != count
+        }) {
+            return Err(ProtocolError::MalformedPacket);
+        }
+        Ok(())
+    }
+
     fn remove_bytes(&mut self, position: usize) {
         let len = self.retained[position].len;
         if len == 0 {
@@ -342,12 +357,14 @@ impl<'a> Outbound<'a> {
         kind: PacketKind,
         packet_id: u16,
         len: usize,
+        response_count: usize,
     ) -> Result<(), ProtocolError> {
         self.retained
             .push(RetainedPacket {
                 kind,
                 packet_id,
                 len,
+                response_count,
                 state: SendState::Queued,
             })
             .map_err(|_| ProtocolError::InflightMetadataExhausted)?;
@@ -629,7 +646,7 @@ mod tests {
         let mut outbound = Outbound::new(&mut storage);
 
         outbound
-            .retain_packet(PacketKind::Subscribe, 7, 10)
+            .retain_packet(PacketKind::Subscribe, 7, 10, 0)
             .unwrap();
 
         let len = outbound
@@ -648,7 +665,9 @@ mod tests {
         let mut storage = [0u8; MAX_FIXED_HEADER_SIZE + 4];
         let mut outbound = Outbound::new(&mut storage);
 
-        outbound.retain_packet(PacketKind::Subscribe, 7, 5).unwrap();
+        outbound
+            .retain_packet(PacketKind::Subscribe, 7, 5, 0)
+            .unwrap();
 
         assert!(!outbound.can_retain());
     }
@@ -658,7 +677,9 @@ mod tests {
         let mut storage = [0u8; MAX_FIXED_HEADER_SIZE + 4];
         let mut outbound = Outbound::new(&mut storage);
 
-        outbound.retain_packet(PacketKind::Subscribe, 7, 5).unwrap();
+        outbound
+            .retain_packet(PacketKind::Subscribe, 7, 5, 0)
+            .unwrap();
 
         let publication = Publication::bytes("a", b"x");
         let header = PublishHeader {
@@ -703,7 +724,9 @@ mod tests {
     fn acknowledgement_must_match_retained_operation() {
         let mut storage = [0u8; 16];
         let mut outbound = Outbound::new(&mut storage);
-        outbound.retain_packet(PacketKind::Subscribe, 7, 5).unwrap();
+        outbound
+            .retain_packet(PacketKind::Subscribe, 7, 5, 0)
+            .unwrap();
 
         assert!(!outbound.ack_packet(PacketKind::PublishAtLeastOnce, 7));
         assert!(outbound.has_retained(7));

@@ -156,7 +156,7 @@ impl Service {
     /// A resumed session skips subscription only if startup previously completed.
     pub fn begin_connection(&mut self, event: ConnectEvent) {
         self.subscribe = None;
-        self.ready &= matches!(event, ConnectEvent::Reconnected);
+        self.ready &= matches!(event, ConnectEvent::SessionResumed);
     }
 
     /// Return whether the request subscription is active.
@@ -180,17 +180,11 @@ impl Service {
         }
 
         if let Some(op) = self.subscribe {
-            if connection.is_pending(&op) {
-                return Ok(false);
-            }
-            if connection.is_complete(&op) {
+            if connection.is_invalidated(&op) {
                 self.subscribe = None;
-                self.ready = true;
-                return Ok(true);
+                return Err(MqttError::Disconnected);
             }
-            debug_assert!(connection.is_invalidated(&op));
-            self.subscribe = None;
-            return Err(MqttError::Disconnected);
+            return Ok(false);
         }
 
         let options = SubscriptionOptions::default()
@@ -215,7 +209,22 @@ impl Service {
         Ok(false)
     }
 
-    /// Classify an inbound publication and retain the response destination for valid requests.
+    /// Route a completion from `Connection::poll`. Returns whether it belongs to this service.
+    pub fn handle_completion(
+        &mut self,
+        op: minimq::Op,
+        outcome: &minimq::Outcome<'_>,
+    ) -> Result<bool, minimq::PeerError> {
+        if self.subscribe != Some(op) {
+            return Ok(false);
+        }
+        self.subscribe = None;
+        outcome.check()?;
+        self.ready = true;
+        Ok(true)
+    }
+
+    /// Classify an inbound publication and capture its response destination.
     pub fn handle<'a>(&self, inbound: &InboundPublish<'a>) -> Handle<'a> {
         let Some(method) = self.method(inbound.topic()) else {
             return Handle::Unhandled;
@@ -315,12 +324,12 @@ mod tests {
     #[test]
     fn resume_requires_completed_startup() {
         let mut service = Service::new("device").unwrap();
-        service.begin_connection(ConnectEvent::Reconnected);
+        service.begin_connection(ConnectEvent::SessionResumed);
         assert!(!service.is_ready());
         service.ready = true;
-        service.begin_connection(ConnectEvent::Reconnected);
+        service.begin_connection(ConnectEvent::SessionResumed);
         assert!(service.is_ready());
-        service.begin_connection(ConnectEvent::Connected);
+        service.begin_connection(ConnectEvent::SessionCreated);
         assert!(!service.is_ready());
     }
 

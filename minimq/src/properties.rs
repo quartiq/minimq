@@ -309,6 +309,18 @@ impl<'a> Properties<'a> {
             .all(|property| property.is_ok_and(|property| property.is_valid_for(context)))
     }
 
+    pub(crate) fn valid_ack(&self) -> bool {
+        let mut reason_seen = false;
+        self.iter().all(|property| match property {
+            Ok(Property::UserProperty(..)) => true,
+            Ok(Property::ReasonString(_)) if !reason_seen => {
+                reason_seen = true;
+                true
+            }
+            _ => false,
+        })
+    }
+
     fn iter_inner(&'a self) -> PropertiesIter<'a> {
         match &self.inner {
             PropertiesData::Encoded(data) => PropertiesIter {

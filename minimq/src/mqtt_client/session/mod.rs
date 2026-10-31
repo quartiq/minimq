@@ -13,7 +13,7 @@ use crate::{ConfigBuilder, Op, QoS, Will};
 use crate::{config::CLIENT_ID_CAPACITY, ser::MAX_FIXED_HEADER_SIZE};
 use heapless::String;
 
-use super::{ConnectEvent, Io, OpStatus};
+use super::{ConnectEvent, Io};
 
 use state::{RuntimeState, SessionData};
 
@@ -102,31 +102,14 @@ impl<'buf> Session<'buf> {
         self.data.outbound.is_quiescent()
     }
 
-    fn status(&self, op: &Op) -> OpStatus {
-        if op.generation != self.data.generation() {
-            return OpStatus::Invalidated;
-        }
-
-        if self.data.outbound.has_retained(op.packet_id) {
-            OpStatus::Pending
-        } else {
-            OpStatus::Complete
-        }
-    }
-
     /// Return whether the operation still has local in-flight state.
     pub fn is_pending(&self, op: &Op) -> bool {
-        self.status(op) == OpStatus::Pending
+        !self.is_invalidated(op) && self.data.outbound.has_retained(op.packet_id)
     }
 
-    /// Return whether the operation completed in the current session generation.
-    pub fn is_complete(&self, op: &Op) -> bool {
-        self.status(op) == OpStatus::Complete
-    }
-
-    /// Return whether the local session state that could complete this operation was discarded.
+    /// Return whether the session state for this operation was discarded.
     pub fn is_invalidated(&self, op: &Op) -> bool {
-        self.status(op) == OpStatus::Invalidated
+        op.generation != self.data.generation()
     }
 }
 
@@ -142,7 +125,7 @@ pub(super) enum FlushState {
 /// [`Session::connect`](Session::connect).
 ///
 /// The handle owns the transport and borrows the [`Session`] for the duration of the connection.
-/// All network operations (`drive`, `poll`, `recv`, `publish`, `subscribe`, `unsubscribe`,
+/// All network operations (`drive`, `poll`, `publish`, `subscribe`, `unsubscribe`,
 /// `disconnect`) live here. Operation-state queries are also available through [`Self::session`].
 ///
 /// Dropping the handle sends no `DISCONNECT`. Call [`Self::disconnect`] first for a graceful close.
@@ -189,11 +172,6 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     /// Return whether the operation still has local in-flight state.
     pub fn is_pending(&self, op: &Op) -> bool {
         self.session.is_pending(op)
-    }
-
-    /// Return whether the operation completed in the current session generation.
-    pub fn is_complete(&self, op: &Op) -> bool {
-        self.session.is_complete(op)
     }
 
     /// Return whether the local session state that could complete this operation was discarded.

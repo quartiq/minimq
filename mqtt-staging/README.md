@@ -68,8 +68,8 @@ A new service starts from idle; transfer progress is not persisted.
 
 Call `begin_startup()` after each MQTT connection, then drive `step()`.
 Session resume skips only a previously completed subscription. When `step()`
-returns `Step::Pending`, poll the connection and route inbound publishes through
-`handle()` before retrying. `Step::Quiescent` means the MQTT work is drained,
+returns `Step::Pending`, poll the connection and route publications through `handle()`
+and completion events through `handle_completion()` before retrying. `Step::Quiescent` means the MQTT work is drained,
 not that storage work or the transfer is complete.
 
 `StagingWrite` borrows Minimq's current RX packet. Consume the payload before the

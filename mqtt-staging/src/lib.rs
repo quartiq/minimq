@@ -253,7 +253,7 @@ impl Service {
     /// and outstanding storage requests survive reconnects.
     pub fn begin_startup(&mut self, event: ConnectEvent) {
         let replay = (self.state != State::Idle).then(|| self.current_code());
-        if event == ConnectEvent::Connected {
+        if event == ConnectEvent::SessionCreated {
             self.inflight = None;
             self.subscribed = false;
         }
@@ -416,10 +416,34 @@ impl Service {
         self.handle_chunk(chunk.id, chunk.offset, payload)
     }
 
+    /// Route an MQTT completion, returning whether it belongs to this service.
+    pub fn handle_completion(
+        &mut self,
+        op: minimq::Op,
+        outcome: &minimq::Outcome<'_>,
+    ) -> Result<bool, minimq::PeerError> {
+        let Some(inflight) = self.inflight.as_ref().filter(|inflight| inflight.op == op) else {
+            return Ok(false);
+        };
+        let action = inflight.action;
+        self.inflight = None;
+        if let Err(err) = outcome.check() {
+            self.queue(action);
+            return Err(err);
+        }
+        if action == Action::Subscribe {
+            self.subscribed = true;
+            if let Some(code) = self.startup_publish.take() {
+                self.queue(Action::Publish(code));
+            }
+        }
+        Ok(true)
+    }
+
     /// Advance one queued MQTT operation.
     ///
     /// Starts at most one subscribe or status publication, without reading
-    /// inbound packets. On [`Step::Pending`], drive [`Connection::poll`] before
+    /// inbound packets. On [`Step::Pending`], route the events from [`Connection::poll`] before
     /// retrying to allow acknowledgements and incoming traffic to progress.
     ///
     /// Cancellation preserves the queued action, but retrying may duplicate
@@ -434,21 +458,14 @@ impl Service {
     {
         self.max_rx_packet_size = connection.session().max_rx_packet_size();
 
-        if let Some(inflight) = self.inflight.take() {
-            if connection.is_pending(&inflight.op) {
-                self.inflight = Some(inflight);
-                return Ok(Step::Pending);
-            }
+        if let Some(inflight) = &self.inflight {
             if connection.is_invalidated(&inflight.op) {
-                self.queue(inflight.action);
+                let action = inflight.action;
+                self.inflight = None;
+                self.queue(action);
                 return Err(MqttError::Disconnected);
             }
-            if inflight.action == Action::Subscribe {
-                self.subscribed = true;
-                if let Some(code) = self.startup_publish.take() {
-                    self.queue(Action::Publish(code));
-                }
-            }
+            return Ok(Step::Pending);
         }
 
         let Some(action) = self.pending else {
@@ -1037,6 +1054,35 @@ mod tests {
     }
 
     #[test]
+    fn startup_waits_for_a_successful_correlated_outcome() {
+        let mut service = service(128);
+        service.begin_startup(ConnectEvent::SessionCreated);
+        let (mut rx, mut tx) = ([0; 128], [0; 1024]);
+        let mut session = Session::new(ConfigBuilder::new(Buffers::new(&mut rx, &mut tx)));
+        let mut connection = block_on(session.connect(TestIo {
+            rx: &[0x20, 3, 0, 0, 0, 0x90, 5, 0, 1, 0, 1, 0x87],
+            writes: 2,
+        }))
+        .unwrap();
+        assert_eq!(
+            block_on(service.step(&mut connection)).unwrap(),
+            Step::Pending
+        );
+        let minimq::Event::Completed { op, outcome } = block_on(connection.poll()).unwrap() else {
+            panic!("expected completion")
+        };
+        assert_eq!(
+            service.handle_completion(op, &outcome),
+            Err(minimq::PeerError::Rejected(
+                minimq::ReasonCode::NotAuthorized
+            ))
+        );
+        assert!(!service.subscribed);
+        assert_eq!(service.pending, Some(Action::Subscribe));
+        assert!(connection.is_connected());
+    }
+
+    #[test]
     fn cancelled_step_retains_action_for_retry() {
         for action in [Action::Subscribe, Action::Publish(StatusCode::Accepted)] {
             let mut service = ready_service();
@@ -1159,7 +1205,7 @@ mod tests {
     #[test]
     fn connected_startup_queues_subscribe_only_for_idle_service() {
         let mut service = service(128);
-        service.begin_startup(ConnectEvent::Connected);
+        service.begin_startup(ConnectEvent::SessionCreated);
         assert_eq!(service.pending, Some(Action::Subscribe));
         assert_eq!(service.startup_publish, None);
     }
@@ -1167,7 +1213,7 @@ mod tests {
     #[test]
     fn connected_startup_defers_status_replay_until_after_subscribe() {
         let mut service = ready_service();
-        service.begin_startup(ConnectEvent::Connected);
+        service.begin_startup(ConnectEvent::SessionCreated);
         assert_eq!(service.pending, Some(Action::Subscribe));
         assert_eq!(service.startup_publish, Some(StatusCode::Accepted));
         assert!(service.abort());
@@ -1178,11 +1224,11 @@ mod tests {
     #[test]
     fn reconnected_startup_replays_current_status_without_subscribe() {
         let mut idle = service(128);
-        idle.begin_startup(ConnectEvent::Reconnected);
+        idle.begin_startup(ConnectEvent::SessionResumed);
         assert_eq!(idle.pending, Some(Action::Subscribe));
 
         let mut service = ready_service();
-        service.begin_startup(ConnectEvent::Reconnected);
+        service.begin_startup(ConnectEvent::SessionResumed);
         assert_eq!(service.pending, Some(Action::Publish(StatusCode::Accepted)));
         assert_eq!(service.startup_publish, None);
     }

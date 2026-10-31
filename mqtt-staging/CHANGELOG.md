@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [UNRELEASED](https://github.com/quartiq/minimq/compare/mqtt-staging-v0.1.4...HEAD) - DATE
 
+### Changed
+
+* **Breaking:** route Minimq completion events to `Service::handle_completion` before
+  advancing queued work. Broker rejection no longer counts as successful startup.
+
 ### Fixed
 
 * Handle late subscription acknowledgements after Python subscription cancellation or timeout.

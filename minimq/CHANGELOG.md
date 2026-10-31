@@ -15,12 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+* **Breaking:** `poll()` returns publications and correlated operation outcomes;
+  `drive()` returns an optional event. Replace `recv()` and `is_complete()` with event
+  handling. `ConnectEvent` variants are now `SessionCreated` and `SessionResumed`.
 * QoS 2 publications count toward the local in-flight limit until `PUBCOMP`.
   Local capacity can become exhausted earlier while acknowledgements are pending.
 * Reduce linked code size and per-session RAM usage.
 
 ### Fixed
 
+* Validate acknowledgement reason codes, properties, and subscription result counts before
+  completing operations. Broker rejections are reported with their operation handles.
 * Reject incoming QoS 1/2 publications with packet identifier zero.
 * Respect the broker's send quota during reconnect replay and cancelled writes.
 * Apply broker keepalive overrides to the current connection.

@@ -132,10 +132,10 @@ mod tests {
         let mut data = SessionData::new(&mut storage);
         data.packet_id = NonZeroU16::new(u16::MAX).unwrap();
         data.outbound
-            .retain_packet(PacketKind::Subscribe, u16::MAX, 5)
+            .retain_packet(PacketKind::Subscribe, u16::MAX, 5, 0)
             .unwrap();
         data.outbound
-            .retain_packet(PacketKind::PublishExactlyOnce, 1, 0)
+            .retain_packet(PacketKind::PublishExactlyOnce, 1, 0, 0)
             .unwrap();
         assert!(data.outbound.release(1));
 

@@ -78,19 +78,75 @@ impl<'a> ReceivedPacket<'a> {
             }
         }
 
-        if !protocol.is_v5() {
-            match &packet {
-                Self::SubAck(ack)
-                    if ack.codes.is_empty()
-                        || ack.codes.iter().any(|code| !matches!(code, 0..=2 | 0x80)) =>
+        let valid_properties = match &packet {
+            Self::SubAck(ack) => ack._properties.valid_ack(),
+            Self::UnsubAck(ack) => ack._properties.valid_ack(),
+            Self::PubAck(ack) => ack.reason.valid_properties(),
+            Self::PubRec(ack) => ack.reason.valid_properties(),
+            Self::PubComp(ack) => ack.reason.valid_properties(),
+            _ => true,
+        };
+        if !valid_properties {
+            return Err(ProtocolError::MalformedPacket);
+        }
+        match &packet {
+            Self::SubAck(ack) => {
+                if ack.codes.is_empty()
+                    || ack.codes.iter().any(|&code| {
+                        if protocol.is_v5() {
+                            !matches!(
+                                code,
+                                0..=2
+                                    | 0x80
+                                    | 0x83
+                                    | 0x87
+                                    | 0x8f
+                                    | 0x91
+                                    | 0x97
+                                    | 0x9e
+                                    | 0xa1
+                                    | 0xa2
+                            )
+                        } else {
+                            !matches!(code, 0..=2 | 0x80)
+                        }
+                    })
                 {
                     return Err(ProtocolError::MalformedPacket);
                 }
-                Self::UnsubAck(ack) if !ack.codes.is_empty() => {
+            }
+            Self::UnsubAck(ack) => {
+                if if protocol.is_v5() {
+                    ack.codes.is_empty()
+                        || ack.codes.iter().any(|&code| {
+                            !matches!(code, 0 | 0x11 | 0x80 | 0x83 | 0x87 | 0x8f | 0x91)
+                        })
+                } else {
+                    !ack.codes.is_empty()
+                } {
                     return Err(ProtocolError::MalformedPacket);
                 }
-                _ => {}
             }
+            Self::PubAck(ack)
+                if !matches!(
+                    u8::from(ack.reason.code()),
+                    0 | 0x10 | 0x80 | 0x83 | 0x87 | 0x90 | 0x91 | 0x97 | 0x99
+                ) =>
+            {
+                return Err(ProtocolError::MalformedPacket);
+            }
+            Self::PubRec(ack)
+                if !matches!(
+                    u8::from(ack.reason.code()),
+                    0 | 0x10 | 0x80 | 0x83 | 0x87 | 0x90 | 0x91 | 0x97 | 0x99
+                ) =>
+            {
+                return Err(ProtocolError::MalformedPacket);
+            }
+            Self::PubComp(ack) if !matches!(u8::from(ack.reason.code()), 0 | 0x92) => {
+                return Err(ProtocolError::MalformedPacket);
+            }
+            _ => {}
         }
 
         trace!("Parsed inbound packet kind={=str}", packet.kind());

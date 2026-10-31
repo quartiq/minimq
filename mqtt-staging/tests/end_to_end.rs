@@ -251,19 +251,23 @@ fn drain_local(service: &mut Service, connection: &mut Connection<'_, '_, TcpIo>
         match block_on(service.step(connection)).unwrap() {
             Step::Quiescent => return,
             Step::Pending => {
-                assert!(block_on(connection.poll()).unwrap().is_none());
+                let minimq::Event::Completed { op, outcome } = block_on(connection.poll()).unwrap()
+                else {
+                    panic!("expected completion")
+                };
+                assert!(service.handle_completion(op, &outcome).unwrap());
             }
         }
     }
 }
 
-fn handle_inbound(
-    service: &mut Service,
-    storage: &mut MockStorage,
-    inbound: Option<minimq::InboundPublish<'_>>,
-) {
-    let Some(inbound) = inbound else {
-        return;
+fn handle_inbound(service: &mut Service, storage: &mut MockStorage, inbound: minimq::Event<'_>) {
+    let inbound = match inbound {
+        minimq::Event::Publish(message) => message,
+        minimq::Event::Completed { op, outcome } => {
+            service.handle_completion(op, &outcome).unwrap();
+            return;
+        }
     };
     match service.handle(&inbound) {
         Handle::Request(request) => storage.submit(request),

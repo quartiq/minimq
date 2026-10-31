@@ -65,7 +65,9 @@ async fn request_response() {
     let mut rpc = Service::new(&prefix).unwrap();
     rpc.begin_connection(device.connect_event());
     while !rpc.step(&mut device).await.unwrap() {
-        let _ = device.poll().await.unwrap();
+        if let minimq::Event::Completed { op, outcome } = device.poll().await.unwrap() {
+            rpc.handle_completion(op, &outcome).unwrap();
+        }
     }
 
     let io = FromTokio::new(TcpStream::connect(addr).await.unwrap());
@@ -101,10 +103,13 @@ async fn request_response() {
         .await
         .unwrap();
 
-    let inbound = timeout(Duration::from_secs(5), device.recv())
+    let minimq::Event::Publish(inbound) = timeout(Duration::from_secs(5), device.poll())
         .await
         .unwrap()
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("expected publication")
+    };
     let Handle::Request(request) = rpc.handle(&inbound) else {
         panic!("request was not routed");
     };
@@ -117,10 +122,16 @@ async fn request_response() {
         .await
         .unwrap();
 
-    let response = timeout(Duration::from_secs(5), client.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    let response = loop {
+        match timeout(Duration::from_secs(5), client.poll())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            minimq::Event::Publish(response) => break response,
+            minimq::Event::Completed { outcome, .. } => outcome.check().unwrap(),
+        }
+    };
     assert_eq!(response.payload(), b"pong");
     assert_eq!(response.correlation_data(), Some(correlation.as_slice()));
     assert!(

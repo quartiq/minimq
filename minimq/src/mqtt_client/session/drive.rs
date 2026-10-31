@@ -6,7 +6,7 @@ use crate::mqtt_client::outbound::{
     ControlAction, MAX_PENDING_CONTROL, OutboundStep, check_control_packet_size,
     serialize_control_packet,
 };
-use crate::{Connection, Error, InboundPublish, debug, error, trace, warn};
+use crate::{Connection, Error, Event, debug, error, trace, warn};
 
 use super::state::ROUND_TRIP_TIMEOUT_MS;
 use super::{FlushState, Io};
@@ -22,13 +22,6 @@ struct WriteStep<'a> {
     bytes: &'a [u8],
     written: usize,
     len: usize,
-}
-
-#[derive(Copy, Clone)]
-enum Progress {
-    Idle,
-    Advanced,
-    Inbound(usize),
 }
 
 pub(super) async fn fill_packet_reader<'buf, C: Io>(
@@ -56,11 +49,10 @@ pub(super) async fn fill_packet_reader<'buf, C: Io>(
 }
 
 impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
-    async fn drive_packet(&mut self) -> Result<Progress, Error<IO::Error>> {
+    async fn drive_packet(&mut self) -> Result<Option<usize>, Error<IO::Error>> {
         if !self.live {
             return Err(Error::Disconnected);
         }
-        let mut advanced = false;
         loop {
             // The peer can observe written ACKs before flush completes and refill
             // its receive window. Release our ACK metadata before admitting more,
@@ -68,31 +60,17 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             if self.session.packet_reader.packet_available()
                 && self.session.data.outbound.pending_control_len() == MAX_PENDING_CONTROL
             {
-                advanced |= self.service_outbound_once(Instant::now()).await?;
+                self.service_outbound_once(Instant::now()).await?;
                 continue;
             }
             if self.session.packet_reader.packet_available() {
                 match self.process_received_packet()? {
-                    Some(packet_length) => return Ok(Progress::Inbound(packet_length)),
-                    None => {
-                        advanced = true;
-                        continue;
-                    }
+                    Some(packet_length) => return Ok(Some(packet_length)),
+                    None => continue,
                 }
             }
 
-            let now = Instant::now();
-            advanced |= self.service(now).await?;
-
-            if self.session.packet_reader.packet_available() {
-                match self.process_received_packet()? {
-                    Some(packet_length) => return Ok(Progress::Inbound(packet_length)),
-                    None => {
-                        advanced = true;
-                        continue;
-                    }
-                }
-            }
+            self.service(Instant::now()).await?;
 
             if self
                 .session
@@ -102,16 +80,12 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                 .is_none()
                 && self.flush_state == FlushState::Clean
             {
-                return Ok(if advanced {
-                    Progress::Advanced
-                } else {
-                    Progress::Idle
-                });
+                return Ok(None);
             }
         }
     }
 
-    /// Advance local session state until an inbound publish is ready or the session would need to
+    /// Advance local session state until an event is ready or the session would need to
     /// wait for new transport input or a future deadline.
     ///
     /// This is a cooperative progress step:
@@ -119,45 +93,30 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     /// - it does not wait for future session deadlines
     /// - it may still await transport write or flush progress already needed for the current step
     ///
-    /// Returns `Ok(None)` when no inbound publish is currently ready and further progress would
+    /// Returns `Ok(None)` when no event is currently ready and further progress would
     /// require waiting. Wall-clock bounds depend on the transport: a stalled write or flush may
     /// still keep this future pending until the transport errors or is cancelled. Cancel-safe if
     /// the underlying transport I/O futures are cancel-safe.
-    pub async fn drive(&mut self) -> Result<Option<InboundPublish<'_>>, Error<IO::Error>> {
-        Ok(match self.drive_packet().await? {
-            Progress::Inbound(packet_length) => Some(self.decode_inbound_publish(packet_length)?),
-            Progress::Idle | Progress::Advanced => None,
-        })
+    pub async fn drive(&mut self) -> Result<Option<Event<'_>>, Error<IO::Error>> {
+        self.drive_packet()
+            .await?
+            .map(|length| self.decode_event(length).map_err(Into::into))
+            .transpose()
     }
 
-    /// Wait until any session progress happens or the session disconnects.
+    /// Wait for a publication or an operation completion while servicing MQTT.
     ///
-    /// Returns:
-    /// - `Ok(Some(msg))` when that progress produced an inbound publish
-    /// - `Ok(None)` when progress happened only internally, such as ACK handling, replay, or
-    ///   keepalive traffic
-    ///
-    /// As with [`drive`](Self::drive), wall-clock bounds depend on the transport's read, write,
-    /// and flush behavior.
-    ///
-    /// Cancel-safe if the underlying transport I/O futures are cancel-safe. Ordinary no-data must
-    /// be represented by the transport future staying pending; `TimedOut` and `Interrupted` are
-    /// treated as transport failure and disconnect the session.
-    pub async fn poll(&mut self) -> Result<Option<InboundPublish<'_>>, Error<IO::Error>> {
-        match self.wait_for_progress().await? {
-            Some(packet_length) => Ok(Some(self.decode_inbound_publish(packet_length)?)),
-            None => Ok(None),
-        }
+    /// Cancellation preserves protocol progress when the transport is cancel-safe.
+    /// Events borrow the receive buffer until the next mutable connection operation.
+    pub async fn poll(&mut self) -> Result<Event<'_>, Error<IO::Error>> {
+        let packet_length = self.wait_for_event().await?;
+        Ok(self.decode_event(packet_length)?)
     }
 
-    async fn wait_for_progress(&mut self) -> Result<Option<usize>, Error<IO::Error>> {
+    async fn wait_for_event(&mut self) -> Result<usize, Error<IO::Error>> {
         loop {
-            match self.drive_packet().await? {
-                Progress::Inbound(packet_length) => {
-                    return Ok(Some(packet_length));
-                }
-                Progress::Advanced => return Ok(None),
-                Progress::Idle => {}
+            if let Some(length) = self.drive_packet().await? {
+                return Ok(length);
             }
 
             let deadline = self.session.runtime.next_deadline();
@@ -169,18 +128,6 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                     Err(_) => continue,
                 },
                 None => read.await?,
-            }
-        }
-    }
-
-    /// Wait until the next inbound publish arrives.
-    ///
-    /// This is a convenience wrapper over [`poll`](Self::poll) that skips internal-only
-    /// progress.
-    pub async fn recv(&mut self) -> Result<InboundPublish<'_>, Error<IO::Error>> {
-        loop {
-            if let Some(packet_length) = self.wait_for_progress().await? {
-                return Ok(self.decode_inbound_publish(packet_length)?);
             }
         }
     }
