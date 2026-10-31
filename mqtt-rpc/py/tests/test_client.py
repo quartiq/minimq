@@ -9,6 +9,22 @@ from gmqtt.mqtt.constants import MQTTv50
 from mqtt_rpc.client import Client, RemoteError
 
 
+def test_publish_failure_cleans_pending_request(monkeypatch):
+    async def run():
+        rpc = Client("localhost", "device")
+        rpc._connected = True
+
+        def fail(*args, **kwargs):
+            raise ConnectionError("publish failed")
+
+        monkeypatch.setattr(rpc._mqtt, "publish", fail)
+        with pytest.raises(ConnectionError):
+            await rpc.request("ping")
+        assert not rpc._inflight
+
+    asyncio.run(run())
+
+
 def _first(properties, name):
     value = properties.get(name)
     return value[0] if isinstance(value, list) else value

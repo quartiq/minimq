@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [UNRELEASED](https://github.com/quartiq/minimq/compare/mqtt-staging-v0.1.4...HEAD) - DATE
 
+### Fixed
+
+* Handle late subscription acknowledgements after Python subscription cancellation or timeout.
+
 ## [0.1.4](https://github.com/quartiq/minimq/compare/mqtt-staging-v0.1.3...mqtt-staging-v0.1.4) - 2026-10-10
 
 ## Fixed

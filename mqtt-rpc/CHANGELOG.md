@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+* Release pending Python requests when publishing fails.
 * Reject MQTT 3.1.1 connections with `InvalidRequest` at service startup and response
   publication. MQTT RPC requires MQTT 5.
 
