@@ -510,7 +510,7 @@ impl<'a> Outbound<'a> {
     pub(super) fn validate_replay<E>(
         &self,
         protocol: crate::Protocol,
-        maximum_packet_size: Option<u32>,
+        maximum_packet_size: u32,
         max_qos: Option<crate::QoS>,
         capabilities: super::Capabilities,
     ) -> Result<(), Error<E>> {
@@ -525,7 +525,7 @@ impl<'a> Outbound<'a> {
             } else {
                 entry.len
             };
-            if maximum_packet_size.is_some_and(|max| len > max as usize) {
+            if len > maximum_packet_size as usize {
                 return Err(ResourceError::PacketTooLarge.into());
             }
             let bytes = &self.buf[offset..offset + entry.len];
@@ -592,11 +592,11 @@ impl<'a> Outbound<'a> {
 pub(crate) fn serialize_control_packet<E>(
     buffer: &mut [u8; 5],
     packet: ControlAction,
-    maximum_packet_size: Option<u32>,
+    maximum_packet_size: u32,
     protocol: crate::Protocol,
 ) -> Result<&[u8], Error<E>> {
     let bytes = encode_control_packet(buffer, packet, protocol);
-    if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
+    if bytes.len() > maximum_packet_size as usize {
         return Err(Error::Resource(ResourceError::PacketTooLarge));
     }
     Ok(bytes)
@@ -624,12 +624,12 @@ fn encode_control_packet(
 }
 
 pub(super) fn check_control_packet_size(
-    maximum_packet_size: Option<u32>,
+    maximum_packet_size: u32,
     action: ControlAction,
     protocol: crate::Protocol,
 ) -> Result<(), ProtocolError> {
     let len = action.encoded_len(protocol);
-    if maximum_packet_size.is_some_and(|max| len > max as usize) {
+    if len > maximum_packet_size as usize {
         return Err(ProtocolError::PacketTooLarge);
     }
     Ok(())
@@ -726,20 +726,16 @@ mod tests {
                 let mut buffer = [0; 5];
                 let limit = expected.len() as u32;
                 assert_eq!(
-                    serialize_control_packet::<()>(&mut buffer, action, Some(limit), protocol)
-                        .unwrap(),
+                    serialize_control_packet::<()>(&mut buffer, action, limit, protocol).unwrap(),
                     expected
                 );
+                assert_eq!(check_control_packet_size(limit, action, protocol), Ok(()));
                 assert_eq!(
-                    check_control_packet_size(Some(limit), action, protocol),
-                    Ok(())
-                );
-                assert_eq!(
-                    serialize_control_packet::<()>(&mut buffer, action, Some(limit - 1), protocol),
+                    serialize_control_packet::<()>(&mut buffer, action, limit - 1, protocol),
                     Err(Error::Resource(ResourceError::PacketTooLarge))
                 );
                 assert_eq!(
-                    check_control_packet_size(Some(limit - 1), action, protocol),
+                    check_control_packet_size(limit - 1, action, protocol),
                     Err(ProtocolError::PacketTooLarge)
                 );
             }

@@ -156,7 +156,7 @@ impl<'buf> Session<'buf> {
         let mut send_quota = local_quota;
         let mut max_send_quota = local_quota;
         let mut max_qos = None;
-        let mut maximum_packet_size = None;
+        let mut maximum_packet_size = u32::MAX;
         let mut keepalive_interval = self.keepalive_interval;
         let mut assigned_client_id: Option<String<CLIENT_ID_CAPACITY>> = None;
         let mut capabilities = crate::mqtt_client::Capabilities::default();
@@ -174,7 +174,7 @@ impl<'buf> Session<'buf> {
                     Property::SubscriptionIdentifierAvailable(value) => {
                         capabilities.subscription_ids = value != 0
                     }
-                    Property::MaximumPacketSize(size) => maximum_packet_size = Some(size),
+                    Property::MaximumPacketSize(size) => maximum_packet_size = size,
                     Property::AssignedClientIdentifier(id) => {
                         if !client_id.is_empty() || assigned_client_id.is_some() {
                             return Err(PeerError::InvalidPacket);

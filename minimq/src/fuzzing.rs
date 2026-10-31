@@ -199,7 +199,7 @@ pub fn encode_packet(
             let _ = serialize_control_packet::<core::convert::Infallible>(
                 &mut storage,
                 action,
-                Some(buf.len() as u32),
+                buf.len() as u32,
                 protocol,
             );
         }

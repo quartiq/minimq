@@ -45,7 +45,7 @@ impl Default for Capabilities {
 impl Capabilities {
     pub(crate) fn allows_filter(self, topic: &str, no_local: bool) -> bool {
         (!topic.starts_with("$share/") || (self.shared && !no_local))
-            && (self.wildcard || !topic.contains(['+', '#']))
+            && (self.wildcard || !topic.bytes().any(|byte| matches!(byte, b'+' | b'#')))
     }
 }
 

@@ -19,7 +19,7 @@ pub(super) struct RuntimeState {
     pub(super) keepalive_interval: Duration,
     pub(super) send_quota: u16,
     pub(super) max_send_quota: u16,
-    pub(super) maximum_packet_size: Option<u32>,
+    pub(super) maximum_packet_size: u32,
     pub(super) max_qos: Option<QoS>,
     pub(super) next_ping: Option<Instant>,
     pub(super) ping_timeout: Option<Instant>,
@@ -34,7 +34,7 @@ impl RuntimeState {
             keepalive_interval,
             send_quota: u16::MAX,
             max_send_quota: u16::MAX,
-            maximum_packet_size: None,
+            maximum_packet_size: u32::MAX,
             max_qos: None,
             next_ping: None,
             ping_timeout: None,
@@ -50,10 +50,7 @@ impl RuntimeState {
     }
 
     pub(super) fn require_packet_size<E>(&self, len: usize) -> Result<(), Error<E>> {
-        if self
-            .maximum_packet_size
-            .is_some_and(|max| len > max as usize)
-        {
+        if len > self.maximum_packet_size as usize {
             return Err(Error::Resource(ResourceError::PacketTooLarge));
         }
         Ok(())
