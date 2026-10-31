@@ -180,14 +180,33 @@ A fresh broker session invalidates pending operations from the previous session.
 A transport write returning `Ok(0)` for a non-empty buffer produces [`Error::WriteZero`]
 and marks the connection disconnected. Drop it to release the transport.
 
-For cooperative driving:
-- use [`Connection::drive()`] for immediate local progress without waiting for future inbound reads
-  or future session deadlines
-- wrap cancel-safe blocking [`Connection::poll()`] in an external timeout
-  such as [`embassy_time::with_timeout()`] or [`embassy_time::with_deadline()`]
-- if you need real wall-clock limits, enforce them in the transport's `read`, `write`, and
-  `flush` futures; using the same budget as minimq's internal MQTT round-trip timeout keeps
-  keepalive and transport liveness aligned
+### Timeouts and cancellation
+
+Use transport write/flush deadlines to bound stalled output. Await MQTT operations to
+completion; on a transport error, drop the connection and reconnect. A deadline for each
+write call bounds that call: partial writes can make a complete publication take longer.
+Choose the budget for your transport and application's recovery needs.
+
+Between publications, keep calling [`Connection::poll()`] to service acknowledgements and
+keepalive. A healthy idle connection can keep `poll()` pending indefinitely: PINGRESP is
+handled internally, rather than returned as an application event. Let MQTT manage idle
+reads. An application-event timeout measures absence of events, not connection health.
+
+The [publish-only QoS 0 example](examples/publish_only.rs) demonstrates output deadlines,
+polling between samples, and reconnection. Run it against a local broker with
+`cargo run -p minimq --example publish_only` (`BROKER` defaults to `127.0.0.1:1883`).
+
+When racing `poll()` against other work, the transport must support cancellation and reuse
+of its read, write and flush futures: dropping a pending future must allow subsequent I/O
+to resume without losing input or repeating output. Minimq preserves its protocol progress,
+including completed partial writes. QoS 0 publication uses temporary packet storage: await it fully,
+or discard the connection if it is cancelled. Likewise discard a connection after cancelling
+disconnect. Cancelling `Session::connect()` drops the supplied transport and permits retry.
+An I/O deadline cancels the underlying I/O future; after expiry the example discards the
+transport, rather than attempting to resume it.
+
+[`Connection::drive()`] advances local work without waiting for new input or future session
+deadlines. It can still await transport writes and flushes, so output deadlines apply there too.
 
 ## Buffers
 

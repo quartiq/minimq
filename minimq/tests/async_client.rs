@@ -1,4 +1,6 @@
 mod support;
+#[path = "../examples/support/write_timeout.rs"]
+mod write_timeout;
 
 use embassy_time::{Duration, with_timeout};
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
@@ -349,6 +351,53 @@ struct MockIo {
     write_limit: Option<usize>,
     buffer_capacity: Option<usize>,
     automatic_flushes: usize,
+    respond_to_ping: bool,
+}
+
+#[test]
+fn qos0_output_deadline_disconnects_on_stalled_write_or_flush() {
+    for stall_flush in [false, true] {
+        let mut session = Session::new(config());
+        let mut io = MockConnection::default();
+        io.push_rx(&[0x20, 3, 0, 0, 0]);
+        let mut connection = block_on(session.connect(write_timeout::WriteTimeout {
+            io: io.clone(),
+            timeout: Duration::from_millis(1),
+        }))
+        .unwrap();
+        if stall_flush {
+            io.pend_flushes(usize::MAX);
+        } else {
+            io.pend_writes(usize::MAX);
+        }
+        assert!(matches!(
+            block_on(connection.publish(Publication::bytes("sample", b"1"))),
+            Err(PubError::Session(Error::Transport(ErrorKind::TimedOut)))
+        ));
+        assert!(!connection.is_connected());
+        drop(connection);
+        assert!(session.is_publish_quiescent()); // QoS 0 has no replay state.
+    }
+}
+
+#[test]
+fn output_deadlines_allow_idle_keepalive_without_application_events() {
+    let mut session = Session::new(config().keepalive_interval(1));
+    let mut io = MockConnection::default();
+    io.inner.borrow_mut().respond_to_ping = true;
+    io.push_rx(&[0x20, 3, 0, 0, 0]);
+    let mut connection = block_on(session.connect(write_timeout::WriteTimeout {
+        io: io.clone(),
+        timeout: Duration::from_millis(10),
+    }))
+    .unwrap();
+    block_on(connection.publish(Publication::bytes("sample", b"1"))).unwrap();
+    // This outer timer represents the next sample, not a liveness watchdog.
+    assert!(block_on(with_timeout(Duration::from_millis(1200), connection.poll())).is_err());
+    assert!(connection.is_connected());
+    assert!(io.tx().iter().any(|packet| packet == &[0xc0, 0]));
+    assert!(io.inner.borrow().rx.is_empty()); // PINGRESP was consumed internally.
+    block_on(connection.publish(Publication::bytes("sample", b"2"))).unwrap();
 }
 
 #[derive(Clone, Default)]
@@ -466,6 +515,9 @@ impl Write for MockConnection {
             );
             inner.tx.push(buf[..count].to_vec());
             inner.buffered.extend_from_slice(&buf[..count]);
+            if inner.respond_to_ping && buf[..count] == [0xc0, 0] {
+                inner.rx.push_back(vec![0xd0, 0]);
+            }
             Poll::Ready(Ok(count))
         })
         .await
