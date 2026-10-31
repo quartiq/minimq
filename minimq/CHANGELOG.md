@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+* Reject incoming QoS 1/2 publications with packet identifier zero.
 * Respect the broker's send quota during reconnect replay and cancelled writes.
 * Apply broker keepalive overrides to the current connection.
 * Deliver inbound QoS 2 publications only after reserving acknowledgement and tracking

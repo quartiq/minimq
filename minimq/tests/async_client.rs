@@ -21,6 +21,34 @@ const V3: minimq::Protocol = minimq::Protocol::V3_1_1 {
 };
 
 #[test]
+fn zero_publish_identifier_disconnects_before_delivery() {
+    for protocol in [minimq::Protocol::V5, V3] {
+        for header in [0x32, 0x34] {
+            let mut session = Session::new(config().protocol(protocol));
+            let mut io = MockConnection::default();
+            if protocol == V3 {
+                io.push_rx(&[0x20, 2, 0, 0]);
+            } else {
+                io.push_rx(&[0x20, 3, 0, 0, 0]);
+            }
+            let mut conn = block_on(session.connect(io.clone())).unwrap();
+            io.inner.borrow_mut().tx.clear();
+            if protocol == V3 {
+                io.push_rx_fragmented(&[header, 6, 0, 1, b'a', 0, 0, b'x']);
+            } else {
+                io.push_rx_fragmented(&[header, 7, 0, 1, b'a', 0, 0, 0, b'x']);
+            }
+            assert!(matches!(
+                block_on(conn.recv()),
+                Err(Error::Peer(PeerError::InvalidPacket))
+            ));
+            assert!(!conn.is_connected());
+            assert!(io.tx().is_empty());
+        }
+    }
+}
+
+#[test]
 fn v3_inbound_qos2_exhaustion_closes_without_acknowledging() {
     let mut session = Session::new(config().protocol(V3));
     let mut io = MockConnection::default();

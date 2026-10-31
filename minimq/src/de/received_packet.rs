@@ -172,7 +172,11 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
 
                 let topic = next_required(&mut seq, "Missing PUBLISH topic")?;
                 let packet_id = if qos > QoS::AtMostOnce {
-                    Some(next_required(&mut seq, "Missing PUBLISH packet id")?)
+                    let id = next_required(&mut seq, "Missing PUBLISH packet id")?;
+                    if id == 0 {
+                        return Err(A::Error::custom("Invalid PUBLISH packet identifier"));
+                    }
+                    Some(id)
                 } else {
                     None
                 };
