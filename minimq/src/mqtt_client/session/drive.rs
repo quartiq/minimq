@@ -150,18 +150,15 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         Ok(())
     }
 
-    fn should_queue_pingreq(&self, now: Instant) -> bool {
-        self.session.runtime.ping_timeout.is_none()
+    fn maybe_queue_pingreq(&mut self, now: Instant) -> Result<(), Error<IO::Error>> {
+        if self.session.runtime.ping_timeout.is_none()
             && self
                 .session
                 .runtime
                 .next_ping
                 .is_some_and(|deadline| now >= deadline)
             && !self.session.data.outbound.has_pending_pingreq()
-    }
-
-    fn maybe_queue_pingreq(&mut self, now: Instant) -> Result<(), Error<IO::Error>> {
-        if self.should_queue_pingreq(now) {
+        {
             check_control_packet_size(
                 self.session.runtime.maximum_packet_size,
                 ControlAction::PingReq,
@@ -334,18 +331,18 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             written,
             len,
         } = packet;
-        let count = match write_current(&mut self.io, &bytes[written..]).await {
+        let count = match self.io.write(&bytes[written..]).await {
+            Ok(0) => {
+                error!("transport write returned zero bytes for non-empty buffer");
+                self.handle_disconnect();
+                return Err(Error::WriteZero);
+            }
             Ok(count) => count,
-            Err(Error::Transport(err)) => {
+            Err(err) => {
                 warn!("Outbound packet write failed: {}", err.kind());
                 self.handle_disconnect();
                 return Err(Error::Transport(err));
             }
-            Err(Error::WriteZero) => {
-                self.handle_disconnect();
-                return Err(Error::WriteZero);
-            }
-            Err(err) => return Err(err),
         };
         self.flush_state = FlushState::Dirty;
         let written = written + count;
@@ -388,16 +385,5 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     pub(super) async fn flush_outbound(&mut self) -> Result<(), Error<IO::Error>> {
         while self.service_outbound_once(Instant::now()).await? {}
         Ok(())
-    }
-}
-
-async fn write_current<C: Io>(connection: &mut C, bytes: &[u8]) -> Result<usize, Error<C::Error>> {
-    match connection.write(bytes).await {
-        Ok(0) => {
-            error!("transport write returned zero bytes for non-empty buffer");
-            Err(Error::WriteZero)
-        }
-        Ok(count) => Ok(count),
-        Err(err) => Err(Error::Transport(err)),
     }
 }
