@@ -215,6 +215,21 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             Some(max_qos) if qos > max_qos => return Err(Error::InvalidRequest.into()),
             _ => qos,
         };
+        // One failure path keeps flush/resume state shared across admission errors.
+        let admission = (|| {
+            if qos > QoS::AtMostOnce {
+                self.require_retained_slot()?;
+            }
+            if !self.can_publish(qos) {
+                return Err(Error::NotReady);
+            }
+            Ok(())
+        })();
+        if let Err(err) = admission {
+            self.flush_outbound().await?;
+            return Err(err.into());
+        }
+
         let packet_id = (qos > QoS::AtMostOnce).then(|| self.session.data.next_packet_id());
         let header = PublishHeader {
             topic: Utf8String(topic),
@@ -224,18 +239,6 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             qos,
             dup: false,
         };
-        if packet_id.is_some()
-            && let Err(err) = self.require_retained_slot()
-        {
-            self.flush_outbound().await?;
-            return Err(err.into());
-        }
-
-        if !self.can_publish(qos) {
-            self.flush_outbound().await?;
-            return Err(Error::NotReady.into());
-        }
-
         if let Some(packet_id) = packet_id {
             let encoded = self
                 .session
