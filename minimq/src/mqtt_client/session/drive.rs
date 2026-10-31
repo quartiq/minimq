@@ -132,7 +132,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         }
     }
 
-    pub(super) async fn service(&mut self, now: Instant) -> Result<bool, Error<IO::Error>> {
+    pub(super) async fn service(&mut self, now: Instant) -> Result<(), Error<IO::Error>> {
         let runtime = &mut self.session.runtime;
         if runtime
             .ping_timeout
@@ -146,7 +146,8 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             self.handle_disconnect();
             return Err(Error::Disconnected);
         }
-        self.service_outbound_once(now).await
+        self.service_outbound_once(now).await?;
+        Ok(())
     }
 
     fn should_queue_pingreq(&self, now: Instant) -> bool {
@@ -239,6 +240,15 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         let data = &mut self.session.data;
         let ping =
             matches!(step, OutboundStep::Control(step) if step.action == ControlAction::PingReq);
+        let acknowledged = match step {
+            OutboundStep::Control(step) => match step.action {
+                ControlAction::PubAck { packet_id, reason } if reason.success() => Some(packet_id),
+                ControlAction::PubComp { packet_id, .. } => Some(packet_id),
+                ControlAction::PubRec { packet_id, reason } if !reason.success() => Some(packet_id),
+                _ => None,
+            },
+            _ => None,
+        };
         let packet = match step {
             OutboundStep::Control(step) => {
                 trace!(
@@ -340,6 +350,17 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         self.flush_state = FlushState::Dirty;
         let written = written + count;
         self.set_written(packet, written, len);
+        if written == len
+            && let Some(id) = acknowledged
+            && let Some(index) = self
+                .session
+                .runtime
+                .receiving
+                .iter()
+                .position(|entry| *entry == id)
+        {
+            self.session.runtime.receiving.swap_remove(index);
+        }
         if ping && written == len {
             self.session.runtime.ping_timeout =
                 Some(Instant::now() + Duration::from_millis(ROUND_TRIP_TIMEOUT_MS));

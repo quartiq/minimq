@@ -26,11 +26,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Validate acknowledgement reason codes, properties, and subscription result counts before
   completing operations. Broker rejections are reported with their operation handles.
+* Reject malformed inbound properties, invalid acknowledgement identifiers, and subscription
+  grants above the requested QoS before changing session state or delivering messages.
+* Enforce negotiated capabilities for new requests and reject incompatible reconnect replay
+  during connection setup, preserving pending operations.
+* Separate the MQTT 5 receive window from persistent QoS 2 duplicate tracking. Increase inbound
+  tracking capacity to 20 exchanges and report local exhaustion distinctly from invalid peers.
+* Use available TX storage for DISCONNECT properties and validate session-expiry changes.
+* Redact authentication secrets and packet contents from configuration debug output.
 * Reject incoming QoS 1/2 publications with packet identifier zero.
 * Respect the broker's send quota during reconnect replay and cancelled writes.
 * Apply broker keepalive overrides to the current connection.
 * Deliver inbound QoS 2 publications only after reserving acknowledgement and tracking
-  capacity. Mark the connection disconnected when inbound QoS 2 storage is exhausted.
+  capacity. Suppress application delivery when rejecting a packet-identifier collision.
 
 ## [0.13.5](https://github.com/quartiq/minimq/compare/minimq-v0.13.4...minimq-v0.13.5) - 2026-10-11
 

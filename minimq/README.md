@@ -202,8 +202,17 @@ You supply two buffers.
 QoS 2 publications occupy an in-flight slot until `PUBCOMP`; their encoded payload
 space is freed on `PUBREC`.
 
-An oversized inbound packet or exhausted inbound QoS 2 storage marks the connection
-disconnected. Drop it to release the transport.
+Inbound QoS 2 duplicate tracking holds 20 outstanding exchanges. For MQTT 3.1.1,
+configure the broker's delivery window accordingly; exhausting this storage returns
+`ResourceError::InflightExhausted` and closes the connection, preserving accepted exchanges.
+MQTT 5 negotiates its receive window separately. If a resumed session fills local storage,
+Minimq rejects a new publication with Quota Exceeded, returns `InflightExhausted`, and keeps
+the connection usable. That message is rejected without application delivery; it is not
+queued for retry. Continue driving the connection to finish accepted exchanges.
+
+An oversized inbound packet marks the connection disconnected. Drop it to release the transport.
+Reconnect also checks pending outbound work against the broker's new limits. An incompatible
+backlog fails `connect()` and stays available for reconnecting to a compatible broker.
 
 If `tx` is exhausted, `publish()` and other outbound operations can return [`Error::NotReady`].
 

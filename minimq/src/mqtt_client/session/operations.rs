@@ -5,7 +5,7 @@ use crate::mqtt_client::outbound::{PacketKind, write_all};
 use crate::packets::{Disconnect, PublishHeader, Subscribe, Unsubscribe};
 use crate::properties::{Properties, PropertyContext};
 use crate::publication::{Publication, ToPayload};
-use crate::ser::{MAX_FIXED_HEADER_SIZE, MqttSerializer};
+use crate::ser::MqttSerializer;
 use crate::types::TopicFilter;
 use crate::wire::Utf8String;
 use crate::{Connection, Error, Io, Op, Property, PubError, QoS, ResourceError, debug, info, warn};
@@ -35,16 +35,20 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             Disconnect::success()
         };
         if let Some(properties) = disconnect.properties()
-            && !properties.valid_for(PropertyContext::Disconnect)
+            && (!properties.valid_for(PropertyContext::Disconnect)
+                || (self.session.session_expiry_interval.unwrap_or(0) == 0
+                    && properties
+                        .iter()
+                        .any(|p| matches!(p, Ok(Property::SessionExpiryInterval(1..))))))
         {
             return Err(Error::InvalidRequest);
         }
-        let mut buffer = [0u8; MAX_FIXED_HEADER_SIZE + 4];
-        let packet = MqttSerializer::encode(&mut buffer, &disconnect)?;
-        self.session.runtime.require_packet_size(packet.len())?;
         // A cancelled publication can leave a packet prefix or suspended flush.
         // Finish that stream progress before writing the terminal packet.
         self.flush_outbound().await?;
+        let packet =
+            MqttSerializer::encode(self.session.data.outbound.scratch_space(), &disconnect)?;
+        self.session.runtime.require_packet_size(packet.len())?;
         let result = match write_all(&mut self.io, packet).await {
             Ok(()) => self.io.flush().await.map_err(Error::Transport),
             Err(err) => Err(err),
@@ -87,6 +91,15 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             return Err(Error::InvalidRequest);
         }
         if !Properties::from_slice(properties).valid_for(PropertyContext::Subscribe) {
+            return Err(Error::InvalidRequest);
+        }
+        let capabilities = self.session.runtime.capabilities;
+        if topics.iter().any(|topic| !topic.allowed_by(capabilities))
+            || (!capabilities.subscription_ids
+                && properties
+                    .iter()
+                    .any(|p| matches!(p, Property::SubscriptionIdentifier(_))))
+        {
             return Err(Error::InvalidRequest);
         }
         self.flush_outbound().await?;
@@ -203,7 +216,10 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             payload,
             retain,
         } = publication;
-        if !properties.valid_for(PropertyContext::Publish) {
+        if !properties.valid_for(PropertyContext::Publish)
+            || !crate::wire::valid_topic(topic)
+            || (retain == crate::Retain::Retained && !self.session.runtime.capabilities.retain)
+        {
             return Err(Error::InvalidRequest.into());
         }
         if !self.session.protocol.is_v5() && properties.size() != 0 {

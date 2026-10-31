@@ -39,10 +39,18 @@ pub(crate) const CLIENT_ID_CAPACITY: usize = 64;
 ///
 /// Size `tx` for the retained in-flight bytes plus the larger of the `CONNECT` workspace and the
 /// largest temporary packet-encoding workspace.
-#[derive(Debug)]
 pub struct Buffers<'a> {
     rx: &'a mut [u8],
     tx: &'a mut [u8],
+}
+
+impl core::fmt::Debug for Buffers<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Buffers")
+            .field("rx_len", &self.rx.len())
+            .field("tx_len", &self.tx.len())
+            .finish()
+    }
 }
 
 impl<'a> Buffers<'a> {
@@ -93,6 +101,7 @@ impl<'a> Buffers<'a> {
 ///
 /// The builder only covers application-facing settings. Runtime MQTT state lives in [`Session`](crate::Session).
 #[derive(Debug)]
+#[must_use]
 pub struct ConfigBuilder<'a> {
     pub(crate) protocol: Protocol,
     buffers: Buffers<'a>,
@@ -151,7 +160,7 @@ impl<'a> ConfigBuilder<'a> {
 
     /// Set the keepalive interval advertised in `CONNECT`.
     ///
-    /// `poll()` or `recv()` must still be driven often enough for the session to honor it.
+    /// Drive `Connection::poll()` regularly so the session can honor it.
     pub fn keepalive_interval(mut self, seconds: u16) -> Self {
         self.keepalive_interval = Duration::from_secs(seconds as u64);
         self
@@ -228,6 +237,20 @@ impl<'a> ConfigBuilder<'a> {
 mod tests {
     use super::{Buffers, ConfigBuilder};
     use crate::{ConfigError, Will};
+
+    #[test]
+    fn debug_omits_password_and_buffer_contents() {
+        let mut storage = [97; 64];
+        let config = ConfigBuilder::from_buffer(&mut storage, 32)
+            .unwrap()
+            .auth("user", b"secret")
+            .unwrap();
+        let debug = std::format!("{config:?}");
+        assert!(!debug.contains("password"));
+        assert!(!debug.contains("[97"));
+        assert!(!debug.contains("115, 101, 99"));
+        assert!(debug.contains("rx_len"));
+    }
 
     #[test]
     fn split_buffer() {

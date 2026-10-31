@@ -48,6 +48,7 @@ impl<'buf> Session<'buf> {
         self.packet_reader.reset();
         self.runtime.next_ping = None;
         self.runtime.ping_timeout = None;
+        self.runtime.receiving.clear();
         self.data.outbound.arm_replay();
         let event = self.connect_handshake(&mut io).await?;
         Ok(Connection {
@@ -158,10 +159,21 @@ impl<'buf> Session<'buf> {
         let mut maximum_packet_size = None;
         let mut keepalive_interval = self.keepalive_interval;
         let mut assigned_client_id: Option<String<CLIENT_ID_CAPACITY>> = None;
+        let mut capabilities = crate::mqtt_client::Capabilities::default();
 
         let property_result = (|| {
             for property in ack.properties.iter() {
                 match property? {
+                    Property::RetainAvailable(value) => capabilities.retain = value != 0,
+                    Property::WildcardSubscriptionAvailable(value) => {
+                        capabilities.wildcard = value != 0
+                    }
+                    Property::SharedSubscriptionAvailable(value) => {
+                        capabilities.shared = value != 0
+                    }
+                    Property::SubscriptionIdentifierAvailable(value) => {
+                        capabilities.subscription_ids = value != 0
+                    }
                     Property::MaximumPacketSize(size) => maximum_packet_size = Some(size),
                     Property::AssignedClientIdentifier(id) => {
                         if !client_id.is_empty() || assigned_client_id.is_some() {
@@ -195,6 +207,13 @@ impl<'buf> Session<'buf> {
         self.runtime.max_send_quota = max_send_quota;
         self.runtime.max_qos = max_qos;
         self.runtime.maximum_packet_size = maximum_packet_size;
+        self.runtime.capabilities = capabilities;
+        self.data.outbound.validate_replay(
+            self.protocol,
+            maximum_packet_size,
+            max_qos,
+            capabilities,
+        )?;
         if let Some(assigned_client_id) = assigned_client_id {
             // The first CONNECT encoded an empty client ID, so the assigned ID adds only its bytes.
             let connect_workspace = connect_workspace + assigned_client_id.len();

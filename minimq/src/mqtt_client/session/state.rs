@@ -12,7 +12,7 @@ use crate::{Error, QoS, ResourceError};
 /// - how early `minimq` sends a `PINGREQ` before keepalive expiry
 /// - how long it waits for the matching `PINGRESP`
 pub(super) const ROUND_TRIP_TIMEOUT_MS: u64 = 5_000;
-const MAX_INBOUND_QOS2: usize = 8;
+pub(super) const MAX_INBOUND_QOS2: usize = 20;
 
 #[derive(Debug)]
 pub(super) struct RuntimeState {
@@ -23,6 +23,9 @@ pub(super) struct RuntimeState {
     pub(super) max_qos: Option<QoS>,
     pub(super) next_ping: Option<Instant>,
     pub(super) ping_timeout: Option<Instant>,
+    // Connection-local receive window; persistent duplicate tracking lives in SessionData.
+    pub(super) receiving: Vec<u16, MAX_INBOUND_QOS2>,
+    pub(super) capabilities: crate::mqtt_client::Capabilities,
 }
 
 impl RuntimeState {
@@ -35,6 +38,8 @@ impl RuntimeState {
             max_qos: None,
             next_ping: None,
             ping_timeout: None,
+            receiving: Vec::new(),
+            capabilities: Default::default(),
         }
     }
 

@@ -131,3 +131,60 @@ fn publication(event: minimq::Event<'_>) -> minimq::InboundPublish<'_> {
     };
     message
 }
+#[tokio::test]
+#[ignore = "requires BROKER"]
+async fn queued_qos2_burst() {
+    let broker = std::env::var("BROKER").unwrap();
+    for protocol in [
+        minimq::Protocol::V3_1_1 {
+            clean_session: true,
+        },
+        minimq::Protocol::V5,
+    ] {
+        timeout(Duration::from_secs(10), async {
+            let id = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let topic = format!("minimq/burst/{id}");
+            let mut subscriber =
+                Session::new(config(&format!("burst-sub-{id}")).protocol(protocol));
+            let mut publisher = Session::new(config(&format!("burst-pub-{id}")));
+            let mut sub = subscriber
+                .connect(FromTokio::new(TcpStream::connect(&broker).await.unwrap()))
+                .await
+                .unwrap();
+            let op = sub
+                .subscribe(
+                    &[TopicFilter::new(&topic)
+                        .options(SubscriptionOptions::default().maximum_qos(QoS::ExactlyOnce))],
+                    &[],
+                )
+                .await
+                .unwrap();
+            complete(&mut sub, op).await;
+            let mut publisher = publisher
+                .connect(FromTokio::new(TcpStream::connect(&broker).await.unwrap()))
+                .await
+                .unwrap();
+            for sequence in 0u8..32 {
+                let op = publisher
+                    .publish(Publication::bytes(&topic, &[sequence]).qos(QoS::ExactlyOnce))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                complete(&mut publisher, op).await;
+            }
+            for sequence in 0u8..32 {
+                let minimq::Event::Publish(message) = sub.poll().await.unwrap() else {
+                    panic!("expected publication")
+                };
+                assert_eq!(message.payload(), &[sequence]);
+            }
+            sub.disconnect().await.unwrap();
+            publisher.disconnect().await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
+}

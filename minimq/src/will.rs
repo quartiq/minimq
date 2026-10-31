@@ -8,17 +8,9 @@ use heapless::String;
 const TOPIC_CAPACITY: usize = 128;
 type TopicString = String<TOPIC_CAPACITY>;
 
-fn validate_will_properties(properties: &[Property<'_>]) -> Result<(), ConfigError> {
-    for property in properties {
-        if !property.is_valid_for(PropertyContext::Will) {
-            return Err(ConfigError::InvalidConfig);
-        }
-    }
-    Ok(())
-}
-
 /// MQTT will message.
 #[derive(Debug, Clone, PartialEq)]
+#[must_use]
 pub struct Will<'a> {
     pub(crate) topic: TopicString,
     pub(crate) data: &'a [u8],
@@ -36,7 +28,11 @@ impl<'a> Will<'a> {
         data: &'a [u8],
         properties: &'a [Property<'a>],
     ) -> Result<Self, ConfigError> {
-        validate_will_properties(properties)?;
+        if !crate::wire::valid_topic(topic)
+            || !Properties::from_slice(properties).valid_for(PropertyContext::Will)
+        {
+            return Err(ConfigError::InvalidConfig);
+        }
         let topic = topic.try_into().map_err(|_| ConfigError::TopicTooLong)?;
 
         Ok(Self {

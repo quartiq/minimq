@@ -19,15 +19,12 @@ impl<'a> SessionData<'a> {
         match packet {
             ReceivedPacket::ConnAck(_) => return Err(ProtocolError::UnexpectedPacket.into()),
             ReceivedPacket::SubAck(ack) => {
-                self.outbound.validate_response_count(
+                if !self.outbound.ack_subscription(
                     PacketKind::Subscribe,
                     ack.packet_id,
-                    ack.codes.len(),
-                )?;
-                if !self
-                    .outbound
-                    .ack_packet(PacketKind::Subscribe, ack.packet_id)
-                {
+                    ack.codes,
+                    protocol,
+                )? {
                     debug!("Ignoring stale SUBACK for packet id {=u16}", ack.packet_id);
                     return Ok(false);
                 }
@@ -35,17 +32,12 @@ impl<'a> SessionData<'a> {
                 return Ok(true);
             }
             ReceivedPacket::UnsubAck(ack) => {
-                if protocol.is_v5() {
-                    self.outbound.validate_response_count(
-                        PacketKind::Unsubscribe,
-                        ack.packet_id,
-                        ack.codes.len(),
-                    )?;
-                }
-                if !self
-                    .outbound
-                    .ack_packet(PacketKind::Unsubscribe, ack.packet_id)
-                {
+                if !self.outbound.ack_subscription(
+                    PacketKind::Unsubscribe,
+                    ack.packet_id,
+                    ack.codes,
+                    protocol,
+                )? {
                     debug!(
                         "Ignoring stale UNSUBACK for packet id {=u16}",
                         ack.packet_id
@@ -117,12 +109,11 @@ impl<'a> SessionData<'a> {
                 return Ok(true);
             }
             ReceivedPacket::PubRel(rel) => {
-                let reason = if let Some(index) = self
+                let position = self
                     .pending_server_packet_ids
                     .iter()
-                    .position(|id| *id == rel.packet_id)
-                {
-                    self.pending_server_packet_ids.swap_remove(index);
+                    .position(|id| *id == rel.packet_id);
+                let reason = if position.is_some() {
                     ReasonCode::Success
                 } else {
                     ReasonCode::PacketIdNotFound
@@ -139,8 +130,20 @@ impl<'a> SessionData<'a> {
                 };
                 check_control_packet_size(runtime.maximum_packet_size, action, protocol)?;
                 self.outbound.queue_control(action)?;
+                if let Some(index) = position {
+                    self.pending_server_packet_ids.swap_remove(index);
+                }
             }
             ReceivedPacket::Publish(info) => {
+                if protocol.is_v5()
+                    && let Some(id) = info.packet_id
+                    && !runtime.receiving.contains(&id)
+                {
+                    runtime
+                        .receiving
+                        .push(id)
+                        .map_err(|_| PeerError::InvalidPacket)?;
+                }
                 debug!(
                     "Handling inbound PUBLISH packet_id={=?} topic={=str} qos={} retain={} payload_len={=usize}",
                     info.packet_id,
@@ -168,20 +171,36 @@ impl<'a> SessionData<'a> {
                         }
                         check_control_packet_size(runtime.maximum_packet_size, action, protocol)?;
                         self.outbound.queue_control(action)?;
+                        if !reason.success() {
+                            return Ok(false);
+                        }
                     }
                     QoS::ExactlyOnce => {
                         let packet_id = info.packet_id.ok_or(ProtocolError::MalformedPacket)?;
                         let duplicate = self.pending_server_packet_ids.contains(&packet_id);
-                        // Exceeding our receive capacity is fatal in either version.
-                        // 0x93 is a DISCONNECT reason, not a PUBREC reason.
                         if !duplicate && self.pending_server_packet_ids.is_full() {
-                            return Err(PeerError::InvalidPacket.into());
+                            if protocol.is_v5() {
+                                let action = ControlAction::PubRec {
+                                    packet_id,
+                                    reason: ReasonCode::QuotaExceeded,
+                                };
+                                check_control_packet_size(
+                                    runtime.maximum_packet_size,
+                                    action,
+                                    protocol,
+                                )?;
+                                self.outbound.queue_control(action)?;
+                            }
+                            return Err(ResourceError::InflightExhausted.into());
                         }
                         trace!(
                             "Queueing PUBREC for inbound QoS2 PUBLISH packet_id={=u16} duplicate={=bool}",
                             packet_id, duplicate
                         );
-                        let action = ControlAction::PubRec { packet_id };
+                        let action = ControlAction::PubRec {
+                            packet_id,
+                            reason: crate::ReasonCode::Success,
+                        };
                         check_control_packet_size(runtime.maximum_packet_size, action, protocol)?;
                         self.outbound.queue_control(action)?;
                         if duplicate {
@@ -250,7 +269,12 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                 Err(Error::Resource(ResourceError::PacketTooLarge))
             }
             Err(Error::Peer(err)) => Err(Error::Peer(err)),
-            Err(Error::Resource(err)) => Err(Error::Resource(err)),
+            Err(Error::Resource(err)) => {
+                if !self.session.protocol.is_v5() {
+                    self.handle_disconnect();
+                }
+                Err(Error::Resource(err))
+            }
             Err(Error::InvalidRequest) => Err(Error::InvalidRequest),
             Err(Error::NotReady) => Err(Error::NotReady),
             Err(Error::WriteZero) => Err(Error::WriteZero),

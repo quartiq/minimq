@@ -23,6 +23,32 @@ pub trait Io: Read + Write + ErrorType {}
 
 impl<T> Io for T where T: Read + Write + ErrorType {}
 
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct Capabilities {
+    pub retain: bool,
+    pub wildcard: bool,
+    pub shared: bool,
+    pub subscription_ids: bool,
+}
+
+impl Default for Capabilities {
+    fn default() -> Self {
+        Self {
+            retain: true,
+            wildcard: true,
+            shared: true,
+            subscription_ids: true,
+        }
+    }
+}
+
+impl Capabilities {
+    pub(crate) fn allows_filter(self, topic: &str, no_local: bool) -> bool {
+        (!topic.starts_with("$share/") || (self.shared && !no_local))
+            && (self.wildcard || !topic.contains(['+', '#']))
+    }
+}
+
 /// Handle for one outbound MQTT operation accepted into local session state.
 ///
 /// Query this handle on its originating [`Session`] (or a [`Connection`] borrowing
@@ -40,6 +66,7 @@ pub struct Op {
 
 /// Application-visible progress on an MQTT connection.
 #[derive(Debug)]
+#[must_use]
 pub enum Event<'a> {
     /// A publication received from the broker.
     Publish(InboundPublish<'a>),
@@ -54,6 +81,7 @@ pub enum Event<'a> {
 
 /// The broker's result for an outbound operation.
 #[derive(Debug)]
+#[must_use]
 pub enum Outcome<'a> {
     /// Completion of a QoS 1 or 2 exchange with the broker.
     Publish(Result<(), crate::ReasonCode>),
@@ -65,6 +93,23 @@ pub enum Outcome<'a> {
 
 impl Outcome<'_> {
     /// Check that every part of the operation succeeded, returning the first rejection.
+    ///
+    /// Inspect subscription grants in request order when the granted QoS matters:
+    /// ```
+    /// use minimq::{Outcome, PeerError};
+    /// fn inspect(outcome: &Outcome<'_>) -> Result<(), PeerError> {
+    ///     outcome.check()?;
+    ///     if let Outcome::Subscribe(results) = outcome {
+    ///         for (filter_index, result) in results.iter().enumerate() {
+    ///             let granted_qos = result.map_err(PeerError::Rejected)?;
+    ///             println!("filter {filter_index}: {granted_qos:?}");
+    ///         }
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    /// MQTT 3.1.1 unsubscribe success applies to the whole request; its
+    /// [`UnsubscribeResults::per_filter`] returns `None`.
     pub fn check(&self) -> Result<(), crate::PeerError> {
         let result = match self {
             Self::Publish(result) => *result,
@@ -83,9 +128,9 @@ impl Outcome<'_> {
 #[derive(Debug)]
 pub struct SubscribeResults<'a>(pub(crate) &'a [u8]);
 
-impl SubscribeResults<'_> {
+impl<'a> SubscribeResults<'a> {
     /// Granted QoS or rejection for each requested topic filter, in request order.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = Result<QoS, crate::ReasonCode>> + '_ {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = Result<QoS, crate::ReasonCode>> + use<'a> {
         self.0.iter().map(|&code| match code {
             0 => Ok(QoS::AtMostOnce),
             1 => Ok(QoS::AtLeastOnce),
@@ -99,12 +144,12 @@ impl SubscribeResults<'_> {
 #[derive(Debug)]
 pub struct UnsubscribeResults<'a>(pub(crate) Option<&'a [u8]>);
 
-impl UnsubscribeResults<'_> {
+impl<'a> UnsubscribeResults<'a> {
     /// MQTT 5 results in request order. MQTT 3.1.1 acknowledges the whole request
     /// successfully and supplies no per-filter results, returning `None` here.
     pub fn per_filter(
         &self,
-    ) -> Option<impl ExactSizeIterator<Item = Result<(), crate::ReasonCode>> + '_> {
+    ) -> Option<impl ExactSizeIterator<Item = Result<(), crate::ReasonCode>> + use<'a>> {
         self.0.map(|codes| {
             codes
                 .iter()
@@ -126,8 +171,7 @@ impl Op {
     }
 }
 
-/// Inbound MQTT `PUBLISH` surfaced by [`Connection::poll`] and by
-/// [`Connection::drive`] / [`Connection::poll`] when they return `Some(...)`.
+/// Inbound MQTT `PUBLISH` carried by [`Event::Publish`].
 #[derive(Debug)]
 pub struct InboundPublish<'a> {
     topic: &'a str,
@@ -180,16 +224,16 @@ impl<'a> InboundPublish<'a> {
     }
 
     /// Return the MQTT v5 response topic, if present.
-    pub fn response_topic(&'a self) -> Option<&'a str> {
+    pub fn response_topic(&self) -> Option<&'a str> {
         self.properties.response_topic()
     }
 
     /// Return MQTT v5 correlation data, if present.
-    pub fn correlation_data(&'a self) -> Option<&'a [u8]> {
+    pub fn correlation_data(&self) -> Option<&'a [u8]> {
         self.properties.correlation_data()
     }
 
-    fn response_target(&'a self) -> Option<ResponseTarget<'a>> {
+    fn response_target(&self) -> Option<ResponseTarget<'a>> {
         Some(ResponseTarget {
             topic: self.response_topic()?,
             correlation_data: self.correlation_data(),
@@ -197,7 +241,7 @@ impl<'a> InboundPublish<'a> {
     }
 
     /// Build a direct reply publication when the inbound message carries a response topic.
-    pub fn reply<P>(&'a self, payload: P) -> Option<Publication<'a, P>> {
+    pub fn reply<P>(&self, payload: P) -> Option<Publication<'a, P>> {
         self.response_target()
             .map(|target| target.publication(payload))
     }
@@ -206,7 +250,7 @@ impl<'a> InboundPublish<'a> {
     ///
     /// Use this when the reply has to outlive the borrowed inbound packet.
     pub fn reply_owned<const TOPIC: usize, const CORRELATION: usize>(
-        &'a self,
+        &self,
     ) -> Result<Option<OwnedResponseTarget<TOPIC, CORRELATION>>, ResourceError> {
         self.response_target()
             .map(ResponseTarget::to_owned)

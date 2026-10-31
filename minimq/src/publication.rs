@@ -100,6 +100,7 @@ impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for F {
 }
 
 /// Builder for an outbound MQTT `PUBLISH`.
+#[must_use]
 pub struct Publication<'a, P> {
     pub(crate) topic: &'a str,
     pub(crate) properties: Properties<'a>,

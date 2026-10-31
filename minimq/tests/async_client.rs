@@ -58,7 +58,7 @@ fn v3_inbound_qos2_exhaustion_closes_without_acknowledging() {
         io.push_rx(&[0x34, 6, 0, 1, b'a', 0, id, b'x']);
         match block_on(conn.poll()) {
             Ok(_) => wait_for_tx_frame(&mut conn, &io, &[0x50, 2, 0, id]),
-            Err(Error::Peer(PeerError::InvalidPacket)) => {
+            Err(Error::Resource(ResourceError::InflightExhausted)) => {
                 assert!(!conn.is_connected());
                 assert!(!io.tx().iter().any(|packet| packet == &[0x50, 2, 0, id]));
                 return;
@@ -920,7 +920,7 @@ fn subscribe_survives_cancellation_during_pending_flush() {
     let mut connection = MockConnection::default();
     let mut inspect = connection.clone();
     connection.push_rx(&connack());
-    connection.push_rx(&suback(1, 0x01));
+    connection.push_rx(&suback(1, 0x00));
     let connector = MockConnector::new(connection);
     let mut session = session();
     let mut conn = expect_connected(&mut session, &connector);
@@ -1256,7 +1256,7 @@ fn subscribe_is_replayed_after_disconnect_until_suback() {
     let mut second = MockConnection::default();
     let inspect = second.clone();
     second.push_rx(&connack_session_present());
-    second.push_rx(&suback(1, 0x01));
+    second.push_rx(&suback(1, 0x00));
 
     let connector = MockConnector::with_connections([first, second]);
     let mut session = session();
@@ -2724,6 +2724,254 @@ fn publication(event: minimq::Event<'_>) -> InboundPublish<'_> {
 }
 
 #[test]
+fn malformed_packets_close_before_delivery_or_completion() {
+    for packet in [
+        &b"\x40\x02\x00\x00"[..],                 // Zero acknowledgement identifier.
+        &b"\x62\x03\x00\x01\x83"[..],             // Invalid PUBREL reason.
+        &b"\x62\x06\x00\x01\x00\x02\x01\x00"[..], // Invalid PUBREL property.
+        &b"\x32\x08\x00\x01a\x00\x01\x01\x03x"[..], // Truncated property.
+        &b"\x30\x03\x00\x00\x00"[..],             // Empty topic.
+        &b"\x30\x04\x00\x01#\x00"[..],
+        &b"\x30\x04\x00\x01\x00\x00"[..],
+        &b"\x38\x04\x00\x01a\x00"[..], // QoS 0 DUP.
+    ] {
+        let mut session = session();
+        let mut io = MockConnection::default();
+        io.push_rx(&connack());
+        let mut conn = block_on(session.connect(io.clone())).unwrap();
+        io.inner.borrow_mut().tx.clear();
+        io.push_rx_fragmented(packet);
+        assert!(
+            matches!(
+                block_on(conn.poll()),
+                Err(Error::Peer(PeerError::InvalidPacket))
+            ),
+            "{packet:?}"
+        );
+        assert!(!conn.is_connected());
+        assert!(io.tx().is_empty());
+    }
+}
+
+#[test]
+fn invalid_negotiation_is_rejected_during_connect() {
+    for ack in [
+        &b"\x20\x08\x00\x00\x05\x27\x00\x00\x00\x00"[..],
+        &b"\x20\x05\x00\x00\x02\x24\x02"[..],
+        &b"\x20\x09\x00\x00\x06\x21\x00\x01\x21\x00\x02"[..],
+        &b"\x20\x03\x00\x01\x00"[..],
+    ] {
+        let mut session = session();
+        let mut io = MockConnection::default();
+        io.push_rx(ack);
+        assert!(matches!(
+            block_on(session.connect(io)),
+            Err(Error::Peer(PeerError::InvalidPacket))
+        ));
+    }
+}
+
+#[test]
+fn suback_cannot_exceed_requested_qos() {
+    for protocol in [minimq::Protocol::V5, V3] {
+        let mut session = Session::new(config().protocol(protocol));
+        let mut io = MockConnection::default();
+        io.push_rx(if protocol == V3 {
+            &[0x20, 2, 0, 0]
+        } else {
+            &[0x20, 3, 0, 0, 0]
+        });
+        let mut conn = block_on(session.connect(io.clone())).unwrap();
+        let op = block_on(conn.subscribe(&[TopicFilter::new("a")], &[])).unwrap();
+        io.push_rx(if protocol == V3 {
+            &[0x90, 3, 0, 1, 2]
+        } else {
+            &[0x90, 4, 0, 1, 0, 2]
+        });
+        assert!(matches!(
+            block_on(conn.poll()),
+            Err(Error::Peer(PeerError::InvalidPacket))
+        ));
+        assert!(conn.is_pending(&op));
+        assert!(!conn.is_connected());
+    }
+}
+
+#[test]
+fn resumed_full_qos2_storage_rejects_new_message_then_recovers() {
+    let mut session = session();
+    let mut io = MockConnection::default();
+    io.push_rx(&connack());
+    let mut conn = block_on(session.connect(io.clone())).unwrap();
+    let wire = io.tx().concat();
+    let property = wire.windows(3).find(|bytes| bytes[0] == 0x21).unwrap();
+    let capacity = u16::from_be_bytes([property[1], property[2]]);
+    for id in 1..=capacity {
+        io.push_rx(&inbound_publish_qos2(id, "a", b"x"));
+        assert_eq!(publication(block_on(conn.poll()).unwrap()).payload(), b"x");
+        wait_for_tx_frame(&mut conn, &io, &outbound_pubrec(id));
+    }
+    drop(conn);
+    let mut io = MockConnection::default();
+    io.push_rx(&connack_session_present());
+    let mut conn = block_on(session.connect(io.clone())).unwrap();
+    let rejected = capacity + 1;
+    io.push_rx(&inbound_publish_qos2(rejected, "a", b"rejected"));
+    assert!(matches!(
+        block_on(conn.poll()),
+        Err(Error::Resource(ResourceError::InflightExhausted))
+    ));
+    assert!(conn.is_connected());
+    let [msb, lsb] = rejected.to_be_bytes();
+    wait_for_tx_frame(&mut conn, &io, &[0x50, 3, msb, lsb, 0x97]);
+    // A duplicate still receives PUBREC without another delivery.
+    io.push_rx(&inbound_publish_qos2(1, "a", b"x"));
+    wait_for_tx_frame(&mut conn, &io, &outbound_pubrec(1));
+    io.push_rx(&[0x62, 2, 0, 1]);
+    wait_for_tx_frame(&mut conn, &io, &[0x70, 2, 0, 1]);
+    io.push_rx(&inbound_publish_qos2(rejected + 1, "a", b"accepted"));
+    assert_eq!(
+        publication(block_on(conn.poll()).unwrap()).payload(),
+        b"accepted"
+    );
+}
+
+#[test]
+fn incompatible_replay_fails_connect_and_preserves_operation() {
+    for properties in [&[0x27, 0, 0, 0, 16][..], &[0x24, 0][..], &[0x25, 0][..]] {
+        let mut session = session();
+        let mut io = MockConnection::default();
+        io.push_rx(&connack());
+        let mut conn = block_on(session.connect(io)).unwrap();
+        let op = block_on(
+            conn.publish(
+                Publication::bytes("a", &[0; 32])
+                    .qos(QoS::ExactlyOnce)
+                    .retain(),
+            ),
+        )
+        .unwrap()
+        .unwrap();
+        drop(conn);
+        let mut io = MockConnection::default();
+        let mut ack = vec![
+            0x20,
+            3 + properties.len() as u8,
+            1,
+            0,
+            properties.len() as u8,
+        ];
+        ack.extend_from_slice(properties);
+        io.push_rx(&ack);
+        assert!(block_on(session.connect(io)).is_err());
+        assert!(session.is_pending(&op));
+        let mut io = MockConnection::default();
+        io.push_rx(&connack_session_present());
+        let conn = block_on(session.connect(io)).unwrap();
+        assert!(conn.is_pending(&op));
+    }
+}
+
+#[test]
+fn broker_capabilities_gate_new_requests() {
+    let mut session = session();
+    let mut io = MockConnection::default();
+    io.push_rx(&[0x20, 11, 0, 0, 8, 0x25, 0, 0x28, 0, 0x29, 0, 0x2a, 0]);
+    let mut conn = block_on(session.connect(io.clone())).unwrap();
+    io.inner.borrow_mut().tx.clear();
+    for publication in [
+        Publication::bytes("a", b"x").retain(),
+        Publication::bytes("a", b"x").properties(&[Property::TopicAlias(1)]),
+    ] {
+        assert!(matches!(
+            block_on(conn.publish(publication)),
+            Err(PubError::Session(Error::InvalidRequest))
+        ));
+    }
+    for topic in ["#", "$share/group/a"] {
+        assert!(matches!(
+            block_on(conn.subscribe(&[TopicFilter::new(topic)], &[])),
+            Err(Error::InvalidRequest)
+        ));
+    }
+    assert!(matches!(
+        block_on(conn.subscribe(
+            &[TopicFilter::new("a")],
+            &[Property::SubscriptionIdentifier(1)]
+        )),
+        Err(Error::InvalidRequest)
+    ));
+    assert!(io.tx().is_empty());
+}
+
+#[test]
+fn disconnect_properties_use_available_tx_storage() {
+    let mut session = session();
+    let mut io = MockConnection::default();
+    io.push_rx(&connack());
+    let mut conn = block_on(session.connect(io.clone())).unwrap();
+    io.inner.borrow_mut().tx.clear();
+    block_on(conn.disconnect_with(
+        Disconnect::success().with_properties(&[Property::SessionExpiryInterval(0)]),
+    ))
+    .unwrap();
+    assert_eq!(io.tx().concat(), [0xe0, 7, 0, 5, 0x11, 0, 0, 0, 0]);
+    assert!(!conn.is_connected());
+    // The zero-to-nonzero restriction uses CONNECT, even if CONNACK overrides expiry.
+    for requested in [0u32, 60] {
+        let mut session = Session::new(config().session_expiry_interval(requested));
+        let mut io = MockConnection::default();
+        let assigned = if requested == 0 { 60 } else { 0 };
+        io.push_rx(&[0x20, 8, 0, 0, 5, 0x11, 0, 0, 0, assigned]);
+        let mut conn = block_on(session.connect(io.clone())).unwrap();
+        io.inner.borrow_mut().tx.clear();
+        let result = block_on(conn.disconnect_with(
+            Disconnect::success().with_properties(&[Property::SessionExpiryInterval(30)]),
+        ));
+        if requested == 0 {
+            assert!(matches!(result, Err(Error::InvalidRequest)));
+            assert!(io.tx().is_empty());
+            assert!(conn.is_connected());
+        } else {
+            result.unwrap();
+            assert!(!conn.is_connected());
+        }
+    }
+}
+
+#[test]
+fn inbound_qos2_tracking_survives_rejected_input() {
+    let mut session = session();
+    let mut io = MockConnection::default();
+    io.push_rx(&connack());
+    let mut conn = block_on(session.connect(io.clone())).unwrap();
+    io.push_rx(&inbound_publish_qos2(1, "a", b"x"));
+    assert_eq!(publication(block_on(conn.poll()).unwrap()).payload(), b"x");
+    wait_for_tx_frame(&mut conn, &io, &outbound_pubrec(1));
+    io.push_rx(&[0x32, 7, 0, 1, b'a', 0, 1, 0, b'y']);
+    wait_for_tx_frame(&mut conn, &io, &[0x40, 3, 0, 1, 0x91]);
+    assert!(poll_now(&mut conn).unwrap().is_none());
+    io.push_rx(&[0x62, 3, 0, 1, 0x83]);
+    assert!(matches!(
+        block_on(conn.poll()),
+        Err(Error::Peer(PeerError::InvalidPacket))
+    ));
+    drop(conn);
+    let mut io = MockConnection::default();
+    io.push_rx(&connack_session_present());
+    let mut conn = block_on(session.connect(io.clone())).unwrap();
+    io.push_rx(&inbound_publish_qos2(1, "a", b"x"));
+    wait_for_tx_frame(&mut conn, &io, &outbound_pubrec(1));
+    io.push_rx(&[0x62, 2, 0, 1]);
+    wait_for_tx_frame(&mut conn, &io, &[0x70, 2, 0, 1]);
+    io.push_rx(&inbound_publish_qos2(1, "a", b"new"));
+    assert_eq!(
+        publication(block_on(conn.poll()).unwrap()).payload(),
+        b"new"
+    );
+}
+
+#[test]
 fn completions_are_correlated_and_preserve_mixed_subscription_results() {
     let mut io = MockConnection::default();
     io.push_rx(&connack());
@@ -2828,5 +3076,55 @@ fn unsubscribe_completion_distinguishes_protocol_results() {
                 .map(|results| results.collect::<Vec<_>>()),
             (protocol != V3).then(|| vec![Ok(())])
         );
+    }
+}
+
+#[test]
+fn partial_ack_cancellation_preserves_completion() {
+    let mut io = MockConnection::default();
+    io.push_rx(&connack());
+    let mut session = session();
+    let mut conn = block_on(session.connect(io.clone())).unwrap();
+    let expected = publish_qos1(&mut conn, "a", b"x").unwrap().unwrap();
+    io.push_rx(&[0x40, 2, 0]);
+    assert!(poll_once(std::pin::pin!(conn.poll()).as_mut()).is_pending());
+    assert!(conn.is_pending(&expected));
+    io.push_rx(&[1]);
+    let minimq::Event::Completed { op, outcome } = block_on(conn.poll()).unwrap() else {
+        panic!()
+    };
+    assert_eq!(op, expected);
+    outcome.check().unwrap();
+    assert!(!conn.is_pending(&expected));
+}
+
+#[test]
+fn completion_identity_across_fresh_and_resumed_sessions() {
+    for resumed in [false, true] {
+        let mut io = MockConnection::default();
+        io.push_rx(&connack());
+        let mut session = Session::new(config().session_expiry_interval(u32::MAX));
+        let mut conn = block_on(session.connect(io)).unwrap();
+        let old = publish_qos1(&mut conn, "a", b"x").unwrap().unwrap();
+        drop(conn);
+        let mut io = MockConnection::default();
+        io.push_rx(&[0x20, 3, u8::from(resumed), 0, 0]);
+        let mut conn = block_on(session.connect(io.clone())).unwrap();
+        let expected = if resumed {
+            assert!(conn.is_pending(&old));
+            old
+        } else {
+            assert!(conn.is_invalidated(&old));
+            let new = publish_qos1(&mut conn, "a", b"y").unwrap().unwrap();
+            assert_ne!(new, old);
+            new
+        };
+        io.push_rx(&[0x40, 2, 0, 1]);
+        let minimq::Event::Completed { op, outcome } = block_on(conn.poll()).unwrap() else {
+            panic!()
+        };
+        assert_eq!(op, expected);
+        outcome.check().unwrap();
+        assert!(!conn.is_pending(&expected));
     }
 }

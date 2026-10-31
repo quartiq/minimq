@@ -137,6 +137,8 @@ pub enum Property<'a> {
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum PropertyContext {
     Publish,
+    InboundPublish,
+    ConnAck,
     Subscribe,
     Unsubscribe,
     Disconnect,
@@ -153,7 +155,10 @@ impl Property<'_> {
             | Property::WildcardSubscriptionAvailable(value)
             | Property::SubscriptionIdentifierAvailable(value)
             | Property::SharedSubscriptionAvailable(value) => *value <= 1,
-            Property::MaximumQoS(value) => *value <= 2,
+            Property::MaximumQoS(value) => *value <= 1,
+            Property::ReceiveMaximum(value) => *value != 0,
+            Property::MaximumPacketSize(value) => *value != 0,
+            Property::ResponseTopic(topic) => crate::wire::valid_topic(topic),
             Property::SubscriptionIdentifier(value) => (1..=MQTT_VARINT_MAX).contains(value),
             _ => true,
         }
@@ -167,14 +172,35 @@ impl Property<'_> {
         matches!(
             (context, self.into()),
             (
-                PropertyContext::Publish | PropertyContext::Will,
+                PropertyContext::Publish | PropertyContext::InboundPublish | PropertyContext::Will,
                 PropertyIdentifier::PayloadFormatIndicator
                     | PropertyIdentifier::MessageExpiryInterval
                     | PropertyIdentifier::ContentType
                     | PropertyIdentifier::ResponseTopic
                     | PropertyIdentifier::CorrelationData
                     | PropertyIdentifier::UserProperty,
-            ) | (PropertyContext::Publish, PropertyIdentifier::TopicAlias)
+            ) | (
+                PropertyContext::InboundPublish,
+                PropertyIdentifier::SubscriptionIdentifier
+            ) | (PropertyContext::Will, PropertyIdentifier::WillDelayInterval)
+                | (
+                    PropertyContext::ConnAck,
+                    PropertyIdentifier::SessionExpiryInterval
+                        | PropertyIdentifier::ReceiveMaximum
+                        | PropertyIdentifier::MaximumQoS
+                        | PropertyIdentifier::RetainAvailable
+                        | PropertyIdentifier::MaximumPacketSize
+                        | PropertyIdentifier::AssignedClientIdentifier
+                        | PropertyIdentifier::TopicAliasMaximum
+                        | PropertyIdentifier::ReasonString
+                        | PropertyIdentifier::UserProperty
+                        | PropertyIdentifier::WildcardSubscriptionAvailable
+                        | PropertyIdentifier::SubscriptionIdentifierAvailable
+                        | PropertyIdentifier::SharedSubscriptionAvailable
+                        | PropertyIdentifier::ServerKeepAlive
+                        | PropertyIdentifier::ResponseInformation
+                        | PropertyIdentifier::ServerReference
+                )
                 | (
                     PropertyContext::Subscribe,
                     PropertyIdentifier::SubscriptionIdentifier | PropertyIdentifier::UserProperty,
@@ -252,14 +278,14 @@ impl<'a> Properties<'a> {
 
     /// Iterate over decoded properties.
     ///
-    /// Inbound encoded properties are decoded lazily and may yield a [`PeerError`] if the broker
-    /// sent malformed property data.
-    pub fn iter(&'a self) -> impl Iterator<Item = Result<Property<'a>, PeerError>> + 'a {
+    /// Decodes borrowed property storage without allocating. Malformed storage yields a
+    /// [`PeerError`]; incoming publications are validated before delivery.
+    pub fn iter(&self) -> impl Iterator<Item = Result<Property<'a>, PeerError>> + use<'a> {
         self.iter_inner()
     }
 
     /// Return the first `ResponseTopic` property, if present and valid.
-    pub fn response_topic(&'a self) -> Option<&'a str> {
+    pub fn response_topic(&self) -> Option<&'a str> {
         self.iter().find_map(|prop| match prop {
             Ok(Property::ResponseTopic(topic)) => Some(topic),
             _ => None,
@@ -267,7 +293,7 @@ impl<'a> Properties<'a> {
     }
 
     /// Return the first `CorrelationData` property, if present and valid.
-    pub fn correlation_data(&'a self) -> Option<&'a [u8]> {
+    pub fn correlation_data(&self) -> Option<&'a [u8]> {
         self.iter().find_map(|prop| match prop {
             Ok(Property::CorrelationData(data)) => Some(data),
             _ => None,
@@ -304,9 +330,32 @@ impl<'a> Properties<'a> {
         }
     }
 
-    pub(crate) fn valid_for(&'a self, context: PropertyContext) -> bool {
-        self.iter()
-            .all(|property| property.is_ok_and(|property| property.is_valid_for(context)))
+    pub(crate) fn valid_for(&self, context: PropertyContext) -> bool {
+        let mut seen = 0u64;
+        self.iter().all(|property| {
+            let Ok(property) = property else {
+                return false;
+            };
+            if !property.is_valid_for(context) {
+                return false;
+            }
+            let id = PropertyIdentifier::from(&property);
+            if matches!(id, PropertyIdentifier::UserProperty)
+                || matches!(
+                    (context, id),
+                    (
+                        PropertyContext::InboundPublish,
+                        PropertyIdentifier::SubscriptionIdentifier
+                    )
+                )
+            {
+                return true;
+            }
+            let bit = 1u64 << id as u32;
+            let duplicate = seen & bit != 0;
+            seen |= bit;
+            !duplicate
+        })
     }
 
     pub(crate) fn valid_ack(&self) -> bool {
@@ -321,7 +370,7 @@ impl<'a> Properties<'a> {
         })
     }
 
-    fn iter_inner(&'a self) -> PropertiesIter<'a> {
+    fn iter_inner(&self) -> PropertiesIter<'a> {
         match &self.inner {
             PropertiesData::Encoded(data) => PropertiesIter {
                 inner: PropertiesIterInner::Encoded {
@@ -758,6 +807,21 @@ impl Property<'_> {
 mod tests {
     use super::{Properties, Property};
     use heapless::Vec;
+
+    #[test]
+    fn borrowed_values_outlive_the_view() {
+        fn topic<'a>(properties: Properties<'a>) -> &'a str {
+            properties.response_topic().unwrap()
+        }
+        fn values<'a>(
+            properties: Properties<'a>,
+        ) -> impl Iterator<Item = Result<Property<'a>, crate::PeerError>> + 'a {
+            properties.iter()
+        }
+        let properties = [Property::ResponseTopic("reply")];
+        assert_eq!(topic(Properties::from_slice(&properties)), "reply");
+        assert_eq!(values(Properties::from_slice(&properties)).count(), 1);
+    }
 
     #[test]
     fn iterate_slice_properties() {

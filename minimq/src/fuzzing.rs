@@ -186,7 +186,10 @@ pub fn encode_packet(
                     packet_id,
                     reason: ReasonCode::from(aux),
                 },
-                7 => ControlAction::PubRec { packet_id },
+                7 => ControlAction::PubRec {
+                    packet_id,
+                    reason: crate::ReasonCode::Success,
+                },
                 _ => ControlAction::PubComp {
                     packet_id,
                     reason: ReasonCode::from(aux),

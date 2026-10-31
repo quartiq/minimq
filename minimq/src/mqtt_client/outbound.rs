@@ -14,7 +14,7 @@ pub(super) const MAX_PENDING_CONTROL: usize = 8;
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum ControlAction {
     PubAck { packet_id: u16, reason: ReasonCode },
-    PubRec { packet_id: u16 },
+    PubRec { packet_id: u16, reason: ReasonCode },
     PubRel { packet_id: u16 },
     PubComp { packet_id: u16, reason: ReasonCode },
     PingReq,
@@ -24,7 +24,9 @@ impl ControlAction {
     fn encoded_len(self, protocol: crate::Protocol) -> usize {
         match self {
             Self::PingReq => 2,
-            Self::PubAck { reason, .. } | Self::PubComp { reason, .. }
+            Self::PubAck { reason, .. }
+            | Self::PubRec { reason, .. }
+            | Self::PubComp { reason, .. }
                 if protocol.is_v5() && reason != ReasonCode::Success =>
             {
                 5
@@ -245,18 +247,51 @@ impl<'a> Outbound<'a> {
         true
     }
 
-    pub(super) fn validate_response_count(
-        &self,
+    pub(super) fn ack_subscription(
+        &mut self,
         kind: PacketKind,
         packet_id: u16,
-        count: usize,
-    ) -> Result<(), ProtocolError> {
-        if self.retained.iter().any(|entry| {
-            entry.kind == kind && entry.packet_id == packet_id && entry.response_count != count
-        }) {
+        codes: &[u8],
+        protocol: crate::Protocol,
+    ) -> Result<bool, ProtocolError> {
+        use serde::Deserialize;
+        let Some(position) = self
+            .retained
+            .iter()
+            .position(|entry| entry.kind == kind && entry.packet_id == packet_id)
+        else {
+            return Ok(false);
+        };
+        let entry = &self.retained[position];
+        if (kind == PacketKind::Subscribe || protocol.is_v5())
+            && entry.response_count != codes.len()
+        {
             return Err(ProtocolError::MalformedPacket);
         }
-        Ok(())
+        if kind == PacketKind::Subscribe {
+            let offset: usize = self.retained[..position]
+                .iter()
+                .map(|entry| entry.len)
+                .sum();
+            let mut decoder =
+                crate::de::MqttDeserializer::new(&self.buf[offset..offset + entry.len]);
+            u8::deserialize(&mut decoder)?;
+            crate::varint::Varint::deserialize(&mut decoder)?;
+            u16::deserialize(&mut decoder)?;
+            if protocol.is_v5() {
+                crate::Properties::deserialize(&mut decoder)?;
+            }
+            for &code in codes {
+                crate::wire::Utf8String::deserialize(&mut decoder)?;
+                let options = u8::deserialize(&mut decoder)?;
+                if code <= 2 && code > options & 3 {
+                    return Err(ProtocolError::MalformedPacket);
+                }
+            }
+        }
+        self.remove_bytes(position);
+        self.retained.remove(position);
+        Ok(true)
     }
 
     fn remove_bytes(&mut self, position: usize) {
@@ -471,6 +506,74 @@ impl<'a> Outbound<'a> {
         }
     }
 
+    /// Check the complete backlog before exposing a connection with new limits.
+    pub(super) fn validate_replay<E>(
+        &self,
+        protocol: crate::Protocol,
+        maximum_packet_size: Option<u32>,
+        max_qos: Option<crate::QoS>,
+        capabilities: super::Capabilities,
+    ) -> Result<(), Error<E>> {
+        use serde::Deserialize;
+        for control in &self.pending_control {
+            check_control_packet_size(maximum_packet_size, control.action, protocol)?;
+        }
+        let mut offset = 0;
+        for entry in &self.retained {
+            let len = if entry.kind == PacketKind::PubRel {
+                4
+            } else {
+                entry.len
+            };
+            if maximum_packet_size.is_some_and(|max| len > max as usize) {
+                return Err(ResourceError::PacketTooLarge.into());
+            }
+            let bytes = &self.buf[offset..offset + entry.len];
+            offset += entry.len;
+            if entry.kind.is_publish() {
+                let qos = if entry.kind == PacketKind::PublishExactlyOnce {
+                    crate::QoS::ExactlyOnce
+                } else {
+                    crate::QoS::AtLeastOnce
+                };
+                if max_qos.is_some_and(|max| qos > max)
+                    || (!capabilities.retain && bytes[0] & 1 != 0)
+                {
+                    return Err(Error::InvalidRequest);
+                }
+            } else if entry.kind == PacketKind::Subscribe {
+                let mut decoder = crate::de::MqttDeserializer::new(bytes);
+                let mut check = || -> Result<bool, crate::DeError> {
+                    u8::deserialize(&mut decoder)?;
+                    crate::varint::Varint::deserialize(&mut decoder)?;
+                    u16::deserialize(&mut decoder)?;
+                    if protocol.is_v5() {
+                        let properties = crate::Properties::deserialize(&mut decoder)?;
+                        if !capabilities.subscription_ids
+                            && properties.iter().any(|p| {
+                                matches!(p, Ok(crate::Property::SubscriptionIdentifier(_)))
+                            })
+                        {
+                            return Ok(false);
+                        }
+                    }
+                    for _ in 0..entry.response_count {
+                        let topic = crate::wire::Utf8String::deserialize(&mut decoder)?;
+                        let options = u8::deserialize(&mut decoder)?;
+                        if !capabilities.allows_filter(topic.0, options & 4 != 0) {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                };
+                if !check()? {
+                    return Err(Error::InvalidRequest);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn pack_encoded(&mut self, offset: usize, len: usize) -> Result<(), ResourceError> {
         let start = self.retained_bytes();
         if len > self.retained_capacity().saturating_sub(start) {
@@ -506,7 +609,7 @@ fn encode_control_packet(
 ) -> &[u8] {
     let (header, packet_id, reason) = match packet {
         ControlAction::PubAck { packet_id, reason } => (0x40, packet_id, reason),
-        ControlAction::PubRec { packet_id } => (0x50, packet_id, ReasonCode::Success),
+        ControlAction::PubRec { packet_id, reason } => (0x50, packet_id, reason),
         ControlAction::PubRel { packet_id } => (0x62, packet_id, ReasonCode::Success),
         ControlAction::PubComp { packet_id, reason } => (0x70, packet_id, reason),
         ControlAction::PingReq => {
@@ -581,7 +684,10 @@ mod tests {
                 &[0x40, 2, 0x12, 0x34],
             ),
             (
-                ControlAction::PubRec { packet_id: 0x1234 },
+                ControlAction::PubRec {
+                    packet_id: 0x1234,
+                    reason: crate::ReasonCode::Success,
+                },
                 &[0x50, 2, 0x12, 0x34],
                 &[0x50, 2, 0x12, 0x34],
             ),
