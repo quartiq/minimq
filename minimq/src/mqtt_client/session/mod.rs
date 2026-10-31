@@ -13,7 +13,7 @@ use crate::{ConfigBuilder, Op, QoS, Will};
 use crate::{config::CLIENT_ID_CAPACITY, ser::MAX_FIXED_HEADER_SIZE};
 use heapless::String;
 
-use super::{ConnectEvent, Io, OpKind, OpStatus};
+use super::{ConnectEvent, Io, OpStatus};
 
 use state::{RuntimeState, SessionData};
 
@@ -31,6 +31,7 @@ pub struct Session<'buf> {
     packet_reader: PacketReader<'buf>,
     data: SessionData<'buf>,
     runtime: RuntimeState,
+    keepalive_interval: embassy_time::Duration,
     will: Option<Will<'buf>>,
     auth: Option<Auth<'buf>>,
     session_expiry_interval: Option<u32>,
@@ -58,6 +59,7 @@ impl<'buf> Session<'buf> {
             packet_reader: PacketReader::new(rx),
             data: SessionData::new(tx),
             runtime: RuntimeState::new(keepalive_interval),
+            keepalive_interval,
             will,
             auth,
             session_expiry_interval,
@@ -89,7 +91,8 @@ impl<'buf> Session<'buf> {
         if qos == QoS::AtMostOnce {
             self.data.outbound.scratch_len() >= MAX_FIXED_HEADER_SIZE
         } else {
-            self.runtime.send_quota != 0 && self.data.outbound.can_retain()
+            self.runtime.send_quota > self.data.outbound.queued_publishes()
+                && self.data.outbound.can_retain()
         }
     }
 
@@ -104,17 +107,7 @@ impl<'buf> Session<'buf> {
             return OpStatus::Invalidated;
         }
 
-        let pending = match op.kind {
-            OpKind::PublishAtLeastOnce | OpKind::Subscribe | OpKind::Unsubscribe => {
-                self.data.outbound.has_retained(op.packet_id)
-            }
-            OpKind::PublishExactlyOnce => {
-                self.data.outbound.has_retained(op.packet_id)
-                    || self.data.outbound.has_pending_release(op.packet_id)
-            }
-        };
-
-        if pending {
+        if self.data.outbound.has_retained(op.packet_id) {
             OpStatus::Pending
         } else {
             OpStatus::Complete

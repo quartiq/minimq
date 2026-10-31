@@ -2,11 +2,11 @@ use embassy_time::Instant;
 use embedded_io_async::Error as _;
 
 use crate::mqtt_client::OpKind;
-use crate::mqtt_client::outbound::{CONTROL_PACKET_WORKSPACE, write_all};
+use crate::mqtt_client::outbound::write_all;
 use crate::packets::{Disconnect, PublishHeader, Subscribe, Unsubscribe};
 use crate::properties::{Properties, PropertyContext};
 use crate::publication::{Publication, ToPayload};
-use crate::ser::MqttSerializer;
+use crate::ser::{MAX_FIXED_HEADER_SIZE, MqttSerializer};
 use crate::types::TopicFilter;
 use crate::wire::Utf8String;
 use crate::{Connection, Error, Io, Op, Property, PubError, QoS, ResourceError, debug, info, warn};
@@ -40,7 +40,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         {
             return Err(Error::InvalidRequest);
         }
-        let mut buffer = [0u8; CONTROL_PACKET_WORKSPACE];
+        let mut buffer = [0u8; MAX_FIXED_HEADER_SIZE + 4];
         let packet = MqttSerializer::encode(&mut buffer, &disconnect)?;
         self.session.runtime.require_packet_size(packet.len())?;
         // A cancelled publication can leave a packet prefix or suspended flush.
@@ -115,11 +115,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             self.session.data.outbound.retained_bytes()
         );
         self.flush_outbound().await?;
-        Ok(Op::new(
-            OpKind::Subscribe,
-            packet_id,
-            self.session.data.generation(),
-        ))
+        Ok(Op::new(packet_id, self.session.data.generation()))
     }
 
     /// Send an `UNSUBSCRIBE`.
@@ -171,11 +167,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             self.session.data.outbound.retained_bytes()
         );
         self.flush_outbound().await?;
-        Ok(Op::new(
-            OpKind::Unsubscribe,
-            packet_id,
-            self.session.data.generation(),
-        ))
+        Ok(Op::new(packet_id, self.session.data.generation()))
     }
 
     /// Send a `PUBLISH`.
@@ -246,11 +238,6 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         }
 
         if let Some(packet_id) = packet_id {
-            let kind = if qos == QoS::ExactlyOnce {
-                OpKind::PublishExactlyOnce
-            } else {
-                OpKind::PublishAtLeastOnce
-            };
             let encoded = self
                 .session
                 .data
@@ -267,52 +254,72 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                     return Err(err);
                 }
             };
-            self.session
-                .data
-                .outbound
-                .retain_packet(kind, packet_id, len)?;
-            self.session.runtime.send_quota = self.session.runtime.send_quota.saturating_sub(1);
-            debug!(
-                "Enqueued PUBLISH packet_id={=u16} qos={} len={=usize} send_quota={=u16}/{=u16} tx_used={=usize}",
-                packet_id,
-                qos,
-                len,
-                self.session.runtime.send_quota,
-                self.session.runtime.max_send_quota,
-                self.session.data.outbound.retained_bytes()
-            );
-            self.flush_outbound().await?;
-            return Ok(Some(Op::new(
-                kind,
-                packet_id,
-                self.session.data.generation(),
-            )));
+            return self
+                .send_publish(packet_id, len, qos)
+                .await
+                .map(Some)
+                .map_err(Into::into);
         }
 
         self.flush_outbound().await?;
-        let packet = MqttSerializer::encode_publish(
+        let (offset, packet) = MqttSerializer::encode_publish_with_offset(
             self.session.data.outbound.scratch_space(),
             &header,
             payload,
         )?;
-        self.session.runtime.require_packet_size(packet.len())?;
-        debug!("Sending QoS0 PUBLISH len={=usize}", packet.len());
+        let len = packet.len();
+        self.send_qos0(offset, len).await?;
+        Ok(None)
+    }
+
+    async fn send_publish(
+        &mut self,
+        packet_id: u16,
+        len: usize,
+        qos: QoS,
+    ) -> Result<Op, Error<IO::Error>> {
+        let kind = if qos == QoS::ExactlyOnce {
+            OpKind::PublishExactlyOnce
+        } else {
+            OpKind::PublishAtLeastOnce
+        };
+        self.session
+            .data
+            .outbound
+            .retain_packet(kind, packet_id, len)?;
+        debug!(
+            "Enqueued PUBLISH packet_id={=u16} qos={} len={=usize} send_quota={=u16}/{=u16} tx_used={=usize}",
+            packet_id,
+            qos,
+            len,
+            self.session.runtime.send_quota,
+            self.session.runtime.max_send_quota,
+            self.session.data.outbound.retained_bytes()
+        );
+        self.flush_outbound().await?;
+        Ok(Op::new(packet_id, self.session.data.generation()))
+    }
+
+    async fn send_qos0(&mut self, offset: usize, len: usize) -> Result<(), Error<IO::Error>> {
+        let packet = &self.session.data.outbound.scratch_space()[offset..offset + len];
+        self.session.runtime.require_packet_size(len)?;
+        debug!("Sending QoS0 PUBLISH len={=usize}", len);
         if !self.live {
-            return Err(Error::Disconnected.into());
+            return Err(Error::Disconnected);
         }
         if let Err(err) = write_all(&mut self.io, packet).await {
             warn!("QoS0 PUBLISH write failed");
             self.handle_disconnect();
-            return Err(err.into());
+            return Err(err);
         }
         if let Err(err) = self.io.flush().await {
             warn!("QoS0 PUBLISH flush failed: {}", err.kind());
             self.handle_disconnect();
-            return Err(Error::Transport(err).into());
+            return Err(Error::Transport(err));
         }
         self.session.runtime.note_outbound_activity(Instant::now());
 
-        Ok(None)
+        Ok(())
     }
 
     pub(super) fn require_retained_slot(&self) -> Result<(), Error<IO::Error>> {

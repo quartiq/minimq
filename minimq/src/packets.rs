@@ -136,6 +136,7 @@ impl serde::Serialize for TopicFilters<'_> {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg(any(test, feature = "fuzzing"))]
 pub(crate) struct PingReq;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -277,13 +278,6 @@ impl From<ReasonCode> for Reason<'_> {
 }
 
 impl<'a> Reason<'a> {
-    pub(crate) fn for_protocol(code: ReasonCode, protocol: crate::Protocol) -> Self {
-        if protocol.is_v5() {
-            code.into()
-        } else {
-            Self { reason: None }
-        }
-    }
     #[cfg_attr(not(feature = "fuzzing"), allow(dead_code))]
     pub(crate) fn with_properties(code: ReasonCode, properties: &'a [Property<'a>]) -> Self {
         Self {

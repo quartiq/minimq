@@ -2,7 +2,7 @@ use core::convert::Infallible;
 
 use crate::de::ReceivedPacket;
 use crate::mqtt_client::OpKind;
-use crate::mqtt_client::outbound::{ControlAction, check_control_packet_size, check_pubrel_size};
+use crate::mqtt_client::outbound::{ControlAction, check_control_packet_size};
 use crate::{
     Connection, Error, InboundPublish, Io, PeerError, ProtocolError, QoS, ReasonCode,
     ResourceError, debug, info, trace, warn,
@@ -65,43 +65,26 @@ impl<'a> SessionData<'a> {
                 ack.reason.code().as_result()?;
             }
             ReceivedPacket::PubRec(rec) => {
-                let queue_release = match self
-                    .outbound
-                    .ack_packet(OpKind::PublishExactlyOnce, rec.packet_id)
-                {
-                    true => {
+                if !rec.reason.code().success() {
+                    if self
+                        .outbound
+                        .ack_packet(OpKind::PublishExactlyOnce, rec.packet_id)
+                    {
                         runtime.send_quota = runtime
                             .send_quota
                             .saturating_add(1)
                             .min(runtime.max_send_quota);
-                        debug!(
-                            "Processed PUBREC packet_id={=u16} send_quota={=u16}",
-                            rec.packet_id, runtime.send_quota
-                        );
-                        true
+                        rec.reason.code().as_result()?;
                     }
-                    false if self.outbound.has_pending_release(rec.packet_id) => {
-                        debug!(
-                            "Replaying PUBREL after stale PUBREC for packet id {=u16}",
-                            rec.packet_id
-                        );
-                        false
-                    }
-                    false => {
-                        debug!("Ignoring stale PUBREC for packet id {=u16}", rec.packet_id);
-                        return Ok(false);
-                    }
-                };
-                rec.reason.code().as_result()?;
-                if queue_release {
-                    check_pubrel_size(
+                } else {
+                    check_control_packet_size(
                         runtime.maximum_packet_size,
-                        rec.packet_id,
-                        ReasonCode::Success,
+                        ControlAction::PubRel {
+                            packet_id: rec.packet_id,
+                        },
                         protocol,
                     )?;
-                    self.outbound
-                        .queue_release(rec.packet_id, ReasonCode::Success)?;
+                    self.outbound.release(rec.packet_id);
                     debug!("Queued PUBREL for packet_id={=u16}", rec.packet_id);
                 }
             }
@@ -114,6 +97,10 @@ impl<'a> SessionData<'a> {
                     return Ok(false);
                 }
                 debug!("Processed PUBCOMP packet_id={=u16}", comp.packet_id);
+                runtime.send_quota = runtime
+                    .send_quota
+                    .saturating_add(1)
+                    .min(runtime.max_send_quota);
                 comp.reason.code().as_result()?;
             }
             ReceivedPacket::PubRel(rel) => {

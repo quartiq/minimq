@@ -197,6 +197,13 @@ You supply two buffers.
   plus the larger of the `CONNECT` workspace and the largest temporary packet-encoding workspace.
   Minimq keeps enough TX capacity free to reconnect without discarding admitted state.
 
+QoS 2 publications occupy an in-flight slot until `PUBCOMP`, although their encoded
+payload space is freed on `PUBREC`. Broker send quota is consumed when a QoS 1/2
+PUBLISH starts writing and restored by `PUBACK`, `PUBCOMP`, or a negative `PUBREC`.
+Resumed publications obey the new connection's quota; acknowledgements and keepalive
+can still progress while publications wait for quota. A broker's MQTT 5 keepalive
+override applies only to that connection; reconnect advertises the configured interval.
+
 If `tx` is exhausted, `publish()` and other outbound operations can return [`Error::NotReady`].
 Malformed broker varints and undersized local encode buffers are rejected with errors rather than
 causing panics.

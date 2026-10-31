@@ -120,6 +120,7 @@ impl<'a> MqttSerializer<'a> {
         Ok((offset, packet))
     }
 
+    #[cfg(any(test, feature = "fuzzing"))]
     pub(crate) fn encode_publish<P: ToPayload>(
         buf: &'a mut [u8],
         header: &PublishHeader<'_>,

@@ -3,8 +3,8 @@
 use crate::{
     QoS, Retain,
     packets::{
-        ConnAck, Connect, Disconnect, PingReq, PubAck, PubComp, PubRec, PubRel, PublishHeader,
-        SubAck, Subscribe, UnsubAck, Unsubscribe,
+        ConnAck, Connect, Disconnect, PubAck, PubComp, PubRec, PubRel, PublishHeader, SubAck,
+        Subscribe, UnsubAck, Unsubscribe,
     },
 };
 use num_enum::TryFromPrimitive;
@@ -277,7 +277,8 @@ impl ControlPacket for UnsubAck<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::UnsubAck;
 }
 
-impl ControlPacket for PingReq {
+#[cfg(any(test, feature = "fuzzing"))]
+impl ControlPacket for crate::packets::PingReq {
     const MESSAGE_TYPE: MessageType = MessageType::PingReq;
 }
 

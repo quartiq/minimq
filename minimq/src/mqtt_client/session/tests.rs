@@ -480,7 +480,7 @@ fn ack_removing_packet_does_not_erase_stream_flush_state() {
             .ack_packet(OpKind::PublishAtLeastOnce, op.packet_id)
     );
     // There is no longer a per-packet Flush state to discover.
-    assert!(conn.session.data.outbound.next_step().is_none());
+    assert!(conn.session.data.outbound.next_step(true).is_none());
     assert!(block_on(conn.drive()).unwrap().is_none());
     assert!(matches!(conn.flush_state, FlushState::Clean));
 }
@@ -528,7 +528,7 @@ fn duplicate_control_actions_advance_separate_queue_entries() {
     }
     // Check finite progress before draining: updating the first matching action repeatedly
     // would leave the second entry writable forever.
-    assert!(conn.session.data.outbound.next_step().is_none());
+    assert!(conn.session.data.outbound.next_step(true).is_none());
     assert_eq!(conn.io.tx.concat(), [0x40, 3, 0, 9, 0, 0x40, 3, 0, 9, 0]);
     block_on(conn.drive()).unwrap();
     assert_eq!(conn.session.data.outbound.pending_control_len(), 0);

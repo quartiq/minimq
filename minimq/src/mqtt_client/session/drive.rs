@@ -3,8 +3,8 @@ use embedded_io_async::Error as _;
 
 use crate::de::PacketReader;
 use crate::mqtt_client::outbound::{
-    CONTROL_PACKET_WORKSPACE, ControlAction, MAX_PENDING_CONTROL, OutboundStep,
-    check_control_packet_size, serialize_control_packet, serialize_pubrel,
+    ControlAction, MAX_PENDING_CONTROL, OutboundStep, check_control_packet_size,
+    serialize_control_packet,
 };
 use crate::{Connection, Error, InboundPublish, debug, error, trace, warn};
 
@@ -14,7 +14,6 @@ use super::{FlushState, Io};
 #[derive(Copy, Clone)]
 enum Packet {
     Control(usize),
-    Release(u16),
     Retained(u16),
 }
 
@@ -95,7 +94,12 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                 }
             }
 
-            if self.session.data.outbound.next_step().is_none()
+            if self
+                .session
+                .data
+                .outbound
+                .next_step(self.session.runtime.send_quota != 0)
+                .is_none()
                 && self.flush_state == FlushState::Clean
             {
                 return Ok(if advanced {
@@ -244,7 +248,12 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             self.flush_current().await?;
             return Ok(true);
         }
-        if let Some(step) = self.session.data.outbound.next_step() {
+        if let Some(step) = self
+            .session
+            .data
+            .outbound
+            .next_step(self.session.runtime.send_quota != 0)
+        {
             return self.perform_outbound_step(step).await;
         }
         if self.flush_state == FlushState::Dirty {
@@ -254,7 +263,12 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         // Pending traffic already supplies keepalive activity. Drain it before
         // admitting an idle PINGREQ, especially when the control queue is full.
         self.maybe_queue_pingreq(now)?;
-        if let Some(step) = self.session.data.outbound.next_step() {
+        if let Some(step) = self
+            .session
+            .data
+            .outbound
+            .next_step(self.session.runtime.send_quota != 0)
+        {
             return self.perform_outbound_step(step).await;
         }
         Ok(false)
@@ -264,7 +278,6 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         let out = &mut self.session.data.outbound;
         let found = match packet {
             Packet::Control(index) => out.set_control_written(index, written, len),
-            Packet::Release(packet_id) => out.set_release_written(packet_id, written, len),
             Packet::Retained(packet_id) => out.set_retained_written(packet_id, written, len),
         };
         debug_assert!(found, "outbound packet no longer tracked");
@@ -274,7 +287,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         &mut self,
         step: OutboundStep,
     ) -> Result<bool, Error<IO::Error>> {
-        let mut small_buf = [0u8; CONTROL_PACKET_WORKSPACE];
+        let mut small_buf = [0u8; 5];
         let runtime = &mut self.session.runtime;
         let data = &mut self.session.data;
         let ping =
@@ -311,21 +324,30 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                     data.outbound.retained_len(),
                     data.outbound.pending_release_len()
                 );
-                let packet = serialize_pubrel(
+                let packet = serialize_control_packet(
                     &mut small_buf,
-                    step.packet_id,
-                    step.reason,
+                    ControlAction::PubRel {
+                        packet_id: step.packet_id,
+                    },
                     runtime.maximum_packet_size,
                     self.session.protocol,
                 )?;
                 WriteStep {
-                    packet: Packet::Release(step.packet_id),
+                    packet: Packet::Retained(step.packet_id),
                     bytes: packet,
                     written: step.written,
                     len: packet.len(),
                 }
             }
             OutboundStep::Retained(step) => {
+                runtime.require_packet_size(step.len)?;
+                if step.charge_quota {
+                    // Reserve once before the cancellable write. Queued replay
+                    // waits for the new connection's quota just like new traffic.
+                    runtime.send_quota -= 1;
+                    data.outbound
+                        .set_retained_written(step.packet_id, 0, step.len);
+                }
                 debug!(
                     "Driving retained packet write packet_id={=u16} progress {=usize}/{=usize} control={=usize} tx_used={=usize} tx_capacity={=usize} retained={=usize} pending_release={=usize}",
                     step.packet_id,
@@ -337,7 +359,6 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                     data.outbound.retained_len(),
                     data.outbound.pending_release_len()
                 );
-                runtime.require_packet_size(step.len)?;
                 WriteStep {
                     packet: Packet::Retained(step.packet_id),
                     bytes: data.outbound.retained_packet(step.offset, step.len),

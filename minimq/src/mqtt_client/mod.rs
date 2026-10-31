@@ -34,15 +34,13 @@ pub(crate) enum OpKind {
 /// Handle for one outbound MQTT operation accepted into local session state.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Op {
-    kind: OpKind,
     packet_id: u16,
     generation: u32,
 }
 
 impl Op {
-    pub(crate) fn new(kind: OpKind, packet_id: u16, generation: u32) -> Self {
+    pub(crate) fn new(packet_id: u16, generation: u32) -> Self {
         Self {
-            kind,
             packet_id,
             generation,
         }

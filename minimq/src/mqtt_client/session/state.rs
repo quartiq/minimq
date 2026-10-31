@@ -122,9 +122,7 @@ impl<'a> SessionData<'a> {
         loop {
             let packet_id = self.packet_id.get();
             self.packet_id = NonZeroU16::new(packet_id.wrapping_add(1)).unwrap_or(NonZeroU16::MIN);
-            if !self.outbound.has_retained(packet_id)
-                && !self.outbound.has_pending_release(packet_id)
-            {
+            if !self.outbound.has_retained(packet_id) {
                 return packet_id;
             }
         }
@@ -134,7 +132,6 @@ impl<'a> SessionData<'a> {
 #[cfg(test)]
 mod tests {
     use super::{NonZeroU16, SessionData};
-    use crate::ReasonCode;
     use crate::mqtt_client::OpKind;
 
     #[test]
@@ -145,7 +142,10 @@ mod tests {
         data.outbound
             .retain_packet(OpKind::Subscribe, u16::MAX, 5)
             .unwrap();
-        data.outbound.queue_release(1, ReasonCode::Success).unwrap();
+        data.outbound
+            .retain_packet(OpKind::PublishExactlyOnce, 1, 0)
+            .unwrap();
+        assert!(data.outbound.release(1));
 
         assert_eq!(data.next_packet_id(), 2);
     }

@@ -209,7 +209,7 @@ enum PropertiesData<'a> {
     Slice(&'a [Property<'a>]),
     Encoded(&'a [u8]),
     WithCorrelation {
-        correlation: Property<'a>,
+        correlation: &'a [u8],
         properties: &'a [Property<'a>],
     },
 }
@@ -234,11 +234,10 @@ impl Properties<'_> {
             PropertiesData::WithCorrelation {
                 correlation,
                 properties,
-            } => properties
-                .iter()
-                .chain([correlation.clone()].iter())
-                .map(|prop| prop.size())
-                .sum(),
+            } => {
+                Property::CorrelationData(correlation).size()
+                    + properties.iter().map(Property::size).sum::<usize>()
+            }
             PropertiesData::Encoded(block) => block.len(),
         }
     }
@@ -287,8 +286,7 @@ impl<'a> Properties<'a> {
         }
     }
 
-    pub(crate) fn with_correlation(self, data: &'a [u8]) -> Self {
-        let correlation = Property::CorrelationData(data);
+    pub(crate) fn with_correlation(self, correlation: &'a [u8]) -> Self {
         match self.inner {
             PropertiesData::Slice(properties)
             | PropertiesData::WithCorrelation { properties, .. } => Self {
@@ -327,7 +325,7 @@ impl<'a> Properties<'a> {
                 properties,
             } => PropertiesIter {
                 inner: PropertiesIterInner::WithCorrelation {
-                    correlation: correlation.clone(),
+                    correlation,
                     yielded_correlation: false,
                     props: properties,
                     index: 0,
@@ -352,7 +350,7 @@ enum PropertiesIterInner<'a> {
         index: usize,
     },
     WithCorrelation {
-        correlation: Property<'a>,
+        correlation: &'a [u8],
         yielded_correlation: bool,
         props: &'a [Property<'a>],
         index: usize,
@@ -388,7 +386,7 @@ impl<'a> core::iter::Iterator for PropertiesIter<'a> {
             } => {
                 if !*yielded_correlation {
                     *yielded_correlation = true;
-                    return Some(Ok(correlation.clone()));
+                    return Some(Ok(Property::CorrelationData(correlation)));
                 }
 
                 let property = props.get(*index).cloned()?;
@@ -412,7 +410,7 @@ impl serde::Serialize for Properties<'_> {
                 correlation,
                 properties,
             } => {
-                item.serialize_field("_correlation", &correlation)?;
+                item.serialize_field("_correlation", &Property::CorrelationData(correlation))?;
                 item.serialize_field("_props", properties)?;
             }
             PropertiesData::Encoded(block) => {

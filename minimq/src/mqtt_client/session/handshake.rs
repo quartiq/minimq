@@ -83,7 +83,7 @@ impl<'buf> Session<'buf> {
             Property::ReceiveMaximum(self.data.pending_server_packet_ids.capacity() as u16),
         ];
         let will = self.will.clone();
-        let keepalive = self.runtime.keepalive_interval.as_secs() as u16;
+        let keepalive = self.keepalive_interval.as_secs() as u16;
         let clean_start = match self.protocol {
             crate::Protocol::V5 => !self.data.session_present,
             crate::Protocol::V3_1_1 { clean_session } => clean_session,
@@ -178,7 +178,7 @@ impl<'buf> Session<'buf> {
         let mut max_send_quota = local_quota;
         let mut max_qos = None;
         let mut maximum_packet_size = None;
-        let mut keepalive_interval = self.runtime.keepalive_interval;
+        let mut keepalive_interval = self.keepalive_interval;
         let mut assigned_client_id: Option<String<CLIENT_ID_CAPACITY>> = None;
 
         let property_result = (|| {
