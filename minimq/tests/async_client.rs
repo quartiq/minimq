@@ -1661,33 +1661,17 @@ fn puback_failure_is_reported_and_clears_inflight() {
     let mut session = session();
     let mut conn = expect_connected(&mut session, &connector);
 
-    publish_qos1_ok(&mut conn, "data", b"x");
-    expect_poll_error(&mut conn, |err| {
-        matches!(
-            err,
-            Error::Peer(PeerError::Rejected(ReasonCode::NotAuthorized))
-        )
-    });
+    let expected = publish_qos1(&mut conn, "data", b"x").unwrap().unwrap();
+    let minimq::Event::Completed { op, outcome } = block_on(conn.poll()).unwrap() else {
+        panic!("expected completion")
+    };
+    assert_eq!(op, expected);
+    assert!(matches!(
+        outcome,
+        minimq::Outcome::Publish(Err(ReasonCode::NotAuthorized))
+    ));
+    assert!(!conn.is_pending(&expected));
     publish_qos1_ok(&mut conn, "data", b"y");
-}
-
-#[test]
-fn pubrec_failure_is_reported_and_clears_inflight() {
-    let mut connection = MockConnection::default();
-    connection.push_rx(&connack());
-    connection.push_rx(&pubrec_reason(1, 0x97));
-    let connector = MockConnector::new(connection);
-    let mut session = session();
-    let mut conn = expect_connected(&mut session, &connector);
-
-    publish_qos2_ok(&mut conn, "data", b"x");
-    expect_poll_error(&mut conn, |err| {
-        matches!(
-            err,
-            Error::Peer(PeerError::Rejected(ReasonCode::QuotaExceeded))
-        )
-    });
-    publish_qos2_ok(&mut conn, "data", b"y");
 }
 
 #[test]
@@ -1700,13 +1684,16 @@ fn pubcomp_failure_is_reported_and_clears_release_state() {
     let mut session = session();
     let mut conn = expect_connected(&mut session, &connector);
 
-    publish_qos2_ok(&mut conn, "data", b"x");
-    expect_poll_error(&mut conn, |err| {
-        matches!(
-            err,
-            Error::Peer(PeerError::Rejected(ReasonCode::PacketIdNotFound))
-        )
-    });
+    let expected = publish_qos2(&mut conn, "data", b"x").unwrap().unwrap();
+    let minimq::Event::Completed { op, outcome } = block_on(conn.poll()).unwrap() else {
+        panic!("expected completion")
+    };
+    assert_eq!(op, expected);
+    assert!(matches!(
+        outcome,
+        minimq::Outcome::Publish(Err(ReasonCode::PacketIdNotFound))
+    ));
+    assert!(!conn.is_pending(&expected));
     publish_qos2_ok(&mut conn, "data", b"y");
 }
 
@@ -2591,12 +2578,18 @@ fn negative_pubrec_restores_quota_but_stale_acks_do_not() {
     let mut conn = block_on(session.connect(io.clone())).unwrap();
     let op = publish_qos2(&mut conn, "a", b"x").unwrap().unwrap();
     io.push_rx(&pubrec_reason(1, 0x97));
-    expect_poll_error(&mut conn, |err| {
-        matches!(
-            err,
-            Error::Peer(PeerError::Rejected(ReasonCode::QuotaExceeded))
-        )
-    });
+    let minimq::Event::Completed {
+        op: completed,
+        outcome,
+    } = block_on(conn.poll()).unwrap()
+    else {
+        panic!("expected completion")
+    };
+    assert_eq!(completed, op);
+    assert!(matches!(
+        outcome,
+        minimq::Outcome::Publish(Err(ReasonCode::QuotaExceeded))
+    ));
     assert!(!conn.is_pending(&op));
     assert!(conn.can_publish(QoS::ExactlyOnce));
     publish_qos2_ok(&mut conn, "a", b"x");
@@ -2639,9 +2632,11 @@ fn pubrel_replay_preserves_original_send_order() {
         assert_eq!(io.tx().concat(), [release(2), release(1)].concat());
         assert!(conn.is_pending(&first) && conn.is_pending(&second));
         io.push_rx(&pubcomp(2));
-        for _ in 0..WAIT_STEPS {
-            poll_now(&mut conn).unwrap();
-        }
+        let minimq::Event::Completed { op, outcome } = block_on(conn.poll()).unwrap() else {
+            panic!("expected completion")
+        };
+        assert_eq!(op, second);
+        assert!(matches!(outcome, minimq::Outcome::Publish(Ok(()))));
         assert!(conn.is_pending(&first) && !conn.is_pending(&second));
     }
 }
