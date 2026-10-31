@@ -1,8 +1,8 @@
 # Minimq workspace
 
-Opinionated, allocation-free MQTT 5 components for embedded systems:
+Opinionated, allocation-free MQTT components for embedded systems:
 
-- [`minimq`](minimq/) is the async MQTT 5 client.
+- [`minimq`](minimq/) is the async MQTT 5 and MQTT 3.1.1 client.
 - [`mqtt-rpc`](mqtt-rpc/) is a minimal MQTT 5 request/reply protocol with a
   matching Python client.
 - [`mqtt-staging`](mqtt-staging/) stages bounded objects into

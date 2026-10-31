@@ -3,7 +3,7 @@
 
 # Minimq
 
-`minimq` is an opinionated `no_std`, no-alloc, `async` MQTT 5 client for embedded systems.
+`minimq` is an opinionated `no_std`, no-alloc, `async` MQTT 5 and MQTT 3.1.1 client for embedded systems.
 
 It manages one broker session over caller-provided packet buffers and an
 [`embedded_io_async`] byte stream. Keepalive, QoS 0/1/2 handshakes, in-flight replay, and resumed
@@ -113,6 +113,40 @@ Connected session operations report [`Error`]:
 - transport failures surface as [`Error::Transport`]
 
 ## Session Model
+
+MQTT 5 is the default. To use MQTT 3.1.1, select it on the builder:
+
+```rust
+# use minimq::{Buffers, ConfigBuilder, Protocol, Session};
+# let mut rx = [0; 256];
+# let mut tx = [0; 1024];
+let config = ConfigBuilder::new(Buffers::new(&mut rx, &mut tx))
+    .client_id("traffic-map")?
+    .protocol(Protocol::V3_1_1 { clean_session: true });
+let session = Session::new(config);
+# Ok::<(), minimq::ConfigError>(())
+```
+
+The selection is fixed for the session's lifetime, including reconnects. Separate sessions can
+use different versions simultaneously; there is no automatic fallback.
+
+- MQTT 3.1.1 `clean_session: true` starts fresh on every connection.
+- MQTT 3.1.1 `clean_session: false` requests persistent broker state on every connection,
+  including the first. It requires a nonempty, stable client ID. A new local `Session` cannot
+  restore in-flight messages from a previous process or device boot.
+- MQTT 5 keeps its existing clean-start/reconnect behavior and `session_expiry_interval()`
+  setting (default zero). Expiry is never translated to MQTT 3.1.1 persistence.
+
+For MQTT 3.1.1, `connect()` rejects explicitly configured session expiry, automatic QoS downgrade,
+or Will properties before writing. Publish/subscribe/unsubscribe properties, MQTT 5 subscription
+options, and non-success disconnect reasons are rejected with `Error::InvalidRequest`.
+Empty property slices and default subscription options work with either version. Only ordinary
+username/password authentication is supported.
+
+MQTT 3.1.1 has no negotiated receive maximum, maximum packet size, or QoS limit. Local buffer
+and in-flight limits still apply, and QoS 0/1/2 are available. An oversized inbound packet or
+exhausted inbound QoS 2 storage closes the connection without acknowledging the message.
+Miniconf and MQTT RPC require MQTT 5.
 
 You provide packet buffers plus an already-established transport, and a loop that explicitly
 passes that transport into [`Session::connect()`] to establish or resume the broker session.

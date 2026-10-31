@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [UNRELEASED](https://github.com/quartiq/minimq/compare/minimq-v0.13.5...HEAD) - DATE
 
+### Added
+
+* Explicit per-session MQTT 3.1.1 support with clean or persistent sessions. MQTT 5 remains
+  the default; unsupported MQTT 5 options are rejected on MQTT 3.1.1 connections.
+
 ## [0.13.5](https://github.com/quartiq/minimq/compare/minimq-v0.13.4...minimq-v0.13.5) - 2026-10-11
 
 ### Changed

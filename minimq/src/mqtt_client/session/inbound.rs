@@ -15,6 +15,7 @@ impl<'a> SessionData<'a> {
         &mut self,
         runtime: &mut RuntimeState,
         packet: ReceivedPacket<'_>,
+        protocol: crate::Protocol,
     ) -> Result<bool, Error<Infallible>> {
         match packet {
             ReceivedPacket::ConnAck(_) => return Err(ProtocolError::UnexpectedPacket.into()),
@@ -97,6 +98,7 @@ impl<'a> SessionData<'a> {
                         runtime.maximum_packet_size,
                         rec.packet_id,
                         ReasonCode::Success,
+                        protocol,
                     )?;
                     self.outbound
                         .queue_release(rec.packet_id, ReasonCode::Success)?;
@@ -135,7 +137,7 @@ impl<'a> SessionData<'a> {
                     packet_id: rel.packet_id,
                     reason,
                 };
-                check_control_packet_size(runtime.maximum_packet_size, action)?;
+                check_control_packet_size(runtime.maximum_packet_size, action, protocol)?;
                 self.outbound.queue_control(action)?;
             }
             ReceivedPacket::Publish(info) => {
@@ -161,7 +163,10 @@ impl<'a> SessionData<'a> {
                             packet_id, reason
                         );
                         let action = ControlAction::PubAck { packet_id, reason };
-                        check_control_packet_size(runtime.maximum_packet_size, action)?;
+                        if !protocol.is_v5() && !reason.success() {
+                            return Err(PeerError::InvalidPacket.into());
+                        }
+                        check_control_packet_size(runtime.maximum_packet_size, action, protocol)?;
                         self.outbound.queue_control(action)?;
                     }
                     QoS::ExactlyOnce => {
@@ -180,7 +185,12 @@ impl<'a> SessionData<'a> {
                             packet_id, duplicate, reason
                         );
                         let action = ControlAction::PubRec { packet_id, reason };
-                        check_control_packet_size(runtime.maximum_packet_size, action)?;
+                        // MQTT 3.1.1 cannot negatively acknowledge a publication. Close
+                        // without acknowledging when local QoS 2 capacity is exhausted.
+                        if !protocol.is_v5() && !reason.success() {
+                            return Err(PeerError::InvalidPacket.into());
+                        }
+                        check_control_packet_size(runtime.maximum_packet_size, action, protocol)?;
                         self.outbound.queue_control(action)?;
                         if duplicate || !reason.success() {
                             debug!(
@@ -212,7 +222,11 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             return Ok(None);
         }
 
-        let (packet_length, packet) = match self.session.packet_reader.take_packet() {
+        let (packet_length, packet) = match self
+            .session
+            .packet_reader
+            .take_packet(self.session.protocol)
+        {
             Ok(packet) => packet,
             Err(err) => {
                 warn!("Failed to decode inbound packet: {}", err);
@@ -220,11 +234,11 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                 return Err(err.into());
             }
         };
-        match self
-            .session
-            .data
-            .handle_packet(&mut self.session.runtime, packet)
-        {
+        match self.session.data.handle_packet(
+            &mut self.session.runtime,
+            packet,
+            self.session.protocol,
+        ) {
             Ok(true) => Ok(Some(packet_length)),
             Ok(false) => Ok(None),
             Err(Error::Disconnected) => {
@@ -261,7 +275,9 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             .buffer
             .get(..packet_length)
             .ok_or(ProtocolError::MalformedPacket)?;
-        let ReceivedPacket::Publish(info) = ReceivedPacket::from_buffer(buffer)? else {
+        let ReceivedPacket::Publish(info) =
+            ReceivedPacket::from_buffer(buffer, self.session.protocol)?
+        else {
             return Err(ProtocolError::UnexpectedPacket);
         };
         Ok(InboundPublish::new(

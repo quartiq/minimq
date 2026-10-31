@@ -24,13 +24,25 @@ impl<'buf> Session<'buf> {
     /// All state carried across reconnects (in-flight QoS replay, keepalive timers, the inbound
     /// packet reader) is reset here, at the start of every `connect`, so it does not matter how a
     /// previous [`Connection`] ended — dropped, `mem::forget`-ed, or errored. A previous handle that
-    /// was merely dropped did not send a `DISCONNECT`; if the broker still holds the session it is
-    /// resumed here (`CONNECT` `clean_start=false`, yielding [`ConnectEvent::Reconnected`]),
-    /// otherwise a fresh session is started ([`ConnectEvent::Connected`]).
+    /// was merely dropped did not send a `DISCONNECT`. MQTT 5 and persistent MQTT 3.1.1
+    /// sessions resume broker state when available ([`ConnectEvent::Reconnected`]); otherwise
+    /// a fresh session is started ([`ConnectEvent::Connected`]). MQTT 3.1.1 clean sessions
+    /// always start fresh.
     pub async fn connect<IO: Io>(
         &mut self,
         mut io: IO,
     ) -> Result<Connection<'_, 'buf, IO>, Error<IO::Error>> {
+        if let crate::Protocol::V3_1_1 { clean_session } = self.protocol
+            && (self.session_expiry_interval.is_some()
+                || self.downgrade_qos
+                || self
+                    .will
+                    .as_ref()
+                    .is_some_and(|will| !will.properties.is_empty())
+                || (!clean_session && self.client_id.is_empty()))
+        {
+            return Err(Error::InvalidRequest);
+        }
         // We are not guaranteed that any of those 3 calls have been made after
         // the previous `connect` call.
         self.packet_reader.reset();
@@ -67,19 +79,22 @@ impl<'buf> Session<'buf> {
         let client_id = self.client_id.clone();
         let properties = [
             Property::MaximumPacketSize(self.packet_reader.buffer.len() as u32),
-            Property::SessionExpiryInterval(self.session_expiry_interval),
+            Property::SessionExpiryInterval(self.session_expiry_interval.unwrap_or(0)),
             Property::ReceiveMaximum(self.data.pending_server_packet_ids.capacity() as u16),
         ];
         let will = self.will.clone();
         let keepalive = self.runtime.keepalive_interval.as_secs() as u16;
-        let clean_start = !self.data.session_present;
+        let clean_start = match self.protocol {
+            crate::Protocol::V5 => !self.data.session_present,
+            crate::Protocol::V3_1_1 { clean_session } => clean_session,
+        };
         let auth = self.auth;
         debug!(
             "Sending CONNECT: client_id={=str} clean_start={=bool} keepalive_s={=u16} session_expiry={=u32} receive_max={=u16} rx_max_packet_size={=usize}",
             client_id,
             clean_start,
             keepalive,
-            self.session_expiry_interval,
+            self.session_expiry_interval.unwrap_or(0),
             self.data.pending_server_packet_ids.capacity() as u16,
             self.packet_reader.buffer.len()
         );
@@ -89,6 +104,7 @@ impl<'buf> Session<'buf> {
             let (offset, packet) = MqttSerializer::encode_with_offset(
                 buffer,
                 &Connect {
+                    protocol: self.protocol,
                     keepalive,
                     properties: Properties::from_slice(&properties),
                     client_id: Utf8String(client_id.as_str()),
@@ -119,7 +135,7 @@ impl<'buf> Session<'buf> {
             return Err(err);
         }
 
-        let packet = match self.packet_reader.received_packet() {
+        let packet = match self.packet_reader.received_packet(self.protocol) {
             Ok(packet) => packet,
             Err(err) => {
                 warn!("Failed to decode inbound packet: {}", err);
@@ -149,6 +165,9 @@ impl<'buf> Session<'buf> {
         }
 
         let resumed = ack.session_present;
+        if resumed && clean_start {
+            return Err(Error::Peer(PeerError::InvalidPacket));
+        }
         if !resumed {
             debug!("Broker started a fresh session; resetting local session state");
             self.data.reset();

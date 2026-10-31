@@ -22,6 +22,105 @@ use tokio::{
 const BROKER_ADDR_ENV: &str = "MINIMQ_REAL_BROKER_ADDR";
 const BROKER_HOST_ENV: &str = "MINIMQ_REAL_BROKER_HOST";
 
+#[tokio::test]
+async fn both_protocols_qos_will_and_sessions() {
+    init_host_logging();
+    let Some(addr) = socket_broker() else {
+        return;
+    };
+    for protocol in [
+        minimq::Protocol::V5,
+        minimq::Protocol::V3_1_1 {
+            clean_session: false,
+        },
+        minimq::Protocol::V3_1_1 {
+            clean_session: true,
+        },
+    ] {
+        let topic = unique_topic();
+        let mut config = config(&unique_client_id("sub")).protocol(protocol);
+        if protocol == minimq::Protocol::V5 {
+            config = config.session_expiry_interval(60);
+        }
+        let mut subscriber = Session::new(config);
+        let mut publisher = Session::new(
+            self::config(&unique_client_id("pub"))
+                .protocol(protocol)
+                .will(
+                    minimq::Will::new(&topic, b"gone", &[])
+                        .unwrap()
+                        .qos(QoS::AtLeastOnce),
+                )
+                .unwrap(),
+        );
+        let mut sub = subscriber
+            .connect(connect_addr(addr).await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(sub.connect_event(), ConnectEvent::Connected);
+        let filters = [TopicFilter::new(&topic)
+            .options(SubscriptionOptions::default().maximum_qos(QoS::ExactlyOnce))];
+        sub.subscribe(&filters, &[]).await.unwrap();
+        poll_until_ready(&mut sub, false).await;
+        drop(sub);
+        let mut sub = subscriber
+            .connect(connect_addr(addr).await.unwrap())
+            .await
+            .unwrap();
+        if protocol
+            == (minimq::Protocol::V3_1_1 {
+                clean_session: true,
+            })
+        {
+            assert_eq!(sub.connect_event(), ConnectEvent::Connected);
+            sub.subscribe(&filters, &[]).await.unwrap();
+            poll_until_ready(&mut sub, false).await;
+        } else {
+            assert_eq!(sub.connect_event(), ConnectEvent::Reconnected);
+        }
+        let mut publisher = publisher
+            .connect(connect_addr(addr).await.unwrap())
+            .await
+            .unwrap();
+        for qos in [QoS::AtMostOnce, QoS::AtLeastOnce, QoS::ExactlyOnce] {
+            let op = publisher
+                .publish(Publication::bytes(&topic, b"hello").qos(qos))
+                .await
+                .unwrap();
+            let (received, ()) = tokio::join!(poll_until_ready(&mut sub, true), async {
+                if let Some(op) = op {
+                    with_timeout(Duration::from_secs(5), async {
+                        while !publisher.is_complete(&op) {
+                            publisher.poll().await.unwrap();
+                        }
+                    })
+                    .await
+                    .unwrap();
+                }
+            });
+            let (got_topic, payload, got_qos) = received.unwrap();
+            assert_eq!(
+                (got_topic.as_str(), payload.as_slice(), got_qos),
+                (topic.as_str(), b"hello".as_slice(), qos)
+            );
+            // Complete the inbound QoS exchange before testing the next publication.
+            poll_until_ready(&mut sub, false).await;
+        }
+        drop(publisher); // Abrupt TCP close publishes the Will for either version.
+        let (_, payload, _) = poll_until_ready(&mut sub, true).await.unwrap();
+        assert_eq!(payload, b"gone");
+        let op = sub.unsubscribe(&[&topic], &[]).await.unwrap();
+        with_timeout(Duration::from_secs(5), async {
+            while !sub.is_complete(&op) {
+                sub.poll().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        sub.disconnect().await.unwrap();
+    }
+}
+
 type Conn<'a, 'buf> = Connection<'a, 'buf, TokioConnection>;
 
 fn socket_broker() -> Option<SocketAddr> {

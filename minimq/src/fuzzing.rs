@@ -14,7 +14,13 @@ use crate::{
 
 /// Parse one inbound packet buffer.
 pub fn parse_received_packet(buf: &[u8]) {
-    let _ = ReceivedPacket::from_buffer(buf);
+    let _ = ReceivedPacket::from_buffer(buf, crate::Protocol::V5);
+    let _ = ReceivedPacket::from_buffer(
+        buf,
+        crate::Protocol::V3_1_1 {
+            clean_session: false,
+        },
+    );
 }
 
 /// Drive `PacketReader` with fragmented input bytes.
@@ -36,7 +42,7 @@ pub fn drive_packet_reader(storage: &mut [u8], input: &[u8], fragments: &[u8]) {
         offset += count;
 
         if reader.packet_available() {
-            let _ = reader.received_packet();
+            let _ = reader.received_packet(crate::Protocol::V5);
         }
     }
 }
@@ -114,7 +120,14 @@ pub fn encode_packet(
     retain: bool,
     aux: u8,
 ) {
-    match tag % 10 {
+    let protocol = if tag & 0x80 == 0 {
+        crate::Protocol::V5
+    } else {
+        crate::Protocol::V3_1_1 {
+            clean_session: false,
+        }
+    };
+    match (tag & 0x7f) % 10 {
         0 => {
             let _ = MqttSerializer::encode(buf, &PingReq);
         }
@@ -131,7 +144,7 @@ pub fn encode_packet(
             let header = PublishHeader {
                 topic: Utf8String(publication.topic),
                 packet_id: (publication.qos > QoS::AtMostOnce).then_some(1),
-                properties: publication.properties,
+                properties: protocol.is_v5().then_some(publication.properties),
                 retain: publication.retain,
                 qos: publication.qos,
                 dup: false,
@@ -144,7 +157,9 @@ pub fn encode_packet(
                 buf,
                 &Subscribe {
                     packet_id: 1,
-                    properties: Properties::from_slice(subscribe_properties(aux)),
+                    properties: protocol
+                        .is_v5()
+                        .then(|| Properties::from_slice(subscribe_properties(aux))),
                     topics: &topics,
                 },
             );
@@ -155,7 +170,9 @@ pub fn encode_packet(
                 buf,
                 &Unsubscribe {
                     packet_id: 1,
-                    properties: Properties::from_slice(generic_properties(aux)),
+                    properties: protocol
+                        .is_v5()
+                        .then(|| Properties::from_slice(generic_properties(aux))),
                     topics: &topics,
                 },
             );
@@ -164,6 +181,7 @@ pub fn encode_packet(
             let _ = MqttSerializer::encode(
                 buf,
                 &Connect {
+                    protocol,
                     keepalive: u16::from(aux),
                     properties: Properties::from_slice(connect_properties(aux >> 4)),
                     client_id: Utf8String(topic),

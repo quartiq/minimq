@@ -507,7 +507,7 @@ mod tests {
             let header = PublishHeader {
                 topic: Utf8String(publication.topic),
                 packet_id: None,
-                properties: publication.properties,
+                properties: Some(publication.properties),
                 retain: publication.retain,
                 qos: publication.qos,
                 dup: false,

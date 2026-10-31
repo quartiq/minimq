@@ -15,7 +15,7 @@ mod varint;
 mod will;
 mod wire;
 
-pub use config::{Buffers, ConfigBuilder};
+pub use config::{Buffers, ConfigBuilder, Protocol};
 pub use mqtt_client::{ConnectEvent, Connection, InboundPublish, Io, Op, Session};
 pub use packets::Disconnect;
 pub use properties::{Properties, Property};

@@ -20,11 +20,11 @@ fn validate_will_properties(properties: &[Property<'_>]) -> Result<(), ConfigErr
 /// MQTT will message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Will<'a> {
-    topic: TopicString,
-    data: &'a [u8],
+    pub(crate) topic: TopicString,
+    pub(crate) data: &'a [u8],
     qos: QoS,
     retained: Retain,
-    properties: &'a [Property<'a>],
+    pub(crate) properties: &'a [Property<'a>],
 }
 
 impl<'a> Will<'a> {

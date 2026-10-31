@@ -23,6 +23,28 @@ fn config() -> ConfigBuilder<'static> {
 }
 
 #[tokio::test]
+async fn rejects_mqtt_v3_connection() {
+    init_logging();
+    let Ok(addr) = std::env::var("BROKER") else {
+        return;
+    };
+    let mut session = Session::new(config().protocol(minimq::Protocol::V3_1_1 {
+        clean_session: true,
+    }));
+    let mut connection = session
+        .connect(FromTokio::new(TcpStream::connect(addr).await.unwrap()))
+        .await
+        .unwrap();
+    let mut service = Service::new("v3-rejection").unwrap();
+    assert!(matches!(
+        service.step(&mut connection).await,
+        Err(minimq::Error::InvalidRequest)
+    ));
+    assert!(!service.is_ready());
+    connection.disconnect().await.unwrap();
+}
+
+#[tokio::test]
 async fn request_response() {
     init_logging();
     let Some(addr) = std::env::var("BROKER")

@@ -102,11 +102,17 @@ impl<'a> PacketReader<'a> {
         self.packet_length = None;
     }
 
-    pub(crate) fn received_packet(&mut self) -> Result<ReceivedPacket<'_>, Error> {
-        self.take_packet().map(|(_, packet)| packet)
+    pub(crate) fn received_packet(
+        &mut self,
+        protocol: crate::Protocol,
+    ) -> Result<ReceivedPacket<'_>, Error> {
+        self.take_packet(protocol).map(|(_, packet)| packet)
     }
 
-    pub(crate) fn take_packet(&mut self) -> Result<(usize, ReceivedPacket<'_>), Error> {
+    pub(crate) fn take_packet(
+        &mut self,
+        protocol: crate::Protocol,
+    ) -> Result<(usize, ReceivedPacket<'_>), Error> {
         let packet_length = *self.packet_length.as_ref().ok_or(Error::MalformedPacket)?;
         trace!(
             "PacketReader handing off complete packet of {=usize} bytes",
@@ -119,7 +125,7 @@ impl<'a> PacketReader<'a> {
 
         Ok((
             packet_length,
-            ReceivedPacket::from_buffer(&self.buffer[..packet_length])?,
+            ReceivedPacket::from_buffer(&self.buffer[..packet_length], protocol)?,
         ))
     }
 }

@@ -26,19 +26,21 @@ use state::{RuntimeState, SessionData};
 /// Cancelling `connect()` drops the supplied transport and leaves the session available for a
 /// clean retry.
 pub struct Session<'buf> {
+    protocol: crate::Protocol,
     client_id: String<CLIENT_ID_CAPACITY>,
     packet_reader: PacketReader<'buf>,
     data: SessionData<'buf>,
     runtime: RuntimeState,
     will: Option<Will<'buf>>,
     auth: Option<Auth<'buf>>,
-    session_expiry_interval: u32,
+    session_expiry_interval: Option<u32>,
     downgrade_qos: bool,
 }
 
 impl<'buf> Session<'buf> {
     /// Construct a session from a setup builder.
     pub fn new(config: ConfigBuilder<'buf>) -> Self {
+        let protocol = config.protocol;
         let (
             buffers,
             will,
@@ -51,6 +53,7 @@ impl<'buf> Session<'buf> {
         let (rx, tx) = buffers.into_parts();
 
         Self {
+            protocol,
             client_id,
             packet_reader: PacketReader::new(rx),
             data: SessionData::new(tx),
@@ -60,6 +63,11 @@ impl<'buf> Session<'buf> {
             session_expiry_interval,
             downgrade_qos,
         }
+    }
+
+    /// Return the immutable protocol and session semantics.
+    pub fn protocol(&self) -> crate::Protocol {
+        self.protocol
     }
 
     /// Return the maximum inbound MQTT packet size accepted by this session.

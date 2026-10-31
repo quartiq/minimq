@@ -92,6 +92,32 @@ fn session_exposes_local_packet_capacities() {
 }
 
 #[test]
+fn v3_keepalive_roundtrip() {
+    let mut rx = [0; 4];
+    let mut tx = [0; 64];
+    let mut session = Session::new(
+        ConfigBuilder::new(Buffers::new(&mut rx, &mut tx))
+            .protocol(crate::Protocol::V3_1_1 {
+                clean_session: true,
+            })
+            .keepalive_interval(1),
+    );
+    let mut io = MockConnection::default();
+    io.push_rx(&[0x20, 2, 0, 0]);
+    let mut conn = block_on(session.connect(io)).unwrap();
+    let now = Instant::now();
+    conn.session.runtime.next_ping = Some(now);
+    block_on(conn.service(now)).unwrap();
+    block_on(conn.service(now)).unwrap();
+    assert_eq!(conn.io.tx.last().unwrap(), &[0xc0, 0]);
+    assert!(conn.session.runtime.ping_timeout.is_some());
+    conn.io.push_rx(&[0xd0, 0]);
+    block_on(conn.read_packet()).unwrap();
+    assert!(conn.process_received_packet().unwrap().is_none());
+    assert!(conn.session.runtime.ping_timeout.is_none());
+}
+
+#[test]
 fn maintain_sends_pingreq_when_due() {
     let mut session = session();
     let mut conn = live_connection(&mut session, MockConnection::default());

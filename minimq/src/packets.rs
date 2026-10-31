@@ -11,6 +11,7 @@ use serde::ser::SerializeStruct;
 
 #[derive(Debug)]
 pub(crate) struct Connect<'a> {
+    pub(crate) protocol: crate::Protocol,
     pub(crate) keepalive: u16,
     pub(crate) properties: Properties<'a>,
     pub(crate) client_id: Utf8String<'a>,
@@ -23,13 +24,23 @@ impl serde::Serialize for Connect<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut item = serializer.serialize_struct("Connect", 0)?;
         item.serialize_field("protocol_name", &Utf8String("MQTT"))?;
-        item.serialize_field("protocol_version", &5u8)?;
+        item.serialize_field(
+            "protocol_version",
+            &if self.protocol.is_v5() { 5u8 } else { 4 },
+        )?;
         item.serialize_field("flags", &self.flags())?;
         item.serialize_field("keep_alive", &self.keepalive)?;
-        item.serialize_field("properties", &self.properties)?;
+        if self.protocol.is_v5() {
+            item.serialize_field("properties", &self.properties)?;
+        }
         item.serialize_field("client_id", &self.client_id)?;
         if let Some(will) = &self.will {
-            item.serialize_field("will", will)?;
+            if self.protocol.is_v5() {
+                item.serialize_field("will", will)?;
+            } else {
+                item.serialize_field("will_topic", &Utf8String(will.topic.as_str()))?;
+                item.serialize_field("will_payload", &BinaryData(will.data))?;
+            }
         }
 
         if let Some(auth) = &self.auth {
@@ -53,7 +64,7 @@ pub(crate) struct ConnAck<'a> {
 pub(crate) struct PublishHeader<'a> {
     pub(crate) topic: Utf8String<'a>,
     pub(crate) packet_id: Option<u16>,
-    pub(crate) properties: Properties<'a>,
+    pub(crate) properties: Option<Properties<'a>>,
     #[serde(skip)]
     pub(crate) retain: Retain,
     #[serde(skip)]
@@ -89,14 +100,14 @@ impl<P> core::fmt::Debug for Publish<'_, P> {
 #[derive(Debug, Serialize)]
 pub(crate) struct Subscribe<'a> {
     pub(crate) packet_id: u16,
-    pub(crate) properties: Properties<'a>,
+    pub(crate) properties: Option<Properties<'a>>,
     pub(crate) topics: &'a [TopicFilter<'a>],
 }
 
 #[derive(Debug)]
 pub(crate) struct Unsubscribe<'a> {
     pub(crate) packet_id: u16,
-    pub(crate) properties: Properties<'a>,
+    pub(crate) properties: Option<Properties<'a>>,
     pub(crate) topics: &'a [&'a str],
 }
 
@@ -266,6 +277,13 @@ impl From<ReasonCode> for Reason<'_> {
 }
 
 impl<'a> Reason<'a> {
+    pub(crate) fn for_protocol(code: ReasonCode, protocol: crate::Protocol) -> Self {
+        if protocol.is_v5() {
+            code.into()
+        } else {
+            Self { reason: None }
+        }
+    }
     #[cfg_attr(not(feature = "fuzzing"), allow(dead_code))]
     pub(crate) fn with_properties(code: ReasonCode, properties: &'a [Property<'a>]) -> Self {
         Self {
@@ -318,7 +336,7 @@ mod tests {
             qos: QoS::AtMostOnce,
             packet_id: None,
             dup: false,
-            properties: Properties::from_slice(&[]),
+            properties: Some(Properties::from_slice(&[])),
             retain: Retain::NotRetained,
             topic: Utf8String("ABC"),
         };
@@ -346,7 +364,7 @@ mod tests {
             topic: Utf8String("ABC"),
             packet_id: Some(0xBEEF),
             dup: false,
-            properties: Properties::from_slice(&[]),
+            properties: Some(Properties::from_slice(&[])),
             retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
@@ -373,7 +391,7 @@ mod tests {
             topic: Utf8String("ABC"),
             packet_id: Some(0xBEEF),
             dup: true,
-            properties: Properties::from_slice(&[]),
+            properties: Some(Properties::from_slice(&[])),
             retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
@@ -397,7 +415,7 @@ mod tests {
 
         let subscribe = Subscribe {
             packet_id: 16,
-            properties: Properties::from_slice(&[]),
+            properties: Some(Properties::from_slice(&[])),
             topics: &[TopicFilter::new("ABC")],
         };
 
@@ -419,7 +437,7 @@ mod tests {
 
         let unsubscribe = Unsubscribe {
             packet_id: 16,
-            properties: Properties::from_slice(&[]),
+            properties: Some(Properties::from_slice(&[])),
             topics: &["ABC"],
         };
 
@@ -445,7 +463,7 @@ mod tests {
             topic: Utf8String("ABC"),
             packet_id: None,
             dup: false,
-            properties: Properties::from_slice(&[Property::ResponseTopic("A")]),
+            properties: Some(Properties::from_slice(&[Property::ResponseTopic("A")])),
             retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
@@ -472,7 +490,7 @@ mod tests {
             topic: Utf8String("ABC"),
             packet_id: None,
             dup: false,
-            properties: Properties::from_slice(&[Property::UserProperty("A", "B")]),
+            properties: Some(Properties::from_slice(&[Property::UserProperty("A", "B")])),
             retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
@@ -497,6 +515,7 @@ mod tests {
 
         let mut buffer: [u8; 900] = [0; 900];
         let connect: Connect<'_> = Connect {
+            protocol: crate::Protocol::V5,
             client_id: Utf8String("ABC"),
             auth: None,
             will: None,
@@ -544,6 +563,7 @@ mod tests {
             .qos(QoS::AtMostOnce);
 
         let connect = Connect {
+            protocol: crate::Protocol::V5,
             clean_start: true,
             keepalive: 10,
             properties: Properties::from_slice(&[]),

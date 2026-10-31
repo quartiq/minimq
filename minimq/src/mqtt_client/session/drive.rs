@@ -213,6 +213,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             check_control_packet_size(
                 self.session.runtime.maximum_packet_size,
                 ControlAction::PingReq,
+                self.session.protocol,
             )?;
             self.session
                 .data
@@ -292,6 +293,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                     &mut small_buf,
                     step.action,
                     runtime.maximum_packet_size,
+                    self.session.protocol,
                 )?;
                 WriteStep {
                     packet: Packet::Control(step.index),
@@ -314,6 +316,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                     step.packet_id,
                     step.reason,
                     runtime.maximum_packet_size,
+                    self.session.protocol,
                 )?;
                 WriteStep {
                     packet: Packet::Release(step.packet_id),

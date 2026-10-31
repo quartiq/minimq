@@ -463,35 +463,40 @@ pub(super) fn serialize_control_packet<E>(
     buffer: &mut [u8],
     packet: ControlAction,
     maximum_packet_size: Option<u32>,
+    protocol: crate::Protocol,
 ) -> Result<&[u8], Error<E>> {
-    let bytes = encode_control_packet(buffer, packet)?;
+    let bytes = encode_control_packet(buffer, packet, protocol)?;
     if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
         return Err(Error::Resource(ResourceError::PacketTooLarge));
     }
     Ok(bytes)
 }
 
-fn encode_control_packet(buffer: &mut [u8], packet: ControlAction) -> Result<&[u8], ProtocolError> {
+fn encode_control_packet(
+    buffer: &mut [u8],
+    packet: ControlAction,
+    protocol: crate::Protocol,
+) -> Result<&[u8], ProtocolError> {
     Ok(match packet {
         ControlAction::PubAck { packet_id, reason } => MqttSerializer::encode(
             buffer,
             &PubAck {
                 packet_id,
-                reason: reason.into(),
+                reason: crate::packets::Reason::for_protocol(reason, protocol),
             },
         ),
         ControlAction::PubRec { packet_id, reason } => MqttSerializer::encode(
             buffer,
             &PubRec {
                 packet_id,
-                reason: reason.into(),
+                reason: crate::packets::Reason::for_protocol(reason, protocol),
             },
         ),
         ControlAction::PubComp { packet_id, reason } => MqttSerializer::encode(
             buffer,
             &PubComp {
                 packet_id,
-                reason: reason.into(),
+                reason: crate::packets::Reason::for_protocol(reason, protocol),
             },
         ),
         ControlAction::PingReq => MqttSerializer::encode(buffer, &PingReq),
@@ -508,9 +513,10 @@ fn require_packet_size(maximum_packet_size: Option<u32>, len: usize) -> Result<(
 pub(super) fn check_control_packet_size(
     maximum_packet_size: Option<u32>,
     action: ControlAction,
+    protocol: crate::Protocol,
 ) -> Result<(), ProtocolError> {
     let mut buffer = [0u8; CONTROL_PACKET_WORKSPACE];
-    let len = encode_control_packet(&mut buffer, action)?.len();
+    let len = encode_control_packet(&mut buffer, action, protocol)?.len();
     require_packet_size(maximum_packet_size, len)
 }
 
@@ -518,9 +524,10 @@ pub(super) fn check_pubrel_size(
     maximum_packet_size: Option<u32>,
     packet_id: u16,
     reason: ReasonCode,
+    protocol: crate::Protocol,
 ) -> Result<(), ProtocolError> {
     let mut buffer = [0u8; CONTROL_PACKET_WORKSPACE];
-    let len = encode_pubrel(&mut buffer, packet_id, reason)?.len();
+    let len = encode_pubrel(&mut buffer, packet_id, reason, protocol)?.len();
     require_packet_size(maximum_packet_size, len)
 }
 
@@ -529,8 +536,9 @@ pub(super) fn serialize_pubrel<E>(
     packet_id: u16,
     reason: ReasonCode,
     maximum_packet_size: Option<u32>,
+    protocol: crate::Protocol,
 ) -> Result<&[u8], Error<E>> {
-    let bytes = encode_pubrel(buffer, packet_id, reason)?;
+    let bytes = encode_pubrel(buffer, packet_id, reason, protocol)?;
     if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
         return Err(Error::Resource(ResourceError::PacketTooLarge));
     }
@@ -541,12 +549,13 @@ fn encode_pubrel(
     buffer: &mut [u8],
     packet_id: u16,
     reason: ReasonCode,
+    protocol: crate::Protocol,
 ) -> Result<&[u8], ProtocolError> {
     Ok(MqttSerializer::encode(
         buffer,
         &PubRel {
             packet_id,
-            reason: reason.into(),
+            reason: crate::packets::Reason::for_protocol(reason, protocol),
         },
     )?)
 }
@@ -588,7 +597,7 @@ mod tests {
         let len = outbound
             .encode_packet(&Subscribe {
                 packet_id: 16,
-                properties: Properties::from_slice(&[]),
+                properties: Some(Properties::from_slice(&[])),
                 topics: &[TopicFilter::new("ABC")],
             })
             .unwrap();
@@ -617,7 +626,7 @@ mod tests {
         let header = PublishHeader {
             topic: Utf8String(publication.topic),
             packet_id: None,
-            properties: publication.properties,
+            properties: Some(publication.properties),
             retain: publication.retain,
             qos: publication.qos,
             dup: false,

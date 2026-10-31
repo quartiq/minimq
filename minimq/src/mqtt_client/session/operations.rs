@@ -23,6 +23,18 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             return Ok(());
         }
         info!("Graceful disconnect requested");
+        let disconnect = if self.session.protocol.is_v5() {
+            disconnect
+        } else {
+            if disconnect.reason_code() != crate::ReasonCode::Success
+                || disconnect
+                    .properties()
+                    .is_some_and(|properties| properties.size() != 0)
+            {
+                return Err(Error::InvalidRequest);
+            }
+            Disconnect::success()
+        };
         if let Some(properties) = disconnect.properties()
             && !properties.valid_for(PropertyContext::Disconnect)
         {
@@ -70,6 +82,11 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         if topics.is_empty() {
             return Err(Error::InvalidRequest);
         }
+        if !self.session.protocol.is_v5()
+            && (!properties.is_empty() || topics.iter().any(|topic| !topic.valid_for_v3()))
+        {
+            return Err(Error::InvalidRequest);
+        }
         if !Properties::from_slice(properties).valid_for(PropertyContext::Subscribe) {
             return Err(Error::InvalidRequest);
         }
@@ -79,7 +96,11 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         let packet_id = self.session.data.next_packet_id();
         let len = self.session.data.outbound.encode_packet(&Subscribe {
             packet_id,
-            properties: Properties::from_slice(properties),
+            properties: self
+                .session
+                .protocol
+                .is_v5()
+                .then(|| Properties::from_slice(properties)),
             topics,
         })?;
         self.session.runtime.require_packet_size(len)?;
@@ -122,13 +143,20 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         if !Properties::from_slice(properties).valid_for(PropertyContext::Unsubscribe) {
             return Err(Error::InvalidRequest);
         }
+        if !self.session.protocol.is_v5() && !properties.is_empty() {
+            return Err(Error::InvalidRequest);
+        }
         self.flush_outbound().await?;
         self.require_retained_slot()?;
 
         let packet_id = self.session.data.next_packet_id();
         let len = self.session.data.outbound.encode_packet(&Unsubscribe {
             packet_id,
-            properties: Properties::from_slice(properties),
+            properties: self
+                .session
+                .protocol
+                .is_v5()
+                .then(|| Properties::from_slice(properties)),
             topics,
         })?;
         self.session.runtime.require_packet_size(len)?;
@@ -188,6 +216,9 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         if !properties.valid_for(PropertyContext::Publish) {
             return Err(Error::InvalidRequest.into());
         }
+        if !self.session.protocol.is_v5() && properties.size() != 0 {
+            return Err(Error::InvalidRequest.into());
+        }
         let qos = match self.session.runtime.max_qos {
             Some(max_qos) if qos > max_qos && self.session.downgrade_qos => max_qos,
             Some(max_qos) if qos > max_qos => return Err(Error::InvalidRequest.into()),
@@ -197,7 +228,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         let header = PublishHeader {
             topic: Utf8String(topic),
             packet_id,
-            properties,
+            properties: self.session.protocol.is_v5().then_some(properties),
             retain,
             qos,
             dup: false,

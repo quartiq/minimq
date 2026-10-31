@@ -118,6 +118,11 @@ pub struct TopicFilter<'a> {
 }
 
 impl<'a> TopicFilter<'a> {
+    pub(crate) fn valid_for_v3(&self) -> bool {
+        !self.options.no_local
+            && !self.options.retain_as_published
+            && matches!(self.options.retain_behavior, RetainHandling::Immediately)
+    }
     /// Construct a topic filter with default subscription options.
     ///
     /// ```rust

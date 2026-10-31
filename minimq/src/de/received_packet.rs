@@ -39,13 +39,20 @@ impl<'a> ReceivedPacket<'a> {
         }
     }
 
-    pub(crate) fn from_buffer(buf: &'a [u8]) -> Result<Self, ProtocolError> {
+    pub(crate) fn from_buffer(
+        buf: &'a [u8],
+        protocol: crate::Protocol,
+    ) -> Result<Self, ProtocolError> {
         trace!(
             "Parsing received packet buffer of {=usize} bytes",
             buf.len()
         );
         let mut deserializer = MqttDeserializer::new(buf);
-        let mut packet = ReceivedPacket::deserialize(&mut deserializer)?;
+        let mut packet = serde::Deserializer::deserialize_tuple(
+            &mut deserializer,
+            5,
+            ControlPacketVisitor(protocol),
+        )?;
 
         let remaining_payload = deserializer.remainder();
 
@@ -71,12 +78,27 @@ impl<'a> ReceivedPacket<'a> {
             }
         }
 
+        if !protocol.is_v5() {
+            match &packet {
+                Self::SubAck(ack)
+                    if ack.codes.is_empty()
+                        || ack.codes.iter().any(|code| !matches!(code, 0..=2 | 0x80)) =>
+                {
+                    return Err(ProtocolError::MalformedPacket);
+                }
+                Self::UnsubAck(ack) if !ack.codes.is_empty() => {
+                    return Err(ProtocolError::MalformedPacket);
+                }
+                _ => {}
+            }
+        }
+
         trace!("Parsed inbound packet kind={=str}", packet.kind());
         Ok(packet)
     }
 }
 
-struct ControlPacketVisitor;
+struct ControlPacketVisitor(crate::Protocol);
 
 fn next_required<'de, A, T>(seq: &mut A, field: &'static str) -> Result<T, A::Error>
 where
@@ -118,6 +140,28 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
         }
 
         let packet = match packet_type {
+            MessageType::ConnAck if !self.0.is_v5() => {
+                let flags: u8 = next_required(&mut seq, "Missing CONNACK flags")?;
+                let code: u8 = next_required(&mut seq, "Missing CONNACK return code")?;
+                if _length.0 != 2 || flags > 1 || (code != 0 && flags != 0) {
+                    return Err(A::Error::custom("Invalid CONNACK flags"));
+                }
+                use crate::ReasonCode;
+                let reason_code = match code {
+                    0 => ReasonCode::Success,
+                    1 => ReasonCode::UnsupportedProtocol,
+                    2 => ReasonCode::ClientIdentifierInvalid,
+                    3 => ReasonCode::ServerUnavailable,
+                    4 => ReasonCode::BadUsernameOrPassword,
+                    5 => ReasonCode::NotAuthorized,
+                    _ => return Err(A::Error::custom("Invalid CONNACK return code")),
+                };
+                ReceivedPacket::ConnAck(ConnAck {
+                    session_present: flags != 0,
+                    reason_code,
+                    properties: crate::Properties::from_slice(&[]),
+                })
+            }
             MessageType::ConnAck => {
                 ReceivedPacket::ConnAck(next_required(&mut seq, "Missing CONNACK")?)
             }
@@ -133,7 +177,11 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
                     None
                 };
 
-                let properties = next_required(&mut seq, "Missing PUBLISH properties")?;
+                let properties = if self.0.is_v5() {
+                    next_required(&mut seq, "Missing PUBLISH properties")?
+                } else {
+                    crate::Properties::from_slice(&[])
+                };
 
                 let publish: Publish<'_, &[u8]> = Publish {
                     topic,
@@ -146,6 +194,47 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
                 };
 
                 ReceivedPacket::Publish(publish)
+            }
+            MessageType::PubAck
+            | MessageType::PubRec
+            | MessageType::PubRel
+            | MessageType::PubComp
+                if !self.0.is_v5() =>
+            {
+                let packet_id = next_required(&mut seq, "Missing packet identifier")?;
+                if packet_id == 0 || _length.0 != 2 {
+                    return Err(A::Error::custom("Invalid acknowledgement"));
+                }
+                let reason = crate::ReasonCode::Success.into();
+                match packet_type {
+                    MessageType::PubAck => ReceivedPacket::PubAck(PubAck { packet_id, reason }),
+                    MessageType::PubRec => ReceivedPacket::PubRec(PubRec { packet_id, reason }),
+                    MessageType::PubRel => ReceivedPacket::PubRel(PubRel { packet_id, reason }),
+                    _ => ReceivedPacket::PubComp(PubComp { packet_id, reason }),
+                }
+            }
+            MessageType::SubAck | MessageType::UnsubAck if !self.0.is_v5() => {
+                let packet_id = next_required(&mut seq, "Missing packet identifier")?;
+                if packet_id == 0 {
+                    return Err(A::Error::custom("Invalid packet identifier"));
+                }
+                let _properties = crate::Properties::from_slice(&[]);
+                if packet_type == MessageType::SubAck {
+                    ReceivedPacket::SubAck(SubAck {
+                        packet_id,
+                        _properties,
+                        codes: &[],
+                    })
+                } else {
+                    ReceivedPacket::UnsubAck(UnsubAck {
+                        packet_id,
+                        _properties,
+                        codes: &[],
+                    })
+                }
+            }
+            MessageType::Disconnect if !self.0.is_v5() => {
+                return Err(A::Error::custom("Server DISCONNECT requires MQTT 5"));
             }
             MessageType::PubAck => {
                 ReceivedPacket::PubAck(next_required(&mut seq, "Missing PUBACK")?)
@@ -176,14 +265,6 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
     }
 }
 
-impl<'de> Deserialize<'de> for ReceivedPacket<'de> {
-    fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        // Deserialize the (fixed_header, length, control_packet | (topic, packet_id, properties)),
-        // which corresponds to a maximum of 5 elements.
-        deserializer.deserialize_tuple(5, ControlPacketVisitor)
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::ReceivedPacket;
@@ -202,7 +283,7 @@ mod test {
                   // No payload.
         ];
 
-        let packet = ReceivedPacket::from_buffer(&serialized_connack).unwrap();
+        let packet = ReceivedPacket::from_buffer(&serialized_connack, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::ConnAck(conn_ack) => {
                 assert_eq!(conn_ack.reason_code, ReasonCode::Success);
@@ -222,7 +303,7 @@ mod test {
             0x05, // Payload
         ];
 
-        let packet = ReceivedPacket::from_buffer(&serialized_publish).unwrap();
+        let packet = ReceivedPacket::from_buffer(&serialized_publish, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::Publish(pub_info) => {
                 assert_eq!(pub_info.topic.0, "A");
@@ -235,7 +316,7 @@ mod test {
     fn deserialize_rejects_overflowing_property_varint() {
         let serialized_disconnect: [u8; 9] = [0xE0, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xA3, 0xA3];
         assert!(matches!(
-            ReceivedPacket::from_buffer(&serialized_disconnect),
+            ReceivedPacket::from_buffer(&serialized_disconnect, crate::Protocol::V5),
             Err(ProtocolError::Deserialization(DeError::BadVarint))
         ));
     }
@@ -250,7 +331,7 @@ mod test {
             0x00, // Properties length
         ];
 
-        let packet = ReceivedPacket::from_buffer(&serialized_puback).unwrap();
+        let packet = ReceivedPacket::from_buffer(&serialized_puback, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::PubAck(pub_ack) => {
                 assert_eq!(pub_ack.reason.code(), ReasonCode::NoMatchingSubscribers);
@@ -268,7 +349,7 @@ mod test {
             0x00, 0x06, // Identifier
         ];
 
-        let packet = ReceivedPacket::from_buffer(&serialized_puback).unwrap();
+        let packet = ReceivedPacket::from_buffer(&serialized_puback, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::PubAck(pub_ack) => {
                 assert_eq!(pub_ack.packet_id, 6);
@@ -287,7 +368,7 @@ mod test {
             0x10, // ReasonCode
         ];
 
-        let packet = ReceivedPacket::from_buffer(&serialized_puback).unwrap();
+        let packet = ReceivedPacket::from_buffer(&serialized_puback, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::PubAck(pub_ack) => {
                 assert_eq!(pub_ack.packet_id, 6);
@@ -307,7 +388,7 @@ mod test {
             0x02, // Response Code
         ];
 
-        let packet = ReceivedPacket::from_buffer(&serialized_suback).unwrap();
+        let packet = ReceivedPacket::from_buffer(&serialized_suback, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::SubAck(sub_ack) => {
                 assert_eq!(sub_ack.codes.len(), 1);
@@ -328,7 +409,8 @@ mod test {
             0x11, // Response Code
         ];
 
-        let packet = ReceivedPacket::from_buffer(&serialized_unsuback).unwrap();
+        let packet =
+            ReceivedPacket::from_buffer(&serialized_unsuback, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::UnsubAck(unsub_ack) => {
                 assert_eq!(unsub_ack.codes.len(), 1);
@@ -349,7 +431,8 @@ mod test {
             0x00, // Remaining length (0)
         ];
 
-        let packet = ReceivedPacket::from_buffer(&serialized_ping_req).unwrap();
+        let packet =
+            ReceivedPacket::from_buffer(&serialized_ping_req, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::PingResp => {}
             _ => panic!("Invalid message"),
@@ -364,7 +447,7 @@ mod test {
         ];
 
         assert!(matches!(
-            ReceivedPacket::from_buffer(&serialized_ping_resp),
+            ReceivedPacket::from_buffer(&serialized_ping_resp, crate::Protocol::V5),
             Err(ProtocolError::Deserialization(DeError::Custom))
         ));
     }
@@ -377,7 +460,7 @@ mod test {
         ];
 
         assert!(matches!(
-            ReceivedPacket::from_buffer(&serialized_pubrel),
+            ReceivedPacket::from_buffer(&serialized_pubrel, crate::Protocol::V5),
             Err(ProtocolError::Deserialization(DeError::Custom))
         ));
     }
@@ -391,7 +474,7 @@ mod test {
             0x92, // Response Code
             0x00, // Properties length
         ];
-        let packet = ReceivedPacket::from_buffer(&serialized_pubcomp).unwrap();
+        let packet = ReceivedPacket::from_buffer(&serialized_pubcomp, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::PubComp(comp) => {
                 assert_eq!(comp.packet_id, 5);
@@ -408,7 +491,7 @@ mod test {
             0x02, // Remaining length
             0x00, 0x05, // Identifier
         ];
-        let packet = ReceivedPacket::from_buffer(&serialized_pubcomp).unwrap();
+        let packet = ReceivedPacket::from_buffer(&serialized_pubcomp, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::PubComp(comp) => {
                 assert_eq!(comp.packet_id, 5);
@@ -427,7 +510,7 @@ mod test {
             0x10, // Response Code
             0x00, // Properties length
         ];
-        let packet = ReceivedPacket::from_buffer(&serialized_pubrec).unwrap();
+        let packet = ReceivedPacket::from_buffer(&serialized_pubrec, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::PubRec(rec) => {
                 assert_eq!(rec.packet_id, 5);
@@ -444,7 +527,7 @@ mod test {
             0x02, // Remaining length
             0x00, 0x05, // Identifier
         ];
-        let packet = ReceivedPacket::from_buffer(&serialized_pubrec).unwrap();
+        let packet = ReceivedPacket::from_buffer(&serialized_pubrec, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::PubRec(rec) => {
                 assert_eq!(rec.packet_id, 5);
@@ -463,7 +546,7 @@ mod test {
             0x10, // Response Code
             0x00, // Properties length
         ];
-        let packet = ReceivedPacket::from_buffer(&serialized_pubrel).unwrap();
+        let packet = ReceivedPacket::from_buffer(&serialized_pubrel, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::PubRel(rec) => {
                 assert_eq!(rec.packet_id, 5);
@@ -480,7 +563,7 @@ mod test {
             0x02, // Remaining length
             0x00, 0x05, // Identifier
         ];
-        let packet = ReceivedPacket::from_buffer(&serialized_pubrel).unwrap();
+        let packet = ReceivedPacket::from_buffer(&serialized_pubrel, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::PubRel(rec) => {
                 assert_eq!(rec.packet_id, 5);
@@ -497,7 +580,8 @@ mod test {
             0x01, // Remaining length
             0x82, // Protocol Error
         ];
-        let packet = ReceivedPacket::from_buffer(&serialized_disconnect).unwrap();
+        let packet =
+            ReceivedPacket::from_buffer(&serialized_disconnect, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::Disconnect(disconnect) => {
                 assert_eq!(disconnect.reason_code(), ReasonCode::ProtocolError);
@@ -514,7 +598,8 @@ mod test {
             0x00, // Success
             0x00, // Properties length
         ];
-        let packet = ReceivedPacket::from_buffer(&serialized_disconnect).unwrap();
+        let packet =
+            ReceivedPacket::from_buffer(&serialized_disconnect, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::Disconnect(disconnect) => {
                 assert_eq!(disconnect.reason_code(), ReasonCode::Success);
@@ -530,7 +615,8 @@ mod test {
             0xe0, // DISCONNECT fixed header
             0x00, // Remaining length
         ];
-        let packet = ReceivedPacket::from_buffer(&serialized_disconnect).unwrap();
+        let packet =
+            ReceivedPacket::from_buffer(&serialized_disconnect, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::Disconnect(disconnect) => {
                 assert_eq!(disconnect.reason_code(), ReasonCode::Success);
