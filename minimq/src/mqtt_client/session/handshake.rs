@@ -1,5 +1,4 @@
 use embassy_time::{Duration, Instant};
-use embedded_io_async::Error as _;
 use heapless::String;
 
 use crate::config::CLIENT_ID_CAPACITY;
@@ -10,7 +9,7 @@ use crate::packets::Connect;
 use crate::properties::Properties;
 use crate::ser::MqttSerializer;
 use crate::wire::Utf8String;
-use crate::{Error, PeerError, Property, QoS, debug, info, warn};
+use crate::{Error, PeerError, Property, QoS, debug};
 
 use super::{Connection, Io, Session, drive::fill_packet_reader};
 
@@ -110,26 +109,12 @@ impl<'buf> Session<'buf> {
             .outbound
             .set_connect_workspace(connect_workspace)?;
 
-        if let Err(err) = fill_packet_reader(&mut self.packet_reader, connection).await {
-            match &err {
-                Error::Transport(err) => warn!("Transport read failed: {}", err.kind()),
-                Error::Disconnected => warn!("Transport returned EOF during CONNECT"),
-                _ => {}
-            }
-            return Err(err);
-        }
-
-        let packet = match self.packet_reader.received_packet(self.protocol) {
-            Ok(packet) => packet,
-            Err(err) => {
-                warn!("Failed to decode inbound packet: {}", err);
-                return Err(err.into());
-            }
-        };
+        fill_packet_reader(&mut self.packet_reader, connection).await?;
+        let packet = self.packet_reader.received_packet(self.protocol)?;
         let ack = match packet {
             ReceivedPacket::ConnAck(ack) => ack,
             ReceivedPacket::Disconnect(disconnect) => {
-                info!(
+                debug!(
                     "Received broker DISCONNECT during CONNECT reason={}",
                     disconnect.reason_code()
                 );
@@ -138,10 +123,7 @@ impl<'buf> Session<'buf> {
             _ => return Err(Error::Peer(PeerError::InvalidPacket)),
         };
 
-        if let Err(err) = ack.reason_code.as_result() {
-            warn!("Broker rejected CONNECT with reason {}", ack.reason_code);
-            return Err(Error::Peer(err));
-        }
+        ack.reason_code.as_result().map_err(Error::Peer)?;
 
         let resumed = ack.session_present;
         if resumed && clean_start {
@@ -235,10 +217,10 @@ impl<'buf> Session<'buf> {
         self.data.mark_session_present();
         self.runtime.note_outbound_activity(Instant::now());
         if resumed {
-            info!("Connected and resumed existing broker session");
+            debug!("Connected and resumed existing broker session");
             Ok(ConnectEvent::SessionResumed)
         } else {
-            info!("Connected with a fresh broker session");
+            debug!("Connected with a fresh broker session");
             Ok(ConnectEvent::SessionCreated)
         }
     }

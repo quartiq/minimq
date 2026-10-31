@@ -48,6 +48,7 @@ impl<'a> Auth<'a> {
 /// Broker retain handling policy for a subscription.
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum RetainHandling {
     /// Send retained messages when the subscription is created.
     Immediately = 0b00,
@@ -60,6 +61,7 @@ pub enum RetainHandling {
 /// MQTT subscription options for one topic filter.
 #[derive(Copy, Clone, Debug)]
 #[must_use]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct SubscriptionOptions {
     maximum_qos: QoS,
     no_local: bool,
@@ -121,6 +123,7 @@ impl serde::Serialize for SubscriptionOptions {
 /// Topic filter and options for `SUBSCRIBE`.
 #[derive(Serialize, Copy, Clone, Debug)]
 #[must_use]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct TopicFilter<'a> {
     topic: Utf8String<'a>,
     options: SubscriptionOptions,

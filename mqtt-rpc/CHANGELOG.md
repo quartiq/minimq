@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [UNRELEASED](https://github.com/quartiq/minimq/compare/mqtt-rpc-v0.1.2...HEAD) - DATE
 
+### Added
+
+* The `defmt` feature formats RPC configuration errors and request outcomes.
+
 ### Changed
 
 * **Breaking:** route completion events through `Service::handle_completion()` before `step()`.

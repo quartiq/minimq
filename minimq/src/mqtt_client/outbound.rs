@@ -2,7 +2,7 @@ use crate::packets::PublishHeader;
 use crate::publication::ToPayload;
 use crate::ser::{Error as SerError, MAX_FIXED_HEADER_SIZE, MqttSerializer};
 use crate::wire::{ControlPacket, mark_publish_duplicate};
-use crate::{Error, ProtocolError, PubError, ReasonCode, ResourceError, error, trace};
+use crate::{Error, ProtocolError, PubError, ReasonCode, ResourceError, trace};
 use heapless::Vec;
 
 use super::Io;
@@ -642,7 +642,6 @@ pub(super) async fn write_all<C: Io>(
     while !bytes.is_empty() {
         let written = connection.write(bytes).await.map_err(Error::Transport)?;
         if written == 0 {
-            error!("transport write returned zero bytes for non-empty buffer");
             return Err(Error::WriteZero);
         }
         bytes = &bytes[written..];

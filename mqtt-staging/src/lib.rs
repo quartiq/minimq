@@ -5,8 +5,9 @@
 use defmt::{debug, info, trace, warn};
 use heapless::String;
 use minimq::{
-    ConnectEvent, Connection, Error as MqttError, InboundPublish, Io, Op, Properties, Property,
-    PubError, Publication, QoS, ResourceError, RetainHandling, SubscriptionOptions, TopicFilter,
+    ConnectEvent, Connection, Error as MqttError, InboundPublish, Io, Op, Outcome, PeerError,
+    Properties, Property, PubError, Publication, QoS, ResourceError, RetainHandling,
+    SubscriptionOptions, TopicFilter,
 };
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +15,6 @@ type TopicString = String<128>;
 
 const MAX_TRANSFER_ID_BYTES: usize = 48;
 const MAX_STATUS_BYTES: usize = 256;
-const INFO_CHUNK_STRIDE: usize = 128;
 const MANIFEST_SUFFIX: &str = "/manifest";
 const STATUS_SUFFIX: &str = "/status";
 const CHUNK_SUFFIX: &str = "/chunk";
@@ -38,6 +38,7 @@ struct Manifest<'a> {
 /// Immediate result of one cooperative [`Service::step`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "inspect whether staging work is still pending"]
+#[derive(defmt::Format)]
 pub enum Step {
     /// No queued or in-flight MQTT work remains. Storage work may still be pending.
     Quiescent,
@@ -47,6 +48,7 @@ pub enum Step {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Error returned while constructing a staging service.
+#[derive(defmt::Format)]
 pub enum CreateError {
     /// A derived protocol topic does not fit the fixed topic buffer.
     Topic(ResourceError),
@@ -55,7 +57,7 @@ pub enum CreateError {
 }
 
 /// Storage limits for one staging service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct Config {
     /// Maximum staged object size in bytes.
     pub capacity: u32,
@@ -120,6 +122,7 @@ pub enum StatusCode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 /// Current staging progress and device limits.
+#[derive(defmt::Format)]
 pub struct Status<'a> {
     /// Current transfer state.
     pub state: State,
@@ -161,7 +164,7 @@ enum PendingRequest {
 }
 
 /// Storage operation requested by the staging state machine.
-#[derive(Debug)]
+#[derive(Debug, defmt::Format)]
 pub enum StagingRequest<'a> {
     /// Prepare the staging area for one object.
     Prepare {
@@ -173,7 +176,7 @@ pub enum StagingRequest<'a> {
 }
 
 /// One accepted chunk ready for storage.
-#[derive(Debug)]
+#[derive(Debug, defmt::Format)]
 pub struct StagingWrite<'a> {
     /// Object byte offset.
     pub offset: u32,
@@ -189,7 +192,7 @@ pub struct StagingWrite<'a> {
 
 /// Result of handling one inbound MQTT publish.
 #[must_use = "submit storage work or route unhandled traffic"]
-#[derive(Debug)]
+#[derive(Debug, defmt::Format)]
 pub enum Handle<'a> {
     /// The publish is not staging traffic.
     Unhandled,
@@ -204,7 +207,7 @@ pub enum Handle<'a> {
 pub struct Service {
     prefix: TopicString,
     inflight: Option<InFlightAction>,
-    failure: Option<minimq::PeerError>,
+    failure: Option<PeerError>,
     pending: Option<Action>,
     startup_publish: Option<StatusCode>,
     subscribed: bool,
@@ -422,7 +425,7 @@ impl Service {
 
     /// Record a completion, returning whether it belongs to this service.
     /// The next [`Self::step`] reports any broker rejection.
-    pub fn handle_completion(&mut self, op: minimq::Op, outcome: &minimq::Outcome<'_>) -> bool {
+    pub fn handle_completion(&mut self, op: Op, outcome: &Outcome<'_>) -> bool {
         let Some(inflight) = self.inflight.take_if(|inflight| inflight.op == op) else {
             return false;
         };
@@ -675,7 +678,7 @@ impl Service {
     {
         match action {
             Action::Subscribe => {
-                info!("Subscribing staging MQTT topics");
+                debug!("Subscribing staging MQTT topics");
                 let manifest_topic = self.manifest_topic();
                 let chunk_topic = self.chunk_topic();
                 let options = SubscriptionOptions::default()
@@ -726,7 +729,10 @@ impl Service {
             .await
         {
             Ok(Some(op)) => {
-                log_status(code, status);
+                debug!(
+                    "staging status code={} offset={=u32}",
+                    code, status.next_offset
+                );
                 Ok(op)
             }
             Ok(None) => Err(MqttError::InvalidRequest),
@@ -734,57 +740,6 @@ impl Service {
             Err(PubError::Session(err)) => Err(err),
         }
     }
-}
-
-fn log_status(code: StatusCode, status: Status<'_>) {
-    match code {
-        StatusCode::Accepted => {
-            if should_log_chunk_progress(status.next_offset, status.size, status.mtu) {
-                info!(
-                    "staging status code={:?} offset={=u32}",
-                    code, status.next_offset
-                );
-            } else {
-                debug!(
-                    "staging status code={:?} offset={=u32}",
-                    code, status.next_offset
-                );
-            }
-        }
-        StatusCode::Complete => {
-            info!(
-                "staging status code={:?} offset={=u32}",
-                code, status.next_offset
-            );
-        }
-        StatusCode::Idle | StatusCode::Duplicate => {
-            debug!(
-                "staging status code={:?} offset={=u32}",
-                code, status.next_offset
-            );
-        }
-        StatusCode::Offset
-        | StatusCode::Oversize
-        | StatusCode::Mtu
-        | StatusCode::Unaligned
-        | StatusCode::Storage
-        | StatusCode::Error => {
-            warn!(
-                "staging status code={:?} offset={=u32}",
-                code, status.next_offset
-            );
-        }
-    }
-}
-
-fn should_log_chunk_progress(next_offset: u32, size: u32, chunk_size: usize) -> bool {
-    if next_offset == 0 {
-        return true;
-    }
-    if next_offset.saturating_add(chunk_size.try_into().unwrap_or(u32::MAX)) >= size {
-        return true;
-    }
-    (next_offset as usize / chunk_size).is_multiple_of(INFO_CHUNK_STRIDE)
 }
 
 fn validate_chunk(
@@ -1084,7 +1039,7 @@ mod tests {
         assert!(!service.subscribed);
         assert!(matches!(
             block_on(service.step(&mut connection)),
-            Err(MqttError::Peer(minimq::PeerError::Rejected(
+            Err(MqttError::Peer(PeerError::Rejected(
                 minimq::ReasonCode::NotAuthorized
             )))
         ));
@@ -1307,11 +1262,6 @@ mod tests {
         };
         let mut payload = [0; MAX_STATUS_BYTES];
         assert!(serde_json_core::ser::to_slice(&status, &mut payload).is_ok());
-    }
-
-    #[test]
-    fn chunk_progress_handles_the_u32_limit() {
-        assert!(should_log_chunk_progress(u32::MAX - 1, u32::MAX, 4));
     }
 
     #[test]

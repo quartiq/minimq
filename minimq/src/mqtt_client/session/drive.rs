@@ -1,12 +1,11 @@
 use embassy_time::{Duration, Instant, with_deadline};
-use embedded_io_async::Error as _;
 
 use crate::de::PacketReader;
 use crate::mqtt_client::outbound::{
     ControlAction, MAX_PENDING_CONTROL, OutboundStep, check_control_packet_size,
     serialize_control_packet,
 };
-use crate::{Connection, Error, Event, debug, error, trace, warn};
+use crate::{Connection, Error, Event, debug, trace, warn};
 
 use super::state::ROUND_TRIP_TIMEOUT_MS;
 use super::{FlushState, Io};
@@ -177,11 +176,6 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             return Err(Error::Disconnected);
         }
         if let Err(err) = fill_packet_reader(&mut self.session.packet_reader, &mut self.io).await {
-            match &err {
-                Error::Transport(err) => warn!("Transport read failed: {}", err.kind()),
-                Error::Disconnected => warn!("Transport returned EOF; disconnecting session"),
-                _ => {}
-            }
             self.handle_disconnect();
             return Err(err);
         }
@@ -333,13 +327,11 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         } = packet;
         let count = match self.io.write(&bytes[written..]).await {
             Ok(0) => {
-                error!("transport write returned zero bytes for non-empty buffer");
                 self.handle_disconnect();
                 return Err(Error::WriteZero);
             }
             Ok(count) => count,
             Err(err) => {
-                warn!("Outbound packet write failed: {}", err.kind());
                 self.handle_disconnect();
                 return Err(Error::Transport(err));
             }
@@ -371,7 +363,6 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         }
         self.flush_state = FlushState::Flushing;
         if let Err(err) = self.io.flush().await {
-            warn!("Outbound flush failed: {}", err.kind());
             self.handle_disconnect();
             return Err(Error::Transport(err));
         }

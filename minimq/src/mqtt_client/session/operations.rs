@@ -1,5 +1,4 @@
 use embassy_time::Instant;
-use embedded_io_async::Error as _;
 
 use crate::mqtt_client::outbound::{PacketKind, write_all};
 use crate::packets::{Disconnect, PublishHeader, Subscribe, Unsubscribe};
@@ -8,7 +7,7 @@ use crate::publication::{Publication, ToPayload};
 use crate::ser::MqttSerializer;
 use crate::types::TopicFilter;
 use crate::wire::Utf8String;
-use crate::{Connection, Error, Io, Op, Property, PubError, QoS, ResourceError, debug, info, warn};
+use crate::{Connection, Error, Io, Op, Property, PubError, QoS, ResourceError, debug};
 
 impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     /// Write the `DISCONNECT` over the transport. The caller drops the transport afterwards.
@@ -21,7 +20,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         if !self.live {
             return Ok(());
         }
-        info!("Graceful disconnect requested");
+        debug!("Graceful disconnect requested");
         let disconnect = if self.session.protocol.is_v5() {
             disconnect
         } else {
@@ -325,12 +324,10 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             return Err(Error::Disconnected);
         }
         if let Err(err) = write_all(&mut self.io, packet).await {
-            warn!("QoS0 PUBLISH write failed");
             self.handle_disconnect();
             return Err(err);
         }
         if let Err(err) = self.io.flush().await {
-            warn!("QoS0 PUBLISH flush failed: {}", err.kind());
             self.handle_disconnect();
             return Err(Error::Transport(err));
         }

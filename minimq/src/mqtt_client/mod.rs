@@ -4,7 +4,7 @@ mod session;
 pub use session::{Connection, Session};
 
 use crate::{
-    Properties, QoS, ResourceError, Retain,
+    PeerError, Properties, QoS, ReasonCode, ResourceError, Retain,
     publication::{OwnedResponseTarget, Publication, ResponseTarget},
 };
 use embedded_io_async::{ErrorType, Read, Write};
@@ -60,6 +60,7 @@ impl Capabilities {
 /// an old handle can then refer to a different operation. Failed requests can also
 /// advance identifier allocation.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Op {
     packet_id: u16,
     generation: u32,
@@ -68,6 +69,7 @@ pub struct Op {
 /// Application-visible progress on an MQTT connection.
 #[derive(Debug)]
 #[must_use]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Event<'a> {
     /// A publication received from the broker.
     Publish(InboundPublish<'a>),
@@ -83,9 +85,10 @@ pub enum Event<'a> {
 /// The broker's result for an outbound operation.
 #[derive(Debug)]
 #[must_use]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Outcome<'a> {
     /// Completion of a QoS 1 or 2 exchange with the broker.
-    Publish(Result<(), crate::ReasonCode>),
+    Publish(Result<(), ReasonCode>),
     /// Results in the order of the requested topic filters.
     Subscribe(SubscribeResults<'a>),
     /// Acknowledgement of an unsubscribe request.
@@ -111,7 +114,7 @@ impl Outcome<'_> {
     /// ```
     /// MQTT 3.1.1 unsubscribe success applies to the whole request; its
     /// [`UnsubscribeResults::per_filter`] returns `None`.
-    pub fn check(&self) -> Result<(), crate::PeerError> {
+    pub fn check(&self) -> Result<(), PeerError> {
         let result = match self {
             Self::Publish(result) => *result,
             Self::Subscribe(results) => results.iter().try_for_each(|result| result.map(|_| ())),
@@ -121,28 +124,30 @@ impl Outcome<'_> {
                 .flatten()
                 .try_for_each(|result| result),
         };
-        result.map_err(crate::PeerError::Rejected)
+        result.map_err(PeerError::Rejected)
     }
 }
 
 /// Validated SUBACK results, borrowed from the receive buffer.
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct SubscribeResults<'a>(pub(crate) &'a [u8]);
 
 impl<'a> SubscribeResults<'a> {
     /// Granted QoS or rejection for each requested topic filter, in request order.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = Result<QoS, crate::ReasonCode>> + use<'a> {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = Result<QoS, ReasonCode>> + use<'a> {
         self.0.iter().map(|&code| match code {
             0 => Ok(QoS::AtMostOnce),
             1 => Ok(QoS::AtLeastOnce),
             2 => Ok(QoS::ExactlyOnce),
-            _ => Err(crate::ReasonCode::from(code)),
+            _ => Err(ReasonCode::from(code)),
         })
     }
 }
 
 /// Validated UNSUBACK results, borrowed from the receive buffer.
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct UnsubscribeResults<'a>(pub(crate) Option<&'a [u8]>);
 
 impl<'a> UnsubscribeResults<'a> {
@@ -150,16 +155,16 @@ impl<'a> UnsubscribeResults<'a> {
     /// successfully and supplies no per-filter results, returning `None` here.
     pub fn per_filter(
         &self,
-    ) -> Option<impl ExactSizeIterator<Item = Result<(), crate::ReasonCode>> + use<'a>> {
+    ) -> Option<impl ExactSizeIterator<Item = Result<(), ReasonCode>> + use<'a>> {
         self.0.map(|codes| {
             codes
                 .iter()
-                .map(|&code| broker_result(crate::ReasonCode::from(code)))
+                .map(|&code| broker_result(ReasonCode::from(code)))
         })
     }
 }
 
-pub(crate) fn broker_result(code: crate::ReasonCode) -> Result<(), crate::ReasonCode> {
+pub(crate) fn broker_result(code: ReasonCode) -> Result<(), ReasonCode> {
     if code.success() { Ok(()) } else { Err(code) }
 }
 
@@ -174,6 +179,7 @@ impl Op {
 
 /// Inbound MQTT `PUBLISH` carried by [`Event::Publish`].
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct InboundPublish<'a> {
     topic: &'a str,
     payload: &'a [u8],
@@ -261,6 +267,7 @@ impl<'a> InboundPublish<'a> {
 
 /// Output of [`Session::connect`](crate::Session::connect).
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ConnectEvent {
     /// The broker created a fresh session.
     SessionCreated,

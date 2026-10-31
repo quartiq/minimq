@@ -4,7 +4,7 @@ use crate::de::ReceivedPacket;
 use crate::mqtt_client::outbound::{ControlAction, PacketKind, check_control_packet_size};
 use crate::{
     Connection, Error, Event, InboundPublish, Io, Op, Outcome, PeerError, ProtocolError, QoS,
-    ReasonCode, ResourceError, SubscribeResults, UnsubscribeResults, debug, info, trace, warn,
+    ReasonCode, ResourceError, SubscribeResults, UnsubscribeResults, debug, info, trace,
 };
 
 use super::state::{RuntimeState, SessionData};
@@ -241,7 +241,6 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         {
             Ok(packet) => packet,
             Err(err) => {
-                warn!("Failed to decode inbound packet: {}", err);
                 self.handle_disconnect();
                 return Err(err.into());
             }
@@ -254,17 +253,14 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             Ok(true) => Ok(Some(packet_length)),
             Ok(false) => Ok(None),
             Err(Error::Disconnected) => {
-                warn!("Disconnecting session after broker DISCONNECT");
                 self.handle_disconnect();
                 Err(Error::Disconnected)
             }
             Err(Error::Peer(PeerError::InvalidPacket)) => {
-                warn!("Disconnecting session after packet handling error");
                 self.handle_disconnect();
                 Err(Error::Peer(PeerError::InvalidPacket))
             }
             Err(Error::Resource(ResourceError::PacketTooLarge)) => {
-                warn!("Disconnecting session after packet handling error");
                 self.handle_disconnect();
                 Err(Error::Resource(ResourceError::PacketTooLarge))
             }

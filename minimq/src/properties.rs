@@ -6,7 +6,6 @@ use crate::{
     wire::{BinaryData, Utf8String},
 };
 
-use core::convert::TryFrom;
 use num_enum::TryFromPrimitive;
 use serde::Deserialize;
 use serde::ser::{SerializeSeq, SerializeStruct};
@@ -226,11 +225,13 @@ impl Property<'_> {
 /// to packet builders. The storage representation is intentionally opaque: properties may be
 /// borrowed decoded values, borrowed encoded broker data, or a small synthetic view.
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Properties<'a> {
     inner: PropertiesData<'a>,
 }
 
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 enum PropertiesData<'a> {
     Slice(&'a [Property<'a>]),
     Encoded(&'a [u8]),
@@ -650,15 +651,13 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for PropertyVisitor<'a> {
 
 impl<'a, 'de: 'a> serde::de::Deserialize<'de> for Property<'a> {
     fn deserialize<D: serde::de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let prop = deserializer.deserialize_enum(
+        deserializer.deserialize_enum(
             "Property",
             &[],
             PropertyVisitor {
                 _data: core::marker::PhantomData,
             },
-        )?;
-        trace!("Deserialized property {}", prop);
-        Ok(prop)
+        )
     }
 }
 

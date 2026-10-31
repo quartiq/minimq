@@ -1,7 +1,7 @@
 use super::ReceivedPacket;
 use crate::ProtocolError as Error;
 use crate::varint::probe_mqtt_u32_varint;
-use crate::{trace, warn};
+use crate::{debug, trace};
 
 #[derive(Debug)]
 pub(crate) struct PacketReader<'a> {
@@ -41,7 +41,7 @@ impl<'a> PacketReader<'a> {
             );
             Ok(&mut self.buffer[self.read_bytes..end])
         } else {
-            warn!(
+            debug!(
                 "PacketReader target packet length {=usize} exceeds buffer length {=usize}",
                 end,
                 self.buffer.len()

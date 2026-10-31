@@ -10,9 +10,9 @@
 
 use heapless::String;
 use minimq::{
-    ConnectEvent, Connection, Error as MqttError, InboundPublish, Io, Op, OwnedResponseTarget,
-    Property, PubError, QoS, ResourceError, RetainHandling, SubscriptionOptions, ToPayload,
-    TopicFilter,
+    ConnectEvent, Connection, Error as MqttError, InboundPublish, Io, Op, Outcome,
+    OwnedResponseTarget, PeerError, Property, Protocol, PubError, QoS, ResourceError,
+    RetainHandling, SubscriptionOptions, ToPayload, TopicFilter,
 };
 
 /// Maximum request and response topic length retained by the service.
@@ -38,6 +38,7 @@ pub type ResponseTarget = OwnedResponseTarget<MAX_TOPIC_LENGTH, MAX_CORRELATION_
 
 /// Invalid service configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ConfigError {
     /// The resulting RPC subscription topic exceeds [`MAX_TOPIC_LENGTH`].
     TopicTooLong,
@@ -45,6 +46,7 @@ pub enum ConfigError {
 
 /// Why an inbound RPC publication was rejected before application dispatch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum RejectReason {
     /// RPC requests must not be retained broker state.
     Retained,
@@ -70,6 +72,7 @@ impl RejectReason {
 
 /// A valid request borrowing its method and payload from the inbound MQTT packet.
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Request<'a> {
     method: &'a str,
     payload: &'a [u8],
@@ -95,6 +98,7 @@ impl<'a> Request<'a> {
 
 /// A rejected request and any response destination that could safely be retained.
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Rejected {
     reason: RejectReason,
     response: Option<ResponseTarget>,
@@ -114,6 +118,7 @@ impl Rejected {
 
 /// Classification of one inbound MQTT publication.
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Handle<'a> {
     /// The publication is outside this service's RPC topic tree.
     Unhandled,
@@ -127,7 +132,7 @@ pub enum Handle<'a> {
 pub struct Service {
     rpc_topic: String<MAX_TOPIC_LENGTH>,
     subscribe: Option<Op>,
-    failure: Option<minimq::PeerError>,
+    failure: Option<PeerError>,
     ready: bool,
 }
 
@@ -183,7 +188,7 @@ impl Service {
         if let Some(error) = self.failure {
             return Err(error.into());
         }
-        if connection.session().protocol() != minimq::Protocol::V5 {
+        if connection.session().protocol() != Protocol::V5 {
             return Err(MqttError::InvalidRequest);
         }
         if self.ready {
@@ -228,7 +233,7 @@ impl Service {
 
     /// Record a completion, returning whether it belongs to this service.
     /// The next [`Self::step`] reports any broker rejection.
-    pub fn handle_completion(&mut self, op: minimq::Op, outcome: &minimq::Outcome<'_>) -> bool {
+    pub fn handle_completion(&mut self, op: Op, outcome: &Outcome<'_>) -> bool {
         if self.subscribe != Some(op) {
             return false;
         }
@@ -312,7 +317,7 @@ where
     IO: Io,
     P: ToPayload,
 {
-    if connection.session().protocol() != minimq::Protocol::V5 {
+    if connection.session().protocol() != Protocol::V5 {
         return Err(MqttError::InvalidRequest.into());
     }
     let properties = [

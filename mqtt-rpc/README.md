@@ -29,6 +29,8 @@ or reject targets outside its allowed response-topic tree.
 
 ## Device use
 
+Enable the `defmt` feature for embedded error and request diagnostics.
+
 After connecting, call `begin_connection()` with the connect event. Drive `step()` until ready,
 routing completions through `handle_completion()`. It returns whether the operation belongs
 to this service; `step()` reports rejection or `MissingCompletion` for an omitted outcome.
