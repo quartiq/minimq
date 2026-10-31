@@ -31,6 +31,9 @@ or reject targets outside its allowed response-topic tree.
 
 After every successful `Session::connect`, tell the service whether the broker resumed the MQTT
 session and drive its subscription to completion. Resume skips only previously completed startup.
+`handle_completion()` reports whether it recognized the operation; `step()` reports broker
+rejection. Route completions before the next step. An ended operation without a routed
+outcome produces `MissingCompletion`.
 Then pass each inbound publication to `handle`:
 
 ```rust,no_run
@@ -42,7 +45,7 @@ async fn run<IO: Io>(connection: &mut Connection<'_, '_, IO>) {
     rpc.begin_connection(connection.connect_event());
     while !rpc.step(connection).await.unwrap() {
         if let minimq::Event::Completed { op, outcome } = connection.poll().await.unwrap() {
-            rpc.handle_completion(op, &outcome).unwrap();
+            rpc.handle_completion(op, &outcome);
         }
     }
 

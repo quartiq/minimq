@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Explicit per-session MQTT 3.1.1 support with clean or persistent sessions. MQTT 5 remains
   the default; unsupported MQTT 5 options are rejected on MQTT 3.1.1 connections.
+* `Error::MissingCompletion` reports an ended operation whose outcome was not routed to
+  its owning workflow.
 
 ### Changed
 

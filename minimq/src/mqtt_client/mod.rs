@@ -51,11 +51,12 @@ impl Capabilities {
 
 /// Handle for one outbound MQTT operation accepted into local session state.
 ///
-/// Query this handle on its originating [`Session`] (or a [`Connection`] borrowing
-/// it), and discard it after completion or invalidation. Completion is reported by [`Event::Completed`], including broker rejections.
+/// Match this handle against [`Event::Completed`] and inspect its outcome, including
+/// broker rejections. Discard it after completion or invalidation. [`Session::is_pending`]
+/// reports local protocol state, not operation success.
 ///
 /// Handles use MQTT packet identifiers, which cycle through 1..=65535 and can be
-/// reused after an operation ends. Check completion before its identifier is reused:
+/// reused after an operation ends. Process completion before its identifier is reused:
 /// an old handle can then refer to a different operation. Failed requests can also
 /// advance identifier allocation.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

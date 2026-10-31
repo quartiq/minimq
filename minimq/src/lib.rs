@@ -183,6 +183,10 @@ pub enum Error<E> {
     /// The requested operation arguments are not valid.
     #[error("invalid request")]
     InvalidRequest,
+    /// A workflow's operation ended without its completion being routed to the workflow.
+    /// Route [`Event::Completed`] before advancing the owning workflow again.
+    #[error("operation completion was not routed to its workflow")]
+    MissingCompletion,
     /// The broker rejected the operation or sent invalid MQTT data.
     #[error(transparent)]
     Peer(PeerError),

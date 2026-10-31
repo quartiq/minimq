@@ -255,7 +255,7 @@ fn drain_local(service: &mut Service, connection: &mut Connection<'_, '_, TcpIo>
                 else {
                     panic!("expected completion")
                 };
-                assert!(service.handle_completion(op, &outcome).unwrap());
+                assert!(service.handle_completion(op, &outcome));
             }
         }
     }
@@ -265,7 +265,7 @@ fn handle_inbound(service: &mut Service, storage: &mut MockStorage, inbound: min
     let inbound = match inbound {
         minimq::Event::Publish(message) => message,
         minimq::Event::Completed { op, outcome } => {
-            service.handle_completion(op, &outcome).unwrap();
+            service.handle_completion(op, &outcome);
             return;
         }
     };

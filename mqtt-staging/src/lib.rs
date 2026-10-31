@@ -420,21 +420,18 @@ impl Service {
         self.handle_chunk(chunk.id, chunk.offset, payload)
     }
 
-    /// Route an MQTT completion, returning whether it belongs to this service.
-    pub fn handle_completion(
-        &mut self,
-        op: minimq::Op,
-        outcome: &minimq::Outcome<'_>,
-    ) -> Result<bool, minimq::PeerError> {
+    /// Record a completion, returning whether it belongs to this service.
+    /// The next [`Self::step`] reports any broker rejection.
+    pub fn handle_completion(&mut self, op: minimq::Op, outcome: &minimq::Outcome<'_>) -> bool {
         let Some(inflight) = self.inflight.as_ref().filter(|inflight| inflight.op == op) else {
-            return Ok(false);
+            return false;
         };
         let action = inflight.action;
         self.inflight = None;
         if let Err(err) = outcome.check() {
             self.queue(action);
             self.failure = Some(err);
-            return Err(err);
+            return true;
         }
         if action == Action::Subscribe {
             self.subscribed = true;
@@ -442,7 +439,7 @@ impl Service {
                 self.queue(Action::Publish(code));
             }
         }
-        Ok(true)
+        true
     }
 
     /// Advance one queued MQTT operation.
@@ -450,6 +447,7 @@ impl Service {
     /// Starts at most one subscribe or status publication, without reading
     /// inbound packets. On [`Step::Pending`], route the events from [`Connection::poll`] before
     /// retrying to allow acknowledgements and incoming traffic to progress.
+    /// An ended operation without a routed outcome produces [`MqttError::MissingCompletion`].
     /// A broker rejection is returned until [`Self::begin_startup`] starts another attempt.
     ///
     /// Cancellation preserves the queued action, but retrying may duplicate
@@ -468,11 +466,17 @@ impl Service {
         self.max_rx_packet_size = connection.session().max_rx_packet_size();
 
         if let Some(inflight) = &self.inflight {
+            if !connection.is_connected() {
+                return Err(MqttError::Disconnected);
+            }
             if connection.is_invalidated(&inflight.op) {
                 let action = inflight.action;
                 self.inflight = None;
                 self.queue(action);
                 return Err(MqttError::Disconnected);
+            }
+            if !connection.is_pending(&inflight.op) {
+                return Err(MqttError::MissingCompletion);
             }
             return Ok(Step::Pending);
         }
@@ -1080,12 +1084,7 @@ mod tests {
         let minimq::Event::Completed { op, outcome } = block_on(connection.poll()).unwrap() else {
             panic!("expected completion")
         };
-        assert_eq!(
-            service.handle_completion(op, &outcome),
-            Err(minimq::PeerError::Rejected(
-                minimq::ReasonCode::NotAuthorized
-            ))
-        );
+        assert!(service.handle_completion(op, &outcome));
         assert!(!service.subscribed);
         assert!(matches!(
             block_on(service.step(&mut connection)),
@@ -1100,6 +1099,39 @@ mod tests {
             Step::Pending
         );
         assert!(connection.is_connected());
+    }
+
+    #[test]
+    fn omitted_completion_is_reported_instead_of_waiting() {
+        let mut service = service(128);
+        service.begin_startup(ConnectEvent::SessionCreated);
+        let (mut rx, mut tx) = ([0; 128], [0; 1024]);
+        let mut session = Session::new(ConfigBuilder::new(Buffers::new(&mut rx, &mut tx)));
+        let mut connection = block_on(session.connect(TestIo {
+            rx: &[0x20, 3, 0, 0, 0, 0x90, 5, 0, 1, 0, 1, 1],
+            writes: 2,
+        }))
+        .unwrap();
+        assert_eq!(
+            block_on(service.step(&mut connection)).unwrap(),
+            Step::Pending
+        );
+        assert!(matches!(
+            block_on(connection.poll()).unwrap(),
+            minimq::Event::Completed { .. }
+        ));
+        for _ in 0..2 {
+            assert!(matches!(
+                block_on(service.step(&mut connection)),
+                Err(MqttError::MissingCompletion)
+            ));
+            assert!(!service.subscribed);
+        }
+        block_on(connection.disconnect()).unwrap();
+        assert!(matches!(
+            block_on(service.step(&mut connection)),
+            Err(MqttError::Disconnected)
+        ));
     }
 
     #[test]

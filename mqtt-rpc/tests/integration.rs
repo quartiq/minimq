@@ -41,7 +41,7 @@ async fn rejected_startup_waits_for_explicit_restart() {
         panic!("expected completion")
     };
     let rejection = minimq::PeerError::Rejected(minimq::ReasonCode::NotAuthorized);
-    assert_eq!(service.handle_completion(op, &outcome), Err(rejection));
+    assert!(service.handle_completion(op, &outcome));
     for _ in 0..2 {
         assert!(
             matches!(service.step(&mut connection).await, Err(minimq::Error::Peer(error)) if error == rejection)
@@ -50,6 +50,36 @@ async fn rejected_startup_waits_for_explicit_restart() {
     }
     service.begin_connection(minimq::ConnectEvent::SessionResumed);
     assert!(!service.step(&mut connection).await.unwrap());
+}
+
+#[tokio::test]
+async fn omitted_completion_is_reported_instead_of_waiting() {
+    use tokio::io::AsyncWriteExt;
+    let (client, mut broker) = tokio::io::duplex(1024);
+    broker
+        .write_all(&[0x20, 3, 0, 0, 0, 0x90, 4, 0, 1, 0, 1])
+        .await
+        .unwrap();
+    let mut session = Session::new(config());
+    let mut connection = session.connect(FromTokio::new(client)).await.unwrap();
+    let mut service = Service::new("device").unwrap();
+    assert!(!service.step(&mut connection).await.unwrap());
+    assert!(matches!(
+        connection.poll().await.unwrap(),
+        minimq::Event::Completed { .. }
+    ));
+    for _ in 0..2 {
+        assert!(matches!(
+            service.step(&mut connection).await,
+            Err(minimq::Error::MissingCompletion)
+        ));
+        assert!(!service.is_ready());
+    }
+    connection.disconnect().await.unwrap();
+    assert!(matches!(
+        service.step(&mut connection).await,
+        Err(minimq::Error::Disconnected)
+    ));
 }
 
 #[tokio::test]
@@ -96,7 +126,7 @@ async fn request_response() {
     rpc.begin_connection(device.connect_event());
     while !rpc.step(&mut device).await.unwrap() {
         if let minimq::Event::Completed { op, outcome } = device.poll().await.unwrap() {
-            rpc.handle_completion(op, &outcome).unwrap();
+            rpc.handle_completion(op, &outcome);
         }
     }
 

@@ -174,6 +174,8 @@ impl Service {
     ///
     /// Returns `Ok(true)` when the service is ready. The caller must continue driving the MQTT
     /// connection between calls while this returns `Ok(false)`.
+    /// Route each completion through [`Self::handle_completion`] first; an ended operation
+    /// without its outcome produces [`MqttError::MissingCompletion`].
     /// A broker rejection is returned until [`Self::begin_connection`] starts another attempt.
     pub async fn step<IO: Io>(
         &mut self,
@@ -190,9 +192,15 @@ impl Service {
         }
 
         if let Some(op) = self.subscribe {
+            if !connection.is_connected() {
+                return Err(MqttError::Disconnected);
+            }
             if connection.is_invalidated(&op) {
                 self.subscribe = None;
                 return Err(MqttError::Disconnected);
+            }
+            if !connection.is_pending(&op) {
+                return Err(MqttError::MissingCompletion);
             }
             return Ok(false);
         }
@@ -219,22 +227,19 @@ impl Service {
         Ok(false)
     }
 
-    /// Route a completion from `Connection::poll`. Returns whether it belongs to this service.
-    pub fn handle_completion(
-        &mut self,
-        op: minimq::Op,
-        outcome: &minimq::Outcome<'_>,
-    ) -> Result<bool, minimq::PeerError> {
+    /// Record a completion, returning whether it belongs to this service.
+    /// The next [`Self::step`] reports any broker rejection.
+    pub fn handle_completion(&mut self, op: minimq::Op, outcome: &minimq::Outcome<'_>) -> bool {
         if self.subscribe != Some(op) {
-            return Ok(false);
+            return false;
         }
         self.subscribe = None;
         if let Err(error) = outcome.check() {
             self.failure = Some(error);
-            return Err(error);
+            return true;
         }
         self.ready = true;
-        Ok(true)
+        true
     }
 
     /// Classify an inbound publication and capture its response destination.

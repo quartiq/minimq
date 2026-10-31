@@ -276,6 +276,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                 Err(Error::Resource(err))
             }
             Err(Error::InvalidRequest) => Err(Error::InvalidRequest),
+            Err(Error::MissingCompletion) => Err(Error::MissingCompletion),
             Err(Error::NotReady) => Err(Error::NotReady),
             Err(Error::WriteZero) => Err(Error::WriteZero),
             Err(Error::Transport(never)) => match never {},
