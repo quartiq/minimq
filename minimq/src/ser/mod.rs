@@ -220,11 +220,11 @@ impl serde::Serializer for &mut MqttSerializer<'_> {
 
     type SerializeSeq = Self;
     type SerializeTuple = Self;
-    type SerializeTupleStruct = Self;
-    type SerializeTupleVariant = Self;
-    type SerializeMap = Self;
+    type SerializeTupleStruct = serde::ser::Impossible<(), Error>;
+    type SerializeTupleVariant = serde::ser::Impossible<(), Error>;
+    type SerializeMap = serde::ser::Impossible<(), Error>;
     type SerializeStruct = Self;
-    type SerializeStructVariant = Self;
+    type SerializeStructVariant = serde::ser::Impossible<(), Error>;
 
     fn serialize_bool(self, v: bool) -> Result<Self::Ok, Self::Error> {
         self.push(v as u8)
@@ -418,66 +418,6 @@ impl serde::ser::SerializeTuple for &mut MqttSerializer<'_> {
 
     fn end(self) -> Result<(), Error> {
         Ok(())
-    }
-}
-
-impl serde::ser::SerializeTupleStruct for &mut MqttSerializer<'_> {
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_field<T: ?Sized + Serialize>(&mut self, _value: &T) -> Result<(), Error> {
-        Err(Error::Custom)
-    }
-
-    fn end(self) -> Result<(), Error> {
-        Err(Error::Custom)
-    }
-}
-
-impl serde::ser::SerializeTupleVariant for &mut MqttSerializer<'_> {
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_field<T: ?Sized + Serialize>(&mut self, _value: &T) -> Result<(), Error> {
-        Err(Error::Custom)
-    }
-
-    fn end(self) -> Result<(), Error> {
-        Err(Error::Custom)
-    }
-}
-
-impl serde::ser::SerializeMap for &mut MqttSerializer<'_> {
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_key<T: ?Sized + Serialize>(&mut self, _key: &T) -> Result<(), Error> {
-        Err(Error::Custom)
-    }
-
-    fn serialize_value<T: ?Sized + Serialize>(&mut self, _value: &T) -> Result<(), Error> {
-        Err(Error::Custom)
-    }
-
-    fn end(self) -> Result<(), Error> {
-        Err(Error::Custom)
-    }
-}
-
-impl serde::ser::SerializeStructVariant for &mut MqttSerializer<'_> {
-    type Ok = ();
-    type Error = Error;
-
-    fn serialize_field<T: ?Sized + Serialize>(
-        &mut self,
-        _key: &'static str,
-        _value: &T,
-    ) -> Result<(), Error> {
-        Err(Error::Custom)
-    }
-
-    fn end(self) -> Result<(), Error> {
-        Err(Error::Custom)
     }
 }
 

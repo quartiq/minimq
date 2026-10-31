@@ -142,12 +142,8 @@ impl<'a> Outbound<'a> {
         self.retained.clear();
     }
 
-    fn has_pending_state(&self) -> bool {
-        !self.pending_control.is_empty() || !self.retained.is_empty()
-    }
-
     pub(super) fn is_quiescent(&self) -> bool {
-        !self.has_pending_state()
+        self.pending_control.is_empty() && self.retained.is_empty()
     }
 
     pub(super) fn retained_full(&self) -> bool {
@@ -437,7 +433,7 @@ impl<'a> Outbound<'a> {
     }
 
     pub(super) fn arm_replay(&mut self) {
-        if !self.has_pending_state() {
+        if self.is_quiescent() {
             return;
         }
 
