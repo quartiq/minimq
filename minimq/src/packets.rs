@@ -135,11 +135,7 @@ impl serde::Serialize for TopicFilters<'_> {
     }
 }
 
-#[derive(Debug, Serialize)]
-#[cfg(any(test, feature = "fuzzing"))]
-pub(crate) struct PingReq;
-
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct PubAck<'a> {
     pub(crate) packet_id: u16,
     #[serde(borrow)]
@@ -164,21 +160,21 @@ pub(crate) struct UnsubAck<'a> {
     pub(crate) codes: &'a [u8],
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct PubRec<'a> {
     pub(crate) packet_id: u16,
     #[serde(borrow)]
     pub(crate) reason: Reason<'a>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct PubRel<'a> {
     pub(crate) packet_id: u16,
-    #[serde(borrow)]
-    pub(crate) reason: Reason<'a>,
+    #[serde(borrow, rename = "reason")]
+    pub(crate) _reason: Reason<'a>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct PubComp<'a> {
     pub(crate) packet_id: u16,
     #[serde(borrow)]
@@ -260,7 +256,7 @@ impl<'a, 'de: 'a> Deserialize<'de> for Disconnect<'a> {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct Reason<'a> {
     #[serde(borrow)]
     reason: Option<ReasonData<'a>>,
@@ -278,16 +274,6 @@ impl From<ReasonCode> for Reason<'_> {
 }
 
 impl<'a> Reason<'a> {
-    #[cfg_attr(not(feature = "fuzzing"), allow(dead_code))]
-    pub(crate) fn with_properties(code: ReasonCode, properties: &'a [Property<'a>]) -> Self {
-        Self {
-            reason: Some(ReasonData {
-                code,
-                _properties: Some(Properties::from_slice(properties)),
-            }),
-        }
-    }
-
     pub(crate) fn code(&self) -> ReasonCode {
         self.reason
             .as_ref()
@@ -296,7 +282,7 @@ impl<'a> Reason<'a> {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 struct ReasonData<'a> {
     pub code: ReasonCode,
     #[serde(borrow, rename = "properties")]
@@ -305,10 +291,7 @@ struct ReasonData<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Connect, Disconnect, PingReq, PubAck, PubComp, PubRel, PublishHeader, Reason, ReasonData,
-        Subscribe, Unsubscribe,
-    };
+    use super::{Connect, Disconnect, PublishHeader, Subscribe, Unsubscribe};
     use crate::properties::{Properties, Property};
     use crate::reason_codes::ReasonCode;
     use crate::ser::MqttSerializer;
@@ -572,18 +555,6 @@ mod tests {
     }
 
     #[test]
-    fn serialize_ping_req() {
-        let good_ping_req: [u8; 2] = [
-            0xc0, // Ping
-            0x00, // Remaining length (0)
-        ];
-
-        let mut buffer: [u8; 1024] = [0; 1024];
-        let message = MqttSerializer::encode(&mut buffer, &PingReq {}).unwrap();
-        assert_eq!(message, good_ping_req);
-    }
-
-    #[test]
     fn serialize_disconnect_success() {
         let mut buffer = [0u8; 16];
         let message = MqttSerializer::encode(&mut buffer, &Disconnect::success()).unwrap();
@@ -603,78 +574,5 @@ mod tests {
         let disconnect = Disconnect::with_reason(ReasonCode::Success).with_properties(&[]);
         let message = MqttSerializer::encode(&mut buffer, &disconnect).unwrap();
         assert_eq!(message, [0xe0, 0x02, ReasonCode::Success as u8, 0x00]);
-    }
-
-    #[test]
-    fn serialize_pubrel() {
-        let good_pubrel: [u8; 5] = [
-            0x62, // PUBREL fixed header
-            0x03, // Remaining length
-            0x00, 0x05, // Identifier
-            0x10, // Response Code
-        ];
-
-        let pubrel = PubRel {
-            packet_id: 5,
-            reason: ReasonCode::NoMatchingSubscribers.into(),
-        };
-
-        let mut buffer: [u8; 1024] = [0; 1024];
-        assert_eq!(
-            MqttSerializer::encode(&mut buffer, &pubrel).unwrap(),
-            good_pubrel
-        );
-    }
-
-    #[test]
-    fn serialize_puback() {
-        let good_puback: [u8; 5] = [
-            0x40, // PUBACK fixed header
-            0x03, // Remaining length
-            0x00, 0x15, // Identifier
-            0x00, // Response Code
-        ];
-
-        let pubrel = PubAck {
-            packet_id: 0x15,
-            reason: Reason {
-                reason: Some(ReasonData {
-                    code: ReasonCode::Success,
-                    _properties: None,
-                }),
-            },
-        };
-
-        let mut buffer: [u8; 1024] = [0; 1024];
-        assert_eq!(
-            MqttSerializer::encode(&mut buffer, &pubrel).unwrap(),
-            good_puback
-        );
-    }
-
-    #[test]
-    fn serialize_pubcomp() {
-        let good_pubcomp: [u8; 5] = [
-            0x70, // PUBCOMP fixed header
-            0x03, // Remaining length
-            0x00, 0x15, // Identifier
-            0x00, // Response Code
-        ];
-
-        let pubrel = PubComp {
-            packet_id: 0x15,
-            reason: Reason {
-                reason: Some(ReasonData {
-                    code: ReasonCode::Success,
-                    _properties: None,
-                }),
-            },
-        };
-
-        let mut buffer: [u8; 1024] = [0; 1024];
-        assert_eq!(
-            MqttSerializer::encode(&mut buffer, &pubrel).unwrap(),
-            good_pubcomp
-        );
     }
 }

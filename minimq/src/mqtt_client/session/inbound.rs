@@ -1,8 +1,7 @@
 use core::convert::Infallible;
 
 use crate::de::ReceivedPacket;
-use crate::mqtt_client::OpKind;
-use crate::mqtt_client::outbound::{ControlAction, check_control_packet_size};
+use crate::mqtt_client::outbound::{ControlAction, PacketKind, check_control_packet_size};
 use crate::{
     Connection, Error, InboundPublish, Io, PeerError, ProtocolError, QoS, ReasonCode,
     ResourceError, debug, info, trace, warn,
@@ -20,7 +19,10 @@ impl<'a> SessionData<'a> {
         match packet {
             ReceivedPacket::ConnAck(_) => return Err(ProtocolError::UnexpectedPacket.into()),
             ReceivedPacket::SubAck(ack) => {
-                if !self.outbound.ack_packet(OpKind::Subscribe, ack.packet_id) {
+                if !self
+                    .outbound
+                    .ack_packet(PacketKind::Subscribe, ack.packet_id)
+                {
                     debug!("Ignoring stale SUBACK for packet id {=u16}", ack.packet_id);
                     return Ok(false);
                 }
@@ -30,7 +32,10 @@ impl<'a> SessionData<'a> {
                 }
             }
             ReceivedPacket::UnsubAck(ack) => {
-                if !self.outbound.ack_packet(OpKind::Unsubscribe, ack.packet_id) {
+                if !self
+                    .outbound
+                    .ack_packet(PacketKind::Unsubscribe, ack.packet_id)
+                {
                     debug!(
                         "Ignoring stale UNSUBACK for packet id {=u16}",
                         ack.packet_id
@@ -49,7 +54,7 @@ impl<'a> SessionData<'a> {
             ReceivedPacket::PubAck(ack) => {
                 if !self
                     .outbound
-                    .ack_packet(OpKind::PublishAtLeastOnce, ack.packet_id)
+                    .ack_packet(PacketKind::PublishAtLeastOnce, ack.packet_id)
                 {
                     debug!("Ignoring stale PUBACK for packet id {=u16}", ack.packet_id);
                     return Ok(false);
@@ -68,7 +73,7 @@ impl<'a> SessionData<'a> {
                 if !rec.reason.code().success() {
                     if self
                         .outbound
-                        .ack_packet(OpKind::PublishExactlyOnce, rec.packet_id)
+                        .ack_packet(PacketKind::PublishExactlyOnce, rec.packet_id)
                     {
                         runtime.send_quota = runtime
                             .send_quota
@@ -89,7 +94,7 @@ impl<'a> SessionData<'a> {
                 }
             }
             ReceivedPacket::PubComp(comp) => {
-                if !self.outbound.ack_release(comp.packet_id) {
+                if !self.outbound.ack_packet(PacketKind::PubRel, comp.packet_id) {
                     debug!(
                         "Ignoring stale PUBCOMP for packet id {=u16}",
                         comp.packet_id
@@ -159,33 +164,26 @@ impl<'a> SessionData<'a> {
                     QoS::ExactlyOnce => {
                         let packet_id = info.packet_id.ok_or(ProtocolError::MalformedPacket)?;
                         let duplicate = self.pending_server_packet_ids.contains(&packet_id);
-                        let reason = if !duplicate {
-                            self.pending_server_packet_ids
-                                .push(packet_id)
-                                .map(|_| ReasonCode::Success)
-                                .unwrap_or(ReasonCode::ReceiveMaxExceeded)
-                        } else {
-                            ReasonCode::Success
-                        };
-                        trace!(
-                            "Queueing PUBREC for inbound QoS2 PUBLISH packet_id={=u16} duplicate={=bool} {}",
-                            packet_id, duplicate, reason
-                        );
-                        let action = ControlAction::PubRec { packet_id, reason };
-                        // MQTT 3.1.1 cannot negatively acknowledge a publication. Close
-                        // without acknowledging when local QoS 2 capacity is exhausted.
-                        if !protocol.is_v5() && !reason.success() {
+                        // Exceeding our receive capacity is fatal in either version.
+                        // 0x93 is a DISCONNECT reason, not a PUBREC reason.
+                        if !duplicate && self.pending_server_packet_ids.is_full() {
                             return Err(PeerError::InvalidPacket.into());
                         }
+                        trace!(
+                            "Queueing PUBREC for inbound QoS2 PUBLISH packet_id={=u16} duplicate={=bool}",
+                            packet_id, duplicate
+                        );
+                        let action = ControlAction::PubRec { packet_id };
                         check_control_packet_size(runtime.maximum_packet_size, action, protocol)?;
                         self.outbound.queue_control(action)?;
-                        if duplicate || !reason.success() {
-                            debug!(
-                                "Ignoring inbound QoS2 PUBLISH after PUBREC packet_id={=u16} duplicate={=bool} reason={}",
-                                packet_id, duplicate, reason
-                            );
+                        if duplicate {
                             return Ok(false);
                         }
+                        // Capacity was checked above. Commit duplicate suppression only
+                        // after acknowledgement admission succeeds, just before delivery.
+                        self.pending_server_packet_ids
+                            .push(packet_id)
+                            .map_err(|_| PeerError::InvalidPacket)?;
                     }
                 }
                 return Ok(true);

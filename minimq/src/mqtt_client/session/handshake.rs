@@ -215,7 +215,6 @@ impl<'buf> Session<'buf> {
             return Err(Error::Peer(err));
         }
 
-        self.runtime.session_resumed = resumed;
         self.runtime.keepalive_interval = keepalive_interval;
         self.runtime.send_quota = send_quota;
         self.runtime.max_send_quota = max_send_quota;

@@ -16,7 +16,6 @@ const MAX_INBOUND_QOS2: usize = 8;
 
 #[derive(Debug)]
 pub(super) struct RuntimeState {
-    pub(super) session_resumed: bool,
     pub(super) keepalive_interval: Duration,
     pub(super) send_quota: u16,
     pub(super) max_send_quota: u16,
@@ -29,7 +28,6 @@ pub(super) struct RuntimeState {
 impl RuntimeState {
     pub(super) fn new(keepalive_interval: Duration) -> Self {
         Self {
-            session_resumed: false,
             keepalive_interval,
             send_quota: u16::MAX,
             max_send_quota: u16::MAX,
@@ -41,7 +39,6 @@ impl RuntimeState {
     }
 
     pub(super) fn reset_transport(&mut self) {
-        self.session_resumed = false;
         self.next_ping = None;
         self.ping_timeout = None;
     }
@@ -132,7 +129,7 @@ impl<'a> SessionData<'a> {
 #[cfg(test)]
 mod tests {
     use super::{NonZeroU16, SessionData};
-    use crate::mqtt_client::OpKind;
+    use crate::mqtt_client::outbound::PacketKind;
 
     #[test]
     fn packet_identifier_wrap_skips_live_operations() {
@@ -140,10 +137,10 @@ mod tests {
         let mut data = SessionData::new(&mut storage);
         data.packet_id = NonZeroU16::new(u16::MAX).unwrap();
         data.outbound
-            .retain_packet(OpKind::Subscribe, u16::MAX, 5)
+            .retain_packet(PacketKind::Subscribe, u16::MAX, 5)
             .unwrap();
         data.outbound
-            .retain_packet(OpKind::PublishExactlyOnce, 1, 0)
+            .retain_packet(PacketKind::PublishExactlyOnce, 1, 0)
             .unwrap();
         assert!(data.outbound.release(1));
 

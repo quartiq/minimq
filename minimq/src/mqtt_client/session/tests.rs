@@ -66,6 +66,50 @@ fn session() -> Session<'static> {
     )
 }
 
+#[test]
+fn full_ack_queue_does_not_mark_undelivered_qos2_as_duplicate() {
+    use crate::Protocol;
+    use crate::de::ReceivedPacket;
+    use crate::mqtt_client::outbound::ControlAction;
+
+    for (protocol, wire) in [
+        (Protocol::V5, &b"\x34\x07\x00\x01a\x00\x01\x00x"[..]),
+        (
+            Protocol::V3_1_1 {
+                clean_session: false,
+            },
+            &b"\x34\x06\x00\x01a\x00\x01x"[..],
+        ),
+    ] {
+        let mut session = session();
+        while session
+            .data
+            .outbound
+            .queue_control(ControlAction::PingReq)
+            .is_ok()
+        {}
+        let result = session.data.handle_packet(
+            &mut session.runtime,
+            ReceivedPacket::from_buffer(wire, protocol).unwrap(),
+            protocol,
+        );
+        assert_eq!(
+            result,
+            Err(Error::Resource(ResourceError::InflightExhausted))
+        );
+        assert!(session.data.pending_server_packet_ids.is_empty());
+        session.data.outbound.clear_inflight();
+        assert_eq!(
+            session.data.handle_packet(
+                &mut session.runtime,
+                ReceivedPacket::from_buffer(wire, protocol).unwrap(),
+                protocol
+            ),
+            Ok(true)
+        );
+    }
+}
+
 /// Build a live [`Connection`] over a mock transport, bypassing the `connect` handshake, for the
 /// white-box tests below that drive the internal connection methods directly. Kept separate from
 /// `session()` so that helper still models the genuinely-disconnected `Session::new` default that
@@ -450,7 +494,11 @@ fn can_publish_qos1_false_when_retained_slots_full() {
         conn.session
             .data
             .outbound
-            .retain_packet(crate::mqtt_client::OpKind::PublishAtLeastOnce, packet_id, 4)
+            .retain_packet(
+                crate::mqtt_client::outbound::PacketKind::PublishAtLeastOnce,
+                packet_id,
+                4,
+            )
             .unwrap();
     }
 
@@ -464,7 +512,7 @@ fn can_publish_qos1_false_when_retained_slots_full() {
 #[test]
 fn ack_removing_packet_does_not_erase_stream_flush_state() {
     use super::FlushState;
-    use crate::mqtt_client::OpKind;
+    use crate::mqtt_client::outbound::PacketKind;
     let mut session = session();
     let mut conn = live_connection(&mut session, MockConnection::default());
     let op = block_on(conn.publish(Publication::bytes("a", b"x").qos(QoS::AtLeastOnce)))
@@ -477,7 +525,7 @@ fn ack_removing_packet_does_not_erase_stream_flush_state() {
         conn.session
             .data
             .outbound
-            .ack_packet(OpKind::PublishAtLeastOnce, op.packet_id)
+            .ack_packet(PacketKind::PublishAtLeastOnce, op.packet_id)
     );
     // There is no longer a per-packet Flush state to discover.
     assert!(conn.session.data.outbound.next_step(true).is_none());
@@ -507,7 +555,7 @@ fn partial_packet_finishes_before_new_control_packet() {
         })
         .unwrap();
     block_on(conn.drive()).unwrap();
-    expected.extend_from_slice(&[0x40, 3, 0, 9, 0]);
+    expected.extend_from_slice(&[0x40, 2, 0, 9]);
     assert_eq!(conn.io.tx.concat(), expected);
 }
 
@@ -529,7 +577,7 @@ fn duplicate_control_actions_advance_separate_queue_entries() {
     // Check finite progress before draining: updating the first matching action repeatedly
     // would leave the second entry writable forever.
     assert!(conn.session.data.outbound.next_step(true).is_none());
-    assert_eq!(conn.io.tx.concat(), [0x40, 3, 0, 9, 0, 0x40, 3, 0, 9, 0]);
+    assert_eq!(conn.io.tx.concat(), [0x40, 2, 0, 9, 0x40, 2, 0, 9]);
     block_on(conn.drive()).unwrap();
     assert_eq!(conn.session.data.outbound.pending_control_len(), 0);
 }

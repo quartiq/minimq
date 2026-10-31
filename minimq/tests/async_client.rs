@@ -617,20 +617,24 @@ fn inbound_publish_with_response(
     packet
 }
 
-fn outbound_puback(id: u16) -> [u8; 5] {
-    [0x40, 0x03, (id >> 8) as u8, id as u8, 0x00]
+fn outbound_puback(id: u16) -> [u8; 4] {
+    [0x40, 0x02, (id >> 8) as u8, id as u8]
 }
 
-fn outbound_pubrec(id: u16) -> [u8; 5] {
-    [0x50, 0x03, (id >> 8) as u8, id as u8, 0x00]
+fn outbound_pubrec(id: u16) -> [u8; 4] {
+    [0x50, 0x02, (id >> 8) as u8, id as u8]
 }
 
-fn outbound_pubrel(id: u16) -> [u8; 5] {
-    [0x62, 0x03, (id >> 8) as u8, id as u8, 0x00]
+fn outbound_pubrel(id: u16) -> [u8; 4] {
+    [0x62, 0x02, (id >> 8) as u8, id as u8]
 }
 
-fn outbound_pubcomp(id: u16, reason: u8) -> [u8; 5] {
-    [0x70, 0x03, (id >> 8) as u8, id as u8, reason]
+fn outbound_pubcomp(id: u16, reason: u8) -> Vec<u8> {
+    if reason == 0 {
+        vec![0x70, 0x02, (id >> 8) as u8, id as u8]
+    } else {
+        vec![0x70, 0x03, (id >> 8) as u8, id as u8, reason]
+    }
 }
 
 fn session() -> Session<'static> {
@@ -2106,7 +2110,7 @@ fn publish_rejects_packets_larger_than_broker_maximum() {
 #[test]
 fn oversized_required_ack_disconnects_session() {
     let mut first = MockConnection::default();
-    first.push_rx(&connack_max_packet_size(4));
+    first.push_rx(&connack_max_packet_size(3));
     first.push_rx(&inbound_publish_qos1(9, "data", b"x"));
 
     let mut second = MockConnection::default();
@@ -2127,7 +2131,7 @@ fn oversized_required_ack_disconnects_session() {
 fn successful_required_ack_fits_small_broker_maximum_packet_size() {
     let mut connection = MockConnection::default();
     let inspect = connection.clone();
-    connection.push_rx(&connack_max_packet_size(5));
+    connection.push_rx(&connack_max_packet_size(4));
     connection.push_rx(&inbound_publish_qos1(9, "data", b"x"));
     let connector = MockConnector::new(connection);
     let mut session = session();
@@ -2572,13 +2576,7 @@ fn pubrel_replay_preserves_original_send_order() {
         let mut conn = block_on(session.connect(io.clone())).unwrap();
         let first = publish_qos2(&mut conn, "a", b"x").unwrap().unwrap();
         let second = publish_qos2(&mut conn, "a", b"y").unwrap().unwrap();
-        let release = |id: u8| {
-            if protocol == V3 {
-                vec![0x62, 2, 0, id]
-            } else {
-                vec![0x62, 3, 0, id, 0]
-            }
-        };
+        let release = |id: u8| [0x62, 2, 0, id];
         for id in [2, 1] {
             io.push_rx(&pubrec(id.into()));
             wait_for_tx_frame(&mut conn, &io, &release(id));
@@ -2601,4 +2599,74 @@ fn pubrel_replay_preserves_original_send_order() {
         }
         assert!(conn.is_pending(&first) && conn.is_complete(&second));
     }
+}
+
+#[test]
+fn inbound_qos2_ack_failure_does_not_suppress_delivery_after_resume() {
+    let mut session = Session::new(config().session_expiry_interval(60));
+    let mut io = MockConnection::default();
+    io.push_rx(&connack_max_packet_size(3));
+    io.push_rx(&inbound_publish_qos2(9, "a", b"x"));
+    let mut conn = block_on(session.connect(io.clone())).unwrap();
+    expect_poll_error(&mut conn, |err| {
+        matches!(err, Error::Resource(ResourceError::PacketTooLarge))
+    });
+    assert!(!conn.is_connected());
+    drop(conn);
+    let mut io = MockConnection::default();
+    io.push_rx(&connack_session_present());
+    let mut packet = inbound_publish_qos2(9, "a", b"x");
+    packet[0] |= 8;
+    io.push_rx(&packet);
+    let mut conn = block_on(session.connect(io.clone())).unwrap();
+    for _ in 0..WAIT_STEPS {
+        if let Some(message) = poll_now(&mut conn).unwrap() {
+            assert_eq!(message.payload(), b"x");
+            return;
+        }
+    }
+    panic!(
+        "message never delivered; retransmission suppressed: {:?}",
+        io.tx()
+    );
+}
+
+#[test]
+fn v5_receive_max_overflow_closes_without_acknowledging() {
+    let mut session = session();
+    let mut io = MockConnection::default();
+    io.push_rx(&connack());
+    let mut conn = block_on(session.connect(io.clone())).unwrap();
+    // This CONNECT fixture has one Receive Maximum property (identifier 0x21).
+    let connect = io.tx().concat();
+    let property = connect.windows(3).find(|bytes| bytes[0] == 0x21).unwrap();
+    let receive_max = u16::from_be_bytes([property[1], property[2]]);
+    for id in 1..=receive_max {
+        io.push_rx(&inbound_publish_qos2(id, "a", b"x"));
+        assert_eq!(block_on(conn.recv()).unwrap().payload(), b"x");
+        wait_for_tx_frame(&mut conn, &io, &outbound_pubrec(id));
+    }
+    // A retransmission still needs its acknowledgement while capacity is full.
+    io.inner.borrow_mut().tx.clear();
+    let mut duplicate = inbound_publish_qos2(1, "a", b"x");
+    duplicate[0] |= 8;
+    io.push_rx(&duplicate);
+    wait_for_tx_frame(&mut conn, &io, &outbound_pubrec(1));
+    assert!(conn.is_connected());
+    let excess = receive_max + 1;
+    io.inner.borrow_mut().tx.clear();
+    io.push_rx(&inbound_publish_qos2(excess, "a", b"x"));
+    for _ in 0..WAIT_STEPS {
+        if poll_now(&mut conn).is_err() {
+            break;
+        }
+    }
+    assert!(
+        io.tx().is_empty(),
+        "overflow must not acknowledge the publication"
+    );
+    assert!(
+        !conn.is_connected(),
+        "peer exceeded advertised receive maximum"
+    );
 }

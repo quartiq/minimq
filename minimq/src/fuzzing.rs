@@ -1,10 +1,8 @@
 use crate::{
     QoS, ReasonCode,
     de::{PacketReader, ReceivedPacket},
-    packets::{
-        Connect, Disconnect, PingReq, PubAck, PubComp, PubRec, PubRel, PublishHeader, Reason,
-        Subscribe, Unsubscribe,
-    },
+    mqtt_client::outbound::{ControlAction, serialize_control_packet},
+    packets::{Connect, Disconnect, PublishHeader, Subscribe, Unsubscribe},
     properties::{Properties, Property},
     publication::Publication,
     ser::MqttSerializer,
@@ -101,15 +99,6 @@ fn connect_properties(sel: u8) -> &'static [Property<'static>] {
     }
 }
 
-fn reason(sel: u8) -> Reason<'static> {
-    let code = ReasonCode::from(sel);
-    match (sel >> 4) & 0b11 {
-        0 => code.into(),
-        1 => Reason::with_properties(code, &REASON_STRING),
-        _ => Reason::with_properties(code, &REASON_USER_PROPERTY),
-    }
-}
-
 /// Encode one bounded packet shape into the provided buffer.
 pub fn encode_packet(
     buf: &mut [u8],
@@ -128,9 +117,6 @@ pub fn encode_packet(
         }
     };
     match (tag & 0x7f) % 10 {
-        0 => {
-            let _ = MqttSerializer::encode(buf, &PingReq);
-        }
         1 => {
             let mut publication = Publication::new(topic, payload).qos(fuzz_qos(qos));
             if retain {
@@ -191,44 +177,38 @@ pub fn encode_packet(
                 },
             );
         }
-        5 => {
-            let _ = MqttSerializer::encode(
-                buf,
-                &PubRel {
-                    packet_id: 1,
-                    reason: reason(aux),
+        0 | 5..=8 => {
+            let packet_id = u16::from(aux) + 1;
+            let action = match (tag & 0x7f) % 10 {
+                0 => ControlAction::PingReq,
+                5 => ControlAction::PubRel { packet_id },
+                6 => ControlAction::PubAck {
+                    packet_id,
+                    reason: ReasonCode::from(aux),
                 },
-            );
-        }
-        6 => {
-            let _ = MqttSerializer::encode(
-                buf,
-                &PubAck {
-                    packet_id: 1,
-                    reason: reason(aux),
+                7 => ControlAction::PubRec { packet_id },
+                _ => ControlAction::PubComp {
+                    packet_id,
+                    reason: ReasonCode::from(aux),
                 },
-            );
-        }
-        7 => {
-            let _ = MqttSerializer::encode(
-                buf,
-                &PubRec {
-                    packet_id: 1,
-                    reason: reason(aux),
-                },
-            );
-        }
-        8 => {
-            let _ = MqttSerializer::encode(
-                buf,
-                &PubComp {
-                    packet_id: 1,
-                    reason: reason(aux),
-                },
+            };
+            let mut storage = [0; 5];
+            let _ = serialize_control_packet::<core::convert::Infallible>(
+                &mut storage,
+                action,
+                Some(buf.len() as u32),
+                protocol,
             );
         }
         _ => {
-            let _ = MqttSerializer::encode(buf, &Disconnect::success());
+            let disconnect = Disconnect::with_reason(ReasonCode::from(aux));
+            let disconnect = match aux & 3 {
+                0 => Disconnect::success(),
+                1 => disconnect,
+                2 => disconnect.with_properties(&REASON_STRING),
+                _ => disconnect.with_properties(&REASON_USER_PROPERTY),
+            };
+            let _ = MqttSerializer::encode(buf, &disconnect);
         }
     }
 }

@@ -209,7 +209,10 @@ impl<'de> serde::de::Visitor<'de> for ControlPacketVisitor {
                 match packet_type {
                     MessageType::PubAck => ReceivedPacket::PubAck(PubAck { packet_id, reason }),
                     MessageType::PubRec => ReceivedPacket::PubRec(PubRec { packet_id, reason }),
-                    MessageType::PubRel => ReceivedPacket::PubRel(PubRel { packet_id, reason }),
+                    MessageType::PubRel => ReceivedPacket::PubRel(PubRel {
+                        packet_id,
+                        _reason: reason,
+                    }),
                     _ => ReceivedPacket::PubComp(PubComp { packet_id, reason }),
                 }
             }
@@ -543,14 +546,14 @@ mod test {
             0x62, // PUBREL fixed header
             0x04, // Remaining length
             0x00, 0x05, // Identifier
-            0x10, // Response Code
+            0x92, // Packet identifier not found
             0x00, // Properties length
         ];
         let packet = ReceivedPacket::from_buffer(&serialized_pubrel, crate::Protocol::V5).unwrap();
         match packet {
             ReceivedPacket::PubRel(rec) => {
                 assert_eq!(rec.packet_id, 5);
-                assert_eq!(rec.reason.code(), ReasonCode::NoMatchingSubscribers);
+                assert_eq!(rec._reason.code(), ReasonCode::PacketIdNotFound);
             }
             _ => panic!("Invalid message"),
         }
@@ -567,7 +570,7 @@ mod test {
         match packet {
             ReceivedPacket::PubRel(rec) => {
                 assert_eq!(rec.packet_id, 5);
-                assert_eq!(rec.reason.code(), ReasonCode::Success);
+                assert_eq!(rec._reason.code(), ReasonCode::Success);
             }
             _ => panic!("Invalid message"),
         }

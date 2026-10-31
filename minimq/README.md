@@ -204,6 +204,9 @@ Resumed publications obey the new connection's quota; acknowledgements and keepa
 can still progress while publications wait for quota. A broker's MQTT 5 keepalive
 override applies only to that connection; reconnect advertises the configured interval.
 
+Exhausting inbound QoS 2 capacity closes the connection without acknowledging the
+excess publication, in either protocol.
+
 If `tx` is exhausted, `publish()` and other outbound operations can return [`Error::NotReady`].
 Malformed broker varints and undersized local encode buffers are rejected with errors rather than
 causing panics.

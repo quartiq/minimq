@@ -1,4 +1,4 @@
-mod outbound;
+pub(crate) mod outbound;
 mod session;
 
 pub use session::{Connection, Session};
@@ -22,14 +22,6 @@ use embedded_io_async::{ErrorType, Read, Write};
 pub trait Io: Read + Write + ErrorType {}
 
 impl<T> Io for T where T: Read + Write + ErrorType {}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum OpKind {
-    PublishAtLeastOnce,
-    PublishExactlyOnce,
-    Subscribe,
-    Unsubscribe,
-}
 
 /// Handle for one outbound MQTT operation accepted into local session state.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

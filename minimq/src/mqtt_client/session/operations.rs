@@ -1,8 +1,7 @@
 use embassy_time::Instant;
 use embedded_io_async::Error as _;
 
-use crate::mqtt_client::OpKind;
-use crate::mqtt_client::outbound::write_all;
+use crate::mqtt_client::outbound::{PacketKind, write_all};
 use crate::packets::{Disconnect, PublishHeader, Subscribe, Unsubscribe};
 use crate::properties::{Properties, PropertyContext};
 use crate::publication::{Publication, ToPayload};
@@ -107,7 +106,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         self.session
             .data
             .outbound
-            .retain_packet(OpKind::Subscribe, packet_id, len)?;
+            .retain_packet(PacketKind::Subscribe, packet_id, len)?;
         debug!(
             "Enqueued SUBSCRIBE packet_id={=u16} len={=usize} tx_used={=usize}",
             packet_id,
@@ -159,7 +158,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         self.session
             .data
             .outbound
-            .retain_packet(OpKind::Unsubscribe, packet_id, len)?;
+            .retain_packet(PacketKind::Unsubscribe, packet_id, len)?;
         debug!(
             "Enqueued UNSUBSCRIBE packet_id={=u16} len={=usize} tx_used={=usize}",
             packet_id,
@@ -279,9 +278,9 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         qos: QoS,
     ) -> Result<Op, Error<IO::Error>> {
         let kind = if qos == QoS::ExactlyOnce {
-            OpKind::PublishExactlyOnce
+            PacketKind::PublishExactlyOnce
         } else {
-            OpKind::PublishAtLeastOnce
+            PacketKind::PublishAtLeastOnce
         };
         self.session
             .data

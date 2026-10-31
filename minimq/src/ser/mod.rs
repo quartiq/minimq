@@ -485,7 +485,7 @@ impl serde::ser::SerializeStructVariant for &mut MqttSerializer<'_> {
 mod tests {
     use super::{Error, MAX_FIXED_HEADER_SIZE, MqttSerializer};
     use crate::{
-        packets::{PingReq, PublishHeader},
+        packets::{Disconnect, PublishHeader},
         publication::Publication,
         ser::PubError,
         wire::Utf8String,
@@ -495,7 +495,7 @@ mod tests {
     fn control_packet_encode_rejects_buffers_smaller_than_fixed_header() {
         for len in 0..MAX_FIXED_HEADER_SIZE {
             let mut buf = vec![0u8; len];
-            let result = MqttSerializer::encode(&mut buf, &PingReq);
+            let result = MqttSerializer::encode(&mut buf, &Disconnect::success());
             assert!(matches!(result, Err(Error::InsufficientMemory)));
         }
     }
