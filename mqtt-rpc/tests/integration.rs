@@ -23,6 +23,36 @@ fn config() -> ConfigBuilder<'static> {
 }
 
 #[tokio::test]
+async fn rejected_startup_waits_for_explicit_restart() {
+    use tokio::io::AsyncWriteExt;
+    let (client, mut broker) = tokio::io::duplex(1024);
+    broker
+        .write_all(&[0x20, 3, 0, 0, 0, 0x90, 4, 0, 1, 0, 0x87])
+        .await
+        .unwrap();
+    let mut session = Session::new(config());
+    let mut connection = session.connect(FromTokio::new(client)).await.unwrap();
+    let mut service = Service::new("device").unwrap();
+    service.begin_connection(connection.connect_event());
+    assert!(!service.step(&mut connection).await.unwrap());
+    service.begin_connection(minimq::ConnectEvent::SessionResumed);
+    assert!(!service.step(&mut connection).await.unwrap());
+    let minimq::Event::Completed { op, outcome } = connection.poll().await.unwrap() else {
+        panic!("expected completion")
+    };
+    let rejection = minimq::PeerError::Rejected(minimq::ReasonCode::NotAuthorized);
+    assert_eq!(service.handle_completion(op, &outcome), Err(rejection));
+    for _ in 0..2 {
+        assert!(
+            matches!(service.step(&mut connection).await, Err(minimq::Error::Peer(error)) if error == rejection)
+        );
+        assert!(!service.is_ready());
+    }
+    service.begin_connection(minimq::ConnectEvent::SessionResumed);
+    assert!(!service.step(&mut connection).await.unwrap());
+}
+
+#[tokio::test]
 async fn rejects_mqtt_v3_connection() {
     init_logging();
     let Ok(addr) = std::env::var("BROKER") else {

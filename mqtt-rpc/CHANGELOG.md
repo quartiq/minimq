@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+* Broker rejection stops startup until `begin_connection()` starts another attempt.
+
 * **Breaking:** route Minimq completion events to `Service::handle_completion` before
   advancing queued work. Broker rejection no longer counts as successful startup.
 

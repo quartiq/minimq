@@ -127,6 +127,7 @@ pub enum Handle<'a> {
 pub struct Service {
     rpc_topic: String<MAX_TOPIC_LENGTH>,
     subscribe: Option<Op>,
+    failure: Option<minimq::PeerError>,
     ready: bool,
 }
 
@@ -148,14 +149,19 @@ impl Service {
         Ok(Self {
             rpc_topic,
             subscribe: None,
+            failure: None,
             ready: false,
         })
     }
 
     /// Begin service startup for a newly connected or resumed MQTT session.
     /// A resumed session skips subscription only if startup previously completed.
+    /// This also clears a previous startup rejection so another attempt can be made.
     pub fn begin_connection(&mut self, event: ConnectEvent) {
-        self.subscribe = None;
+        if event == ConnectEvent::SessionCreated {
+            self.subscribe = None;
+        }
+        self.failure = None;
         self.ready &= matches!(event, ConnectEvent::SessionResumed);
     }
 
@@ -168,10 +174,14 @@ impl Service {
     ///
     /// Returns `Ok(true)` when the service is ready. The caller must continue driving the MQTT
     /// connection between calls while this returns `Ok(false)`.
+    /// A broker rejection is returned until [`Self::begin_connection`] starts another attempt.
     pub async fn step<IO: Io>(
         &mut self,
         connection: &mut Connection<'_, '_, IO>,
     ) -> Result<bool, MqttError<IO::Error>> {
+        if let Some(error) = self.failure {
+            return Err(error.into());
+        }
         if connection.session().protocol() != minimq::Protocol::V5 {
             return Err(MqttError::InvalidRequest);
         }
@@ -219,7 +229,10 @@ impl Service {
             return Ok(false);
         }
         self.subscribe = None;
-        outcome.check()?;
+        if let Err(error) = outcome.check() {
+            self.failure = Some(error);
+            return Err(error);
+        }
         self.ready = true;
         Ok(true)
     }

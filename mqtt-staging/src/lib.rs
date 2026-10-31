@@ -204,6 +204,7 @@ pub enum Handle<'a> {
 pub struct Service {
     prefix: TopicString,
     inflight: Option<InFlightAction>,
+    failure: Option<minimq::PeerError>,
     pending: Option<Action>,
     startup_publish: Option<StatusCode>,
     subscribed: bool,
@@ -234,6 +235,7 @@ impl Service {
         Ok(Self {
             prefix,
             inflight: None,
+            failure: None,
             pending: None,
             startup_publish: None,
             subscribed: false,
@@ -251,7 +253,9 @@ impl Service {
     ///
     /// Call after each connection, then drive [`Self::step`]. Transfer progress
     /// and outstanding storage requests survive reconnects.
+    /// This clears a previous MQTT rejection and allows the queued work to be attempted again.
     pub fn begin_startup(&mut self, event: ConnectEvent) {
+        self.failure = None;
         let replay = (self.state != State::Idle).then(|| self.current_code());
         if event == ConnectEvent::SessionCreated {
             self.inflight = None;
@@ -429,6 +433,7 @@ impl Service {
         self.inflight = None;
         if let Err(err) = outcome.check() {
             self.queue(action);
+            self.failure = Some(err);
             return Err(err);
         }
         if action == Action::Subscribe {
@@ -445,6 +450,7 @@ impl Service {
     /// Starts at most one subscribe or status publication, without reading
     /// inbound packets. On [`Step::Pending`], route the events from [`Connection::poll`] before
     /// retrying to allow acknowledgements and incoming traffic to progress.
+    /// A broker rejection is returned until [`Self::begin_startup`] starts another attempt.
     ///
     /// Cancellation preserves the queued action, but retrying may duplicate
     /// an already queued MQTT packet. Requires cancel-safe transport I/O and
@@ -456,6 +462,9 @@ impl Service {
     where
         IO: Io,
     {
+        if let Some(error) = self.failure {
+            return Err(error.into());
+        }
         self.max_rx_packet_size = connection.session().max_rx_packet_size();
 
         if let Some(inflight) = &self.inflight {
@@ -1078,7 +1087,18 @@ mod tests {
             ))
         );
         assert!(!service.subscribed);
-        assert_eq!(service.pending, Some(Action::Subscribe));
+        assert!(matches!(
+            block_on(service.step(&mut connection)),
+            Err(MqttError::Peer(minimq::PeerError::Rejected(
+                minimq::ReasonCode::NotAuthorized
+            )))
+        ));
+        assert!(!service.is_complete());
+        service.begin_startup(ConnectEvent::SessionResumed);
+        assert_eq!(
+            block_on(service.step(&mut connection)).unwrap(),
+            Step::Pending
+        );
         assert!(connection.is_connected());
     }
 
@@ -1139,7 +1159,7 @@ mod tests {
                 Step::Pending
             );
             assert_eq!(service.pending, Some(action));
-            block_on(connection.poll()).unwrap();
+            let _ = block_on(connection.poll()).unwrap();
             let result = block_on(service.step(&mut connection));
             if fits {
                 assert_eq!(result.unwrap(), Step::Pending);
