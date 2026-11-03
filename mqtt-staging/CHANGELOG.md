@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+* `Service::reset()` allows retrying a failed transfer after outstanding MQTT work drains.
 * Native `defmt` formatting for staging configuration, status and storage requests.
 
 ### Changed

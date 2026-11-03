@@ -77,6 +77,9 @@ next connection operation, or copy it if MQTT must continue while storage runs.
 Report each storage result with `complete_request()`; for the final chunk,
 success includes verifying the checksum. `abort()` ends the transfer without
 cancelling or undoing application-owned storage work.
+After a failure, `reset()` returns the service to idle once its MQTT work has
+drained. Finish any application-owned storage work before resetting an aborted
+transfer. Continue driving `step()` and completions while `reset()` returns false.
 
 ## Protocol
 

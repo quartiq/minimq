@@ -337,6 +337,27 @@ impl Service {
         true
     }
 
+    /// Return a failed transfer to idle after its status has been sent.
+    ///
+    /// Returns `false` while storage or MQTT work is outstanding, or when the
+    /// transfer has not failed. Finish application-owned storage work before
+    /// calling this after [`Self::abort`]. The next manifest starts a new transfer.
+    pub fn reset(&mut self) -> bool {
+        if self.state != State::Error
+            || self.request.is_some()
+            || self.pending.is_some()
+            || self.inflight.is_some()
+            || self.startup_publish.is_some()
+            || self.failure.is_some()
+        {
+            return false;
+        }
+        self.state = State::Idle;
+        self.transfer = None;
+        self.queue(Action::Publish(StatusCode::Idle));
+        true
+    }
+
     /// Handle one inbound publish.
     ///
     /// Returned chunk data borrows `inbound`; consume or copy it before driving
@@ -874,7 +895,7 @@ mod tests {
     use super::*;
     use embassy_futures::{block_on, poll_once};
     use embedded_io_async::{ErrorType, Read, Write};
-    use minimq::{Buffers, ConfigBuilder, Session};
+    use minimq::{Buffers, ConfigBuilder, Event, Session};
     use std::sync::OnceLock;
 
     const ID: &[u8] = b"7ea690cc8c2cd8ed";
@@ -1285,7 +1306,46 @@ mod tests {
         let mut service = service(128);
         service.state = State::Complete;
         assert!(!service.abort());
+        assert!(!service.reset());
         assert_eq!(service.status().state, State::Complete);
+    }
+
+    #[test]
+    fn reset_waits_for_error_status_then_accepts_another_transfer() {
+        let mut service = service(128);
+        let payload = br#"{"id":"7ea690cc8c2cd8ed","size":8,"fnv1a64":9126140903112366317}"#;
+        assert!(matches!(
+            manifest(&mut service, payload),
+            Handle::Request(_)
+        ));
+        assert!(!service.reset());
+        service.complete_request(false);
+        assert!(!service.reset());
+
+        let (mut rx, mut tx) = ([0; 128], [0; 1024]);
+        let mut session = Session::new(ConfigBuilder::new(Buffers::new(&mut rx, &mut tx)));
+        let mut connection = block_on(session.connect(TestIo {
+            rx: &[0x20, 3, 0, 0, 0, 0x40, 2, 0, 1],
+            writes: 2,
+        }))
+        .unwrap();
+        assert_eq!(
+            block_on(service.step(&mut connection)).unwrap(),
+            Step::Pending
+        );
+        assert!(!service.reset());
+        let Event::Completed { op, outcome } = block_on(connection.poll()).unwrap() else {
+            panic!("expected status completion");
+        };
+        assert!(service.handle_completion(op, &outcome));
+        assert!(service.reset());
+        assert_eq!(service.status().state, State::Idle);
+        assert_eq!(service.status().id, "");
+        assert!(!service.reset());
+        assert!(matches!(
+            manifest(&mut service, payload),
+            Handle::Request(StagingRequest::Prepare { size: 8 })
+        ));
     }
 
     #[test]
