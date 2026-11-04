@@ -36,9 +36,8 @@ struct Manifest<'a> {
 }
 
 /// Immediate result of one cooperative [`Service::step`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[must_use = "inspect whether staging work is still pending"]
-#[derive(defmt::Format)]
 pub enum Step {
     /// No queued or in-flight MQTT work remains. Storage work may still be pending.
     Quiescent,
@@ -46,9 +45,8 @@ pub enum Step {
     Pending,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Error returned while constructing a staging service.
-#[derive(defmt::Format)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CreateError {
     /// A derived protocol topic does not fit the fixed topic buffer.
     Topic(ResourceError),
@@ -120,9 +118,8 @@ pub enum StatusCode {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 /// Current staging progress and device limits.
-#[derive(defmt::Format)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, defmt::Format)]
 pub struct Status<'a> {
     /// Current transfer state.
     pub state: State,

@@ -14,10 +14,6 @@ The main API is [`Session`].
 
 ## Scope
 
-Choose Minimq when fixed memory use and a small managed client matter more than protocol
-extensibility. It deliberately provides one direct session model rather than a general MQTT packet
-toolkit: no allocator, executor, network stack, runtime-sized queues, or application framework.
-
 Downstream users include [`miniconf_mqtt`](https://docs.rs/miniconf_mqtt), which exposes typed
 configuration trees over MQTT.
 
@@ -150,9 +146,6 @@ support username/password authentication.
 MQTT 3.1.1 supports QoS 0/1/2 within the configured buffers and local in-flight limits.
 Miniconf and MQTT RPC require MQTT 5.
 
-You provide packet buffers plus an already-established transport, and a loop that explicitly
-passes that transport into [`Session::connect()`] to establish or resume the broker session.
-
 [`Session::connect()`] takes ownership of the provided transport and performs the unbounded MQTT
 `CONNECT` / `CONNACK` handshake. It returns a [`Connection`] that borrows the session. Once
 connected:
@@ -176,9 +169,6 @@ Track each operation handle ([`Op`]) on its originating session until completion
 invalidation, within the packet-identifier reuse window described in its rustdoc.
 Broker rejections arrive in completion outcomes; connection failures are returned by `poll()`.
 A fresh broker session invalidates pending operations from the previous session.
-
-A transport write returning `Ok(0)` for a non-empty buffer produces [`Error::WriteZero`]
-and marks the connection disconnected. Drop it to release the transport.
 
 ### Timeouts and cancellation
 

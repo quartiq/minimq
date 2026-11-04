@@ -5,7 +5,6 @@ Minimal `no_std` MQTT 5 request/response transport for embedded services.
 `mqtt-rpc` works with a caller-owned Minimq session. It subscribes
 `<device-prefix>/rpc/#`, routes borrowed inbound requests, retains MQTT response-topic and
 correlation data for deferred work, and publishes transient QoS-1 responses.
-Service startup and responses reject MQTT 3.1.1 connections with `InvalidRequest`.
 
 It deliberately does not own the MQTT transport, application method registry, payload schema,
 executor, persistent storage, or retained device status.
