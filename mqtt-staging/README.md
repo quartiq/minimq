@@ -66,17 +66,20 @@ application decides whether to call `mark_updated()` and reboot.
 Reconnects preserve transfer state only while the same `Service` remains alive.
 A new service starts from idle; transfer progress is not persisted.
 
-Call `begin_startup()` after each MQTT connection, then drive `step()`.
-Session resume skips only a previously completed subscription. When `step()`
-returns `Step::Pending`, poll the connection and route inbound publishes through
-`handle()` before retrying. `Step::Quiescent` means the MQTT work is drained,
-not that storage work or the transfer is complete.
+After connecting, call `begin_startup()`, then drive `step()`. Resume skips a completed
+subscription. On `Step::Pending`, poll the connection and route publications through `handle()`
+and completions through `handle_completion()` before retrying. The latter returns whether it
+recognized the operation; `step()` reports rejection or `MissingCompletion` for an omitted
+outcome. `Step::Quiescent` means MQTT work is drained; use `is_complete()` for transfer completion.
 
 `StagingWrite` borrows Minimq's current RX packet. Consume the payload before the
 next connection operation, or copy it if MQTT must continue while storage runs.
 Report each storage result with `complete_request()`; for the final chunk,
 success includes verifying the checksum. `abort()` ends the transfer without
 cancelling or undoing application-owned storage work.
+After a failure, `reset()` returns the service to idle once its MQTT work has
+drained. Finish any application-owned storage work before resetting an aborted
+transfer. Continue driving `step()` and completions while `reset()` returns false.
 
 ## Protocol
 

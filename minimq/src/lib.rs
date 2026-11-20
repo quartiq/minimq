@@ -16,7 +16,10 @@ mod will;
 mod wire;
 
 pub use config::{Buffers, ConfigBuilder, Protocol};
-pub use mqtt_client::{ConnectEvent, Connection, InboundPublish, Io, Op, Session};
+pub use mqtt_client::{
+    ConnectEvent, Connection, Event, InboundPublish, Io, Op, Outcome, Session, SubscribeResults,
+    UnsubscribeResults,
+};
 pub use packets::Disconnect;
 pub use properties::{Properties, Property};
 pub use publication::{OwnedResponseTarget, Publication, ToPayload};
@@ -34,7 +37,7 @@ use ser::{Error as SerError, PubError as SerPubError};
 use num_enum::TryFromPrimitive;
 
 #[cfg(feature = "defmt")]
-pub(crate) use defmt::{debug, error, info, trace, warn};
+pub(crate) use defmt::{debug, info, trace, warn};
 
 #[cfg(not(feature = "defmt"))]
 macro_rules! discard_log {
@@ -48,8 +51,6 @@ macro_rules! discard_log {
 
 #[cfg(not(feature = "defmt"))]
 pub(crate) use discard_log as debug;
-#[cfg(not(feature = "defmt"))]
-pub(crate) use discard_log as error;
 #[cfg(not(feature = "defmt"))]
 pub(crate) use discard_log as info;
 #[cfg(not(feature = "defmt"))]
@@ -142,6 +143,7 @@ pub enum ResourceError {
 ///
 /// `P` is the payload serialization error and `T` is the transport error.
 #[derive(Debug, PartialEq, thiserror::Error)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PubError<P, T> {
     /// Session, transport, peer, or local resource failure.
     #[error(transparent)]
@@ -180,6 +182,10 @@ pub enum Error<E> {
     /// The requested operation arguments are not valid.
     #[error("invalid request")]
     InvalidRequest,
+    /// A workflow's operation ended without its completion being routed to the workflow.
+    /// Route [`Event::Completed`] before advancing the owning workflow again.
+    #[error("operation completion was not routed to its workflow")]
+    MissingCompletion,
     /// The broker rejected the operation or sent invalid MQTT data.
     #[error(transparent)]
     Peer(PeerError),

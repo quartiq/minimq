@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [UNRELEASED](https://github.com/quartiq/minimq/compare/minimq-v0.13.6...HEAD) - DATE
 
+### Added
+
+* Native `defmt` formatting for publish errors, operation events and subscription values.
+* `Error::MissingCompletion` reports an ended operation whose outcome was not routed to
+  its owning workflow.
+
+### Changed
+
+* **Breaking:** `poll()` returns publications and correlated operation outcomes;
+  `drive()` returns an optional event. Replace `recv()` and `is_complete()` with event
+  handling and check `Outcome` for broker rejections and per-filter subscription results.
+* **Breaking:** rename `ConnectEvent::Connected` and `Reconnected` to `SessionCreated`
+  and `SessionResumed`.
+
+### Fixed
+
+* Validate inbound properties, packet identifiers, acknowledgement reasons and result counts,
+  and subscription grants before changing state or delivering messages.
+* Enforce negotiated capabilities for new requests and reject incompatible reconnect replay
+  during connection setup, preserving pending operations.
+* Separate the MQTT 5 receive window from persistent QoS 2 duplicate tracking. Increase inbound
+  tracking capacity to 20 exchanges and report local exhaustion distinctly from invalid peers.
+* Use available TX storage for DISCONNECT properties and validate session-expiry changes.
+* Redact authentication secrets and packet contents from configuration debug output.
+* Suppress application delivery when rejecting an inbound QoS 2 packet-identifier collision.
+
 ## [0.13.6](https://github.com/quartiq/minimq/compare/minimq-v0.13.5...minimq-v0.13.6) - 2026-11-20
 
 ### Added

@@ -121,7 +121,7 @@ fn live_connection<'a>(
     Connection {
         session,
         io,
-        event: ConnectEvent::Connected,
+        event: ConnectEvent::SessionCreated,
         live: true,
         flush_state: super::FlushState::Clean,
     }
@@ -237,7 +237,9 @@ fn written_ack_burst_frees_metadata_before_refilled_inbound_window() {
     // The broker has already seen the writes and may send another publication.
     conn.io.push_rx(b"\x32\x07\x00\x01A\x00\x09\x00x");
     block_on(conn.read_packet()).unwrap();
-    let inbound = block_on(conn.drive()).unwrap().unwrap();
+    let crate::Event::Publish(inbound) = block_on(conn.drive()).unwrap().unwrap() else {
+        panic!("expected publish")
+    };
     assert_eq!(inbound.payload(), b"x");
     assert_eq!(conn.session.data.outbound.pending_control_len(), 1);
 }
@@ -330,12 +332,12 @@ fn drive_returns_none_when_waiting_for_read() {
 }
 
 #[test]
-fn poll_returns_none_after_internal_progress() {
+fn drive_returns_none_after_internal_progress() {
     let mut session = session();
     let mut conn = live_connection(&mut session, MockConnection::default());
     conn.session.runtime.next_ping = Some(Instant::now());
 
-    let result = block_on(conn.poll()).unwrap();
+    let result = block_on(conn.drive()).unwrap();
 
     assert!(result.is_none());
     assert!(
@@ -355,9 +357,9 @@ fn inbound_publish_does_not_refresh_keepalive_deadline() {
     conn.session.runtime.next_ping = Some(deadline);
     conn.io.push_rx(&[0x30, 0x05, 0x00, 0x01, b'A', 0x00, 0x05]);
 
-    let result = block_on(conn.poll())
-        .unwrap()
-        .expect("expected inbound publish");
+    let crate::Event::Publish(result) = block_on(conn.poll()).unwrap() else {
+        panic!("expected publish")
+    };
     assert_eq!(result.topic(), "A", "{result:?}");
     assert_eq!(conn.session.runtime.next_ping, Some(deadline));
 }
@@ -426,7 +428,7 @@ fn connect_uses_tx_buffer_when_rx_only_covers_connack() {
 
     assert!(matches!(
         connection.connect_event(),
-        ConnectEvent::Connected
+        ConnectEvent::SessionCreated
     ));
     assert!(connection.io.tx.concat().len() > rx.len());
 }
@@ -520,6 +522,7 @@ fn can_publish_qos1_false_when_retained_slots_full() {
                 crate::mqtt_client::outbound::PacketKind::PublishAtLeastOnce,
                 packet_id,
                 4,
+                0,
             )
             .unwrap();
     }

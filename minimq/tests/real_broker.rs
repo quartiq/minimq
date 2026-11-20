@@ -13,9 +13,17 @@ type Conn<'a, 'buf> = Connection<'a, 'buf, FromTokio<TcpStream>>;
 
 async fn complete(conn: &mut Conn<'_, '_>, op: Op) {
     while conn.is_pending(&op) {
-        assert!(conn.poll().await.unwrap().is_none());
+        let minimq::Event::Completed {
+            op: completed,
+            outcome,
+        } = conn.poll().await.unwrap()
+        else {
+            panic!("expected completion")
+        };
+        assert_eq!(completed, op);
+        outcome.check().unwrap();
     }
-    assert!(conn.is_complete(&op));
+    assert!(!conn.is_pending(&op));
 }
 
 #[tokio::test]
@@ -61,7 +69,7 @@ async fn both_protocols_qos_will_and_sessions() {
                 .connect(FromTokio::new(TcpStream::connect(&broker).await.unwrap()))
                 .await
                 .unwrap();
-            assert_eq!(sub.connect_event(), ConnectEvent::Connected);
+            assert_eq!(sub.connect_event(), ConnectEvent::SessionCreated);
             let filters = [TopicFilter::new(&topic)
                 .options(SubscriptionOptions::default().maximum_qos(QoS::ExactlyOnce))];
             let op = sub.subscribe(&filters, &[]).await.unwrap();
@@ -72,11 +80,11 @@ async fn both_protocols_qos_will_and_sessions() {
                 .await
                 .unwrap();
             if protocol == clean {
-                assert_eq!(sub.connect_event(), ConnectEvent::Connected);
+                assert_eq!(sub.connect_event(), ConnectEvent::SessionCreated);
                 let op = sub.subscribe(&filters, &[]).await.unwrap();
                 complete(&mut sub, op).await;
             } else {
-                assert_eq!(sub.connect_event(), ConnectEvent::Reconnected);
+                assert_eq!(sub.connect_event(), ConnectEvent::SessionResumed);
             }
             let mut publisher = publisher
                 .connect(FromTokio::new(TcpStream::connect(&broker).await.unwrap()))
@@ -87,19 +95,19 @@ async fn both_protocols_qos_will_and_sessions() {
                     .publish(Publication::bytes(&topic, b"hello").qos(qos))
                     .await
                     .unwrap();
-                let (received, ()) = tokio::join!(sub.recv(), async {
+                let (received, ()) = tokio::join!(sub.poll(), async {
                     if let Some(op) = op {
                         complete(&mut publisher, op).await;
                     }
                 });
-                let received = received.unwrap();
+                let received = publication(received.unwrap());
                 assert_eq!(received.topic(), topic);
                 assert_eq!(received.payload(), b"hello");
                 assert_eq!(received.qos(), qos);
                 assert!(sub.drive().await.unwrap().is_none());
             }
             drop(publisher); // Abrupt TCP close publishes the Will for either version.
-            assert_eq!(sub.recv().await.unwrap().payload(), b"gone");
+            assert_eq!(publication(sub.poll().await.unwrap()).payload(), b"gone");
             let op = sub.unsubscribe(&[&topic], &[]).await.unwrap();
             complete(&mut sub, op).await;
             sub.disconnect().await.unwrap();
@@ -115,4 +123,68 @@ fn config(client_id: &str) -> ConfigBuilder<'static> {
     ConfigBuilder::new(Buffers::new(rx, tx))
         .client_id(client_id)
         .unwrap()
+}
+
+fn publication(event: minimq::Event<'_>) -> minimq::InboundPublish<'_> {
+    let minimq::Event::Publish(message) = event else {
+        panic!("expected publication: {event:?}");
+    };
+    message
+}
+#[tokio::test]
+#[ignore = "requires BROKER"]
+async fn queued_qos2_burst() {
+    let broker = std::env::var("BROKER").unwrap();
+    for protocol in [
+        minimq::Protocol::V3_1_1 {
+            clean_session: true,
+        },
+        minimq::Protocol::V5,
+    ] {
+        timeout(Duration::from_secs(10), async {
+            let id = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let topic = format!("minimq/burst/{id}");
+            let mut subscriber =
+                Session::new(config(&format!("burst-sub-{id}")).protocol(protocol));
+            let mut publisher = Session::new(config(&format!("burst-pub-{id}")));
+            let mut sub = subscriber
+                .connect(FromTokio::new(TcpStream::connect(&broker).await.unwrap()))
+                .await
+                .unwrap();
+            let op = sub
+                .subscribe(
+                    &[TopicFilter::new(&topic)
+                        .options(SubscriptionOptions::default().maximum_qos(QoS::ExactlyOnce))],
+                    &[],
+                )
+                .await
+                .unwrap();
+            complete(&mut sub, op).await;
+            let mut publisher = publisher
+                .connect(FromTokio::new(TcpStream::connect(&broker).await.unwrap()))
+                .await
+                .unwrap();
+            for sequence in 0u8..32 {
+                let op = publisher
+                    .publish(Publication::bytes(&topic, &[sequence]).qos(QoS::ExactlyOnce))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                complete(&mut publisher, op).await;
+            }
+            for sequence in 0u8..32 {
+                let minimq::Event::Publish(message) = sub.poll().await.unwrap() else {
+                    panic!("expected publication")
+                };
+                assert_eq!(message.payload(), &[sequence]);
+            }
+            sub.disconnect().await.unwrap();
+            publisher.disconnect().await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
 }

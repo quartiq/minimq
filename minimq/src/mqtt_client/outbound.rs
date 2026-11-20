@@ -2,7 +2,7 @@ use crate::packets::PublishHeader;
 use crate::publication::ToPayload;
 use crate::ser::{Error as SerError, MAX_FIXED_HEADER_SIZE, MqttSerializer};
 use crate::wire::{ControlPacket, mark_publish_duplicate};
-use crate::{Error, ProtocolError, PubError, ReasonCode, ResourceError, error, trace};
+use crate::{Error, ProtocolError, PubError, ReasonCode, ResourceError, trace};
 use heapless::Vec;
 
 use super::Io;
@@ -14,7 +14,7 @@ pub(super) const MAX_PENDING_CONTROL: usize = 8;
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum ControlAction {
     PubAck { packet_id: u16, reason: ReasonCode },
-    PubRec { packet_id: u16 },
+    PubRec { packet_id: u16, reason: ReasonCode },
     PubRel { packet_id: u16 },
     PubComp { packet_id: u16, reason: ReasonCode },
     PingReq,
@@ -24,7 +24,9 @@ impl ControlAction {
     fn encoded_len(self, protocol: crate::Protocol) -> usize {
         match self {
             Self::PingReq => 2,
-            Self::PubAck { reason, .. } | Self::PubComp { reason, .. }
+            Self::PubAck { reason, .. }
+            | Self::PubRec { reason, .. }
+            | Self::PubComp { reason, .. }
                 if protocol.is_v5() && reason != ReasonCode::Success =>
             {
                 5
@@ -60,6 +62,7 @@ struct RetainedPacket {
     kind: PacketKind,
     packet_id: u16,
     len: usize,
+    response_count: usize,
     state: SendState,
 }
 
@@ -244,6 +247,53 @@ impl<'a> Outbound<'a> {
         true
     }
 
+    pub(super) fn ack_subscription(
+        &mut self,
+        kind: PacketKind,
+        packet_id: u16,
+        codes: &[u8],
+        protocol: crate::Protocol,
+    ) -> Result<bool, ProtocolError> {
+        use serde::Deserialize;
+        let Some(position) = self
+            .retained
+            .iter()
+            .position(|entry| entry.kind == kind && entry.packet_id == packet_id)
+        else {
+            return Ok(false);
+        };
+        let entry = &self.retained[position];
+        if (kind == PacketKind::Subscribe || protocol.is_v5())
+            && entry.response_count != codes.len()
+        {
+            return Err(ProtocolError::MalformedPacket);
+        }
+        if kind == PacketKind::Subscribe {
+            let offset: usize = self.retained[..position]
+                .iter()
+                .map(|entry| entry.len)
+                .sum();
+            let mut decoder =
+                crate::de::MqttDeserializer::new(&self.buf[offset..offset + entry.len]);
+            u8::deserialize(&mut decoder)?;
+            crate::varint::Varint::deserialize(&mut decoder)?;
+            u16::deserialize(&mut decoder)?;
+            if protocol.is_v5() {
+                crate::Properties::deserialize(&mut decoder)?;
+            }
+            for &code in codes {
+                crate::wire::Utf8String::deserialize(&mut decoder)?;
+                let options = u8::deserialize(&mut decoder)?;
+                if code <= 2 && code > options & 3 {
+                    return Err(ProtocolError::MalformedPacket);
+                }
+            }
+        }
+        self.remove_bytes(position);
+        self.retained.remove(position);
+        Ok(true)
+    }
+
     fn remove_bytes(&mut self, position: usize) {
         let len = self.retained[position].len;
         if len == 0 {
@@ -342,12 +392,14 @@ impl<'a> Outbound<'a> {
         kind: PacketKind,
         packet_id: u16,
         len: usize,
+        response_count: usize,
     ) -> Result<(), ProtocolError> {
         self.retained
             .push(RetainedPacket {
                 kind,
                 packet_id,
                 len,
+                response_count,
                 state: SendState::Queued,
             })
             .map_err(|_| ProtocolError::InflightMetadataExhausted)?;
@@ -454,6 +506,74 @@ impl<'a> Outbound<'a> {
         }
     }
 
+    /// Check the complete backlog before exposing a connection with new limits.
+    pub(super) fn validate_replay<E>(
+        &self,
+        protocol: crate::Protocol,
+        maximum_packet_size: u32,
+        max_qos: Option<crate::QoS>,
+        capabilities: super::Capabilities,
+    ) -> Result<(), Error<E>> {
+        use serde::Deserialize;
+        for control in &self.pending_control {
+            check_control_packet_size(maximum_packet_size, control.action, protocol)?;
+        }
+        let mut offset = 0;
+        for entry in &self.retained {
+            let len = if entry.kind == PacketKind::PubRel {
+                4
+            } else {
+                entry.len
+            };
+            if len > maximum_packet_size as usize {
+                return Err(ResourceError::PacketTooLarge.into());
+            }
+            let bytes = &self.buf[offset..offset + entry.len];
+            offset += entry.len;
+            if entry.kind.is_publish() {
+                let qos = if entry.kind == PacketKind::PublishExactlyOnce {
+                    crate::QoS::ExactlyOnce
+                } else {
+                    crate::QoS::AtLeastOnce
+                };
+                if max_qos.is_some_and(|max| qos > max)
+                    || (!capabilities.retain && bytes[0] & 1 != 0)
+                {
+                    return Err(Error::InvalidRequest);
+                }
+            } else if entry.kind == PacketKind::Subscribe {
+                let mut decoder = crate::de::MqttDeserializer::new(bytes);
+                let mut check = || -> Result<bool, crate::DeError> {
+                    u8::deserialize(&mut decoder)?;
+                    crate::varint::Varint::deserialize(&mut decoder)?;
+                    u16::deserialize(&mut decoder)?;
+                    if protocol.is_v5() {
+                        let properties = crate::Properties::deserialize(&mut decoder)?;
+                        if !capabilities.subscription_ids
+                            && properties.iter().any(|p| {
+                                matches!(p, Ok(crate::Property::SubscriptionIdentifier(_)))
+                            })
+                        {
+                            return Ok(false);
+                        }
+                    }
+                    for _ in 0..entry.response_count {
+                        let topic = crate::wire::Utf8String::deserialize(&mut decoder)?;
+                        let options = u8::deserialize(&mut decoder)?;
+                        if !capabilities.allows_filter(topic.0, options & 4 != 0) {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                };
+                if !check()? {
+                    return Err(Error::InvalidRequest);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn pack_encoded(&mut self, offset: usize, len: usize) -> Result<(), ResourceError> {
         let start = self.retained_bytes();
         if len > self.retained_capacity().saturating_sub(start) {
@@ -472,11 +592,11 @@ impl<'a> Outbound<'a> {
 pub(crate) fn serialize_control_packet<E>(
     buffer: &mut [u8; 5],
     packet: ControlAction,
-    maximum_packet_size: Option<u32>,
+    maximum_packet_size: u32,
     protocol: crate::Protocol,
 ) -> Result<&[u8], Error<E>> {
     let bytes = encode_control_packet(buffer, packet, protocol);
-    if maximum_packet_size.is_some_and(|max| bytes.len() > max as usize) {
+    if bytes.len() > maximum_packet_size as usize {
         return Err(Error::Resource(ResourceError::PacketTooLarge));
     }
     Ok(bytes)
@@ -489,7 +609,7 @@ fn encode_control_packet(
 ) -> &[u8] {
     let (header, packet_id, reason) = match packet {
         ControlAction::PubAck { packet_id, reason } => (0x40, packet_id, reason),
-        ControlAction::PubRec { packet_id } => (0x50, packet_id, ReasonCode::Success),
+        ControlAction::PubRec { packet_id, reason } => (0x50, packet_id, reason),
         ControlAction::PubRel { packet_id } => (0x62, packet_id, ReasonCode::Success),
         ControlAction::PubComp { packet_id, reason } => (0x70, packet_id, reason),
         ControlAction::PingReq => {
@@ -504,12 +624,12 @@ fn encode_control_packet(
 }
 
 pub(super) fn check_control_packet_size(
-    maximum_packet_size: Option<u32>,
+    maximum_packet_size: u32,
     action: ControlAction,
     protocol: crate::Protocol,
 ) -> Result<(), ProtocolError> {
     let len = action.encoded_len(protocol);
-    if maximum_packet_size.is_some_and(|max| len > max as usize) {
+    if len > maximum_packet_size as usize {
         return Err(ProtocolError::PacketTooLarge);
     }
     Ok(())
@@ -522,7 +642,6 @@ pub(super) async fn write_all<C: Io>(
     while !bytes.is_empty() {
         let written = connection.write(bytes).await.map_err(Error::Transport)?;
         if written == 0 {
-            error!("transport write returned zero bytes for non-empty buffer");
             return Err(Error::WriteZero);
         }
         bytes = &bytes[written..];
@@ -564,7 +683,10 @@ mod tests {
                 &[0x40, 2, 0x12, 0x34],
             ),
             (
-                ControlAction::PubRec { packet_id: 0x1234 },
+                ControlAction::PubRec {
+                    packet_id: 0x1234,
+                    reason: crate::ReasonCode::Success,
+                },
                 &[0x50, 2, 0x12, 0x34],
                 &[0x50, 2, 0x12, 0x34],
             ),
@@ -603,20 +725,16 @@ mod tests {
                 let mut buffer = [0; 5];
                 let limit = expected.len() as u32;
                 assert_eq!(
-                    serialize_control_packet::<()>(&mut buffer, action, Some(limit), protocol)
-                        .unwrap(),
+                    serialize_control_packet::<()>(&mut buffer, action, limit, protocol).unwrap(),
                     expected
                 );
+                assert_eq!(check_control_packet_size(limit, action, protocol), Ok(()));
                 assert_eq!(
-                    check_control_packet_size(Some(limit), action, protocol),
-                    Ok(())
-                );
-                assert_eq!(
-                    serialize_control_packet::<()>(&mut buffer, action, Some(limit - 1), protocol),
+                    serialize_control_packet::<()>(&mut buffer, action, limit - 1, protocol),
                     Err(Error::Resource(ResourceError::PacketTooLarge))
                 );
                 assert_eq!(
-                    check_control_packet_size(Some(limit - 1), action, protocol),
+                    check_control_packet_size(limit - 1, action, protocol),
                     Err(ProtocolError::PacketTooLarge)
                 );
             }
@@ -629,7 +747,7 @@ mod tests {
         let mut outbound = Outbound::new(&mut storage);
 
         outbound
-            .retain_packet(PacketKind::Subscribe, 7, 10)
+            .retain_packet(PacketKind::Subscribe, 7, 10, 0)
             .unwrap();
 
         let len = outbound
@@ -648,7 +766,9 @@ mod tests {
         let mut storage = [0u8; MAX_FIXED_HEADER_SIZE + 4];
         let mut outbound = Outbound::new(&mut storage);
 
-        outbound.retain_packet(PacketKind::Subscribe, 7, 5).unwrap();
+        outbound
+            .retain_packet(PacketKind::Subscribe, 7, 5, 0)
+            .unwrap();
 
         assert!(!outbound.can_retain());
     }
@@ -658,7 +778,9 @@ mod tests {
         let mut storage = [0u8; MAX_FIXED_HEADER_SIZE + 4];
         let mut outbound = Outbound::new(&mut storage);
 
-        outbound.retain_packet(PacketKind::Subscribe, 7, 5).unwrap();
+        outbound
+            .retain_packet(PacketKind::Subscribe, 7, 5, 0)
+            .unwrap();
 
         let publication = Publication::bytes("a", b"x");
         let header = PublishHeader {
@@ -703,7 +825,9 @@ mod tests {
     fn acknowledgement_must_match_retained_operation() {
         let mut storage = [0u8; 16];
         let mut outbound = Outbound::new(&mut storage);
-        outbound.retain_packet(PacketKind::Subscribe, 7, 5).unwrap();
+        outbound
+            .retain_packet(PacketKind::Subscribe, 7, 5, 0)
+            .unwrap();
 
         assert!(!outbound.ack_packet(PacketKind::PublishAtLeastOnce, 7));
         assert!(outbound.has_retained(7));

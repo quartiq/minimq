@@ -1,5 +1,4 @@
 use embassy_time::{Duration, Instant};
-use embedded_io_async::Error as _;
 use heapless::String;
 
 use crate::config::CLIENT_ID_CAPACITY;
@@ -10,7 +9,7 @@ use crate::packets::Connect;
 use crate::properties::Properties;
 use crate::ser::MqttSerializer;
 use crate::wire::Utf8String;
-use crate::{Error, PeerError, Property, QoS, debug, info, warn};
+use crate::{Error, PeerError, Property, QoS, debug};
 
 use super::{Connection, Io, Session, drive::fill_packet_reader};
 
@@ -25,8 +24,8 @@ impl<'buf> Session<'buf> {
     /// packets for replay, regardless of how the previous connection ended. CONNACK decides
     /// whether session state survives. Dropping a handle sends no `DISCONNECT`.
     /// MQTT 5 and persistent MQTT 3.1.1
-    /// sessions resume broker state when available ([`ConnectEvent::Reconnected`]); otherwise
-    /// a fresh session is started ([`ConnectEvent::Connected`]). MQTT 3.1.1 clean sessions
+    /// sessions resume broker state when available ([`ConnectEvent::SessionResumed`]); otherwise
+    /// a fresh session is started ([`ConnectEvent::SessionCreated`]). MQTT 3.1.1 clean sessions
     /// always start fresh.
     pub async fn connect<IO: Io>(
         &mut self,
@@ -48,6 +47,7 @@ impl<'buf> Session<'buf> {
         self.packet_reader.reset();
         self.runtime.next_ping = None;
         self.runtime.ping_timeout = None;
+        self.runtime.receiving.clear();
         self.data.outbound.arm_replay();
         let event = self.connect_handshake(&mut io).await?;
         Ok(Connection {
@@ -109,26 +109,12 @@ impl<'buf> Session<'buf> {
             .outbound
             .set_connect_workspace(connect_workspace)?;
 
-        if let Err(err) = fill_packet_reader(&mut self.packet_reader, connection).await {
-            match &err {
-                Error::Transport(err) => warn!("Transport read failed: {}", err.kind()),
-                Error::Disconnected => warn!("Transport returned EOF during CONNECT"),
-                _ => {}
-            }
-            return Err(err);
-        }
-
-        let packet = match self.packet_reader.received_packet(self.protocol) {
-            Ok(packet) => packet,
-            Err(err) => {
-                warn!("Failed to decode inbound packet: {}", err);
-                return Err(err.into());
-            }
-        };
+        fill_packet_reader(&mut self.packet_reader, connection).await?;
+        let packet = self.packet_reader.received_packet(self.protocol)?;
         let ack = match packet {
             ReceivedPacket::ConnAck(ack) => ack,
             ReceivedPacket::Disconnect(disconnect) => {
-                info!(
+                debug!(
                     "Received broker DISCONNECT during CONNECT reason={}",
                     disconnect.reason_code()
                 );
@@ -137,10 +123,7 @@ impl<'buf> Session<'buf> {
             _ => return Err(Error::Peer(PeerError::InvalidPacket)),
         };
 
-        if let Err(err) = ack.reason_code.as_result() {
-            warn!("Broker rejected CONNECT with reason {}", ack.reason_code);
-            return Err(Error::Peer(err));
-        }
+        ack.reason_code.as_result().map_err(Error::Peer)?;
 
         let resumed = ack.session_present;
         if resumed && clean_start {
@@ -155,14 +138,25 @@ impl<'buf> Session<'buf> {
         let mut send_quota = local_quota;
         let mut max_send_quota = local_quota;
         let mut max_qos = None;
-        let mut maximum_packet_size = None;
+        let mut maximum_packet_size = u32::MAX;
         let mut keepalive_interval = self.keepalive_interval;
         let mut assigned_client_id: Option<String<CLIENT_ID_CAPACITY>> = None;
+        let mut capabilities = crate::mqtt_client::Capabilities::default();
 
         let property_result = (|| {
             for property in ack.properties.iter() {
                 match property? {
-                    Property::MaximumPacketSize(size) => maximum_packet_size = Some(size),
+                    Property::RetainAvailable(value) => capabilities.retain = value != 0,
+                    Property::WildcardSubscriptionAvailable(value) => {
+                        capabilities.wildcard = value != 0
+                    }
+                    Property::SharedSubscriptionAvailable(value) => {
+                        capabilities.shared = value != 0
+                    }
+                    Property::SubscriptionIdentifierAvailable(value) => {
+                        capabilities.subscription_ids = value != 0
+                    }
+                    Property::MaximumPacketSize(size) => maximum_packet_size = size,
                     Property::AssignedClientIdentifier(id) => {
                         if !client_id.is_empty() || assigned_client_id.is_some() {
                             return Err(PeerError::InvalidPacket);
@@ -195,6 +189,13 @@ impl<'buf> Session<'buf> {
         self.runtime.max_send_quota = max_send_quota;
         self.runtime.max_qos = max_qos;
         self.runtime.maximum_packet_size = maximum_packet_size;
+        self.runtime.capabilities = capabilities;
+        self.data.outbound.validate_replay(
+            self.protocol,
+            maximum_packet_size,
+            max_qos,
+            capabilities,
+        )?;
         if let Some(assigned_client_id) = assigned_client_id {
             // The first CONNECT encoded an empty client ID, so the assigned ID adds only its bytes.
             let connect_workspace = connect_workspace + assigned_client_id.len();
@@ -216,11 +217,11 @@ impl<'buf> Session<'buf> {
         self.data.mark_session_present();
         self.runtime.note_outbound_activity(Instant::now());
         if resumed {
-            info!("Connected and resumed existing broker session");
-            Ok(ConnectEvent::Reconnected)
+            debug!("Connected and resumed existing broker session");
+            Ok(ConnectEvent::SessionResumed)
         } else {
-            info!("Connected with a fresh broker session");
-            Ok(ConnectEvent::Connected)
+            debug!("Connected with a fresh broker session");
+            Ok(ConnectEvent::SessionCreated)
         }
     }
 }

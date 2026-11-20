@@ -1,12 +1,11 @@
 use embassy_time::{Duration, Instant, with_deadline};
-use embedded_io_async::Error as _;
 
 use crate::de::PacketReader;
 use crate::mqtt_client::outbound::{
     ControlAction, MAX_PENDING_CONTROL, OutboundStep, check_control_packet_size,
     serialize_control_packet,
 };
-use crate::{Connection, Error, InboundPublish, debug, error, trace, warn};
+use crate::{Connection, Error, Event, debug, trace, warn};
 
 use super::state::ROUND_TRIP_TIMEOUT_MS;
 use super::{FlushState, Io};
@@ -22,13 +21,6 @@ struct WriteStep<'a> {
     bytes: &'a [u8],
     written: usize,
     len: usize,
-}
-
-#[derive(Copy, Clone)]
-enum Progress {
-    Idle,
-    Advanced,
-    Inbound(usize),
 }
 
 pub(super) async fn fill_packet_reader<'buf, C: Io>(
@@ -56,11 +48,10 @@ pub(super) async fn fill_packet_reader<'buf, C: Io>(
 }
 
 impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
-    async fn drive_packet(&mut self) -> Result<Progress, Error<IO::Error>> {
+    async fn drive_packet(&mut self) -> Result<Option<usize>, Error<IO::Error>> {
         if !self.live {
             return Err(Error::Disconnected);
         }
-        let mut advanced = false;
         loop {
             // The peer can observe written ACKs before flush completes and refill
             // its receive window. Release our ACK metadata before admitting more,
@@ -68,31 +59,17 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             if self.session.packet_reader.packet_available()
                 && self.session.data.outbound.pending_control_len() == MAX_PENDING_CONTROL
             {
-                advanced |= self.service_outbound_once(Instant::now()).await?;
+                self.service_outbound_once(Instant::now()).await?;
                 continue;
             }
             if self.session.packet_reader.packet_available() {
                 match self.process_received_packet()? {
-                    Some(packet_length) => return Ok(Progress::Inbound(packet_length)),
-                    None => {
-                        advanced = true;
-                        continue;
-                    }
+                    Some(packet_length) => return Ok(Some(packet_length)),
+                    None => continue,
                 }
             }
 
-            let now = Instant::now();
-            advanced |= self.service(now).await?;
-
-            if self.session.packet_reader.packet_available() {
-                match self.process_received_packet()? {
-                    Some(packet_length) => return Ok(Progress::Inbound(packet_length)),
-                    None => {
-                        advanced = true;
-                        continue;
-                    }
-                }
-            }
+            self.service(Instant::now()).await?;
 
             if self
                 .session
@@ -102,16 +79,12 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                 .is_none()
                 && self.flush_state == FlushState::Clean
             {
-                return Ok(if advanced {
-                    Progress::Advanced
-                } else {
-                    Progress::Idle
-                });
+                return Ok(None);
             }
         }
     }
 
-    /// Advance local session state until an inbound publish is ready or the session would need to
+    /// Advance local session state until an event is ready or the session would need to
     /// wait for new transport input or a future deadline.
     ///
     /// This is a cooperative progress step:
@@ -119,45 +92,30 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     /// - it does not wait for future session deadlines
     /// - it may still await transport write or flush progress already needed for the current step
     ///
-    /// Returns `Ok(None)` when no inbound publish is currently ready and further progress would
+    /// Returns `Ok(None)` when no event is currently ready and further progress would
     /// require waiting. Wall-clock bounds depend on the transport: a stalled write or flush may
     /// still keep this future pending until the transport errors or is cancelled. Cancel-safe if
     /// the underlying transport I/O futures are cancel-safe.
-    pub async fn drive(&mut self) -> Result<Option<InboundPublish<'_>>, Error<IO::Error>> {
-        Ok(match self.drive_packet().await? {
-            Progress::Inbound(packet_length) => Some(self.decode_inbound_publish(packet_length)?),
-            Progress::Idle | Progress::Advanced => None,
-        })
+    pub async fn drive(&mut self) -> Result<Option<Event<'_>>, Error<IO::Error>> {
+        self.drive_packet()
+            .await?
+            .map(|length| self.decode_event(length).map_err(Into::into))
+            .transpose()
     }
 
-    /// Wait until any session progress happens or the session disconnects.
+    /// Wait for a publication or an operation completion while servicing MQTT.
     ///
-    /// Returns:
-    /// - `Ok(Some(msg))` when that progress produced an inbound publish
-    /// - `Ok(None)` when progress happened only internally, such as ACK handling, replay, or
-    ///   keepalive traffic
-    ///
-    /// As with [`drive`](Self::drive), wall-clock bounds depend on the transport's read, write,
-    /// and flush behavior.
-    ///
-    /// Cancel-safe if the underlying transport I/O futures are cancel-safe. Ordinary no-data must
-    /// be represented by the transport future staying pending; `TimedOut` and `Interrupted` are
-    /// treated as transport failure and disconnect the session.
-    pub async fn poll(&mut self) -> Result<Option<InboundPublish<'_>>, Error<IO::Error>> {
-        match self.wait_for_progress().await? {
-            Some(packet_length) => Ok(Some(self.decode_inbound_publish(packet_length)?)),
-            None => Ok(None),
-        }
+    /// Cancellation preserves protocol progress when the transport is cancel-safe.
+    /// Events borrow the receive buffer until the next mutable connection operation.
+    pub async fn poll(&mut self) -> Result<Event<'_>, Error<IO::Error>> {
+        let packet_length = self.wait_for_event().await?;
+        Ok(self.decode_event(packet_length)?)
     }
 
-    async fn wait_for_progress(&mut self) -> Result<Option<usize>, Error<IO::Error>> {
+    async fn wait_for_event(&mut self) -> Result<usize, Error<IO::Error>> {
         loop {
-            match self.drive_packet().await? {
-                Progress::Inbound(packet_length) => {
-                    return Ok(Some(packet_length));
-                }
-                Progress::Advanced => return Ok(None),
-                Progress::Idle => {}
+            if let Some(length) = self.drive_packet().await? {
+                return Ok(length);
             }
 
             let deadline = self.session.runtime.next_deadline();
@@ -173,19 +131,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         }
     }
 
-    /// Wait until the next inbound publish arrives.
-    ///
-    /// This is a convenience wrapper over [`poll`](Self::poll) that skips internal-only
-    /// progress.
-    pub async fn recv(&mut self) -> Result<InboundPublish<'_>, Error<IO::Error>> {
-        loop {
-            if let Some(packet_length) = self.wait_for_progress().await? {
-                return Ok(self.decode_inbound_publish(packet_length)?);
-            }
-        }
-    }
-
-    pub(super) async fn service(&mut self, now: Instant) -> Result<bool, Error<IO::Error>> {
+    pub(super) async fn service(&mut self, now: Instant) -> Result<(), Error<IO::Error>> {
         let runtime = &mut self.session.runtime;
         if runtime
             .ping_timeout
@@ -199,21 +145,19 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             self.handle_disconnect();
             return Err(Error::Disconnected);
         }
-        self.service_outbound_once(now).await
+        self.service_outbound_once(now).await?;
+        Ok(())
     }
 
-    fn should_queue_pingreq(&self, now: Instant) -> bool {
-        self.session.runtime.ping_timeout.is_none()
+    fn maybe_queue_pingreq(&mut self, now: Instant) -> Result<(), Error<IO::Error>> {
+        if self.session.runtime.ping_timeout.is_none()
             && self
                 .session
                 .runtime
                 .next_ping
                 .is_some_and(|deadline| now >= deadline)
             && !self.session.data.outbound.has_pending_pingreq()
-    }
-
-    fn maybe_queue_pingreq(&mut self, now: Instant) -> Result<(), Error<IO::Error>> {
-        if self.should_queue_pingreq(now) {
+        {
             check_control_packet_size(
                 self.session.runtime.maximum_packet_size,
                 ControlAction::PingReq,
@@ -232,11 +176,6 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             return Err(Error::Disconnected);
         }
         if let Err(err) = fill_packet_reader(&mut self.session.packet_reader, &mut self.io).await {
-            match &err {
-                Error::Transport(err) => warn!("Transport read failed: {}", err.kind()),
-                Error::Disconnected => warn!("Transport returned EOF; disconnecting session"),
-                _ => {}
-            }
             self.handle_disconnect();
             return Err(err);
         }
@@ -292,6 +231,15 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         let data = &mut self.session.data;
         let ping =
             matches!(step, OutboundStep::Control(step) if step.action == ControlAction::PingReq);
+        let acknowledged = match step {
+            OutboundStep::Control(step) => match step.action {
+                ControlAction::PubAck { packet_id, reason } if reason.success() => Some(packet_id),
+                ControlAction::PubComp { packet_id, .. } => Some(packet_id),
+                ControlAction::PubRec { packet_id, reason } if !reason.success() => Some(packet_id),
+                _ => None,
+            },
+            _ => None,
+        };
         let packet = match step {
             OutboundStep::Control(step) => {
                 trace!(
@@ -377,22 +325,31 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             written,
             len,
         } = packet;
-        let count = match write_current(&mut self.io, &bytes[written..]).await {
-            Ok(count) => count,
-            Err(Error::Transport(err)) => {
-                warn!("Outbound packet write failed: {}", err.kind());
-                self.handle_disconnect();
-                return Err(Error::Transport(err));
-            }
-            Err(Error::WriteZero) => {
+        let count = match self.io.write(&bytes[written..]).await {
+            Ok(0) => {
                 self.handle_disconnect();
                 return Err(Error::WriteZero);
             }
-            Err(err) => return Err(err),
+            Ok(count) => count,
+            Err(err) => {
+                self.handle_disconnect();
+                return Err(Error::Transport(err));
+            }
         };
         self.flush_state = FlushState::Dirty;
         let written = written + count;
         self.set_written(packet, written, len);
+        if written == len
+            && let Some(id) = acknowledged
+            && let Some(index) = self
+                .session
+                .runtime
+                .receiving
+                .iter()
+                .position(|entry| *entry == id)
+        {
+            self.session.runtime.receiving.swap_remove(index);
+        }
         if ping && written == len {
             self.session.runtime.ping_timeout =
                 Some(Instant::now() + Duration::from_millis(ROUND_TRIP_TIMEOUT_MS));
@@ -406,7 +363,6 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         }
         self.flush_state = FlushState::Flushing;
         if let Err(err) = self.io.flush().await {
-            warn!("Outbound flush failed: {}", err.kind());
             self.handle_disconnect();
             return Err(Error::Transport(err));
         }
@@ -420,16 +376,5 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     pub(super) async fn flush_outbound(&mut self) -> Result<(), Error<IO::Error>> {
         while self.service_outbound_once(Instant::now()).await? {}
         Ok(())
-    }
-}
-
-async fn write_current<C: Io>(connection: &mut C, bytes: &[u8]) -> Result<usize, Error<C::Error>> {
-    match connection.write(bytes).await {
-        Ok(0) => {
-            error!("transport write returned zero bytes for non-empty buffer");
-            Err(Error::WriteZero)
-        }
-        Ok(count) => Ok(count),
-        Err(err) => Err(Error::Transport(err)),
     }
 }

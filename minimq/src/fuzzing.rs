@@ -186,7 +186,10 @@ pub fn encode_packet(
                     packet_id,
                     reason: ReasonCode::from(aux),
                 },
-                7 => ControlAction::PubRec { packet_id },
+                7 => ControlAction::PubRec {
+                    packet_id,
+                    reason: crate::ReasonCode::Success,
+                },
                 _ => ControlAction::PubComp {
                     packet_id,
                     reason: ReasonCode::from(aux),
@@ -196,7 +199,7 @@ pub fn encode_packet(
             let _ = serialize_control_packet::<core::convert::Infallible>(
                 &mut storage,
                 action,
-                Some(buf.len() as u32),
+                buf.len() as u32,
                 protocol,
             );
         }

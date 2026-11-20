@@ -22,6 +22,10 @@ const CONNECT_WILL_RETAIN_FLAG: u8 = 1 << 5;
 const CONNECT_PASSWORD_FLAG: u8 = 1 << 6;
 const CONNECT_USER_NAME_FLAG: u8 = 1 << 7;
 
+pub(crate) fn valid_topic(topic: &str) -> bool {
+    !topic.is_empty() && !topic.bytes().any(|byte| matches!(byte, 0 | b'+' | b'#'))
+}
+
 /// MQTT binary data field.
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -71,6 +75,9 @@ impl serde::Serialize for Utf8String<'_> {
 
         let len = u16::try_from(self.0.len())
             .map_err(|_| S::Error::custom("Provided string is too long"))?;
+        if self.0.contains('\0') {
+            return Err(S::Error::custom("NUL in MQTT string"));
+        }
         let mut item = serializer.serialize_struct("_Utf8String", 0)?;
         item.serialize_field("_len", &len)?;
         item.serialize_field("_string", self.0)?;
@@ -90,6 +97,9 @@ impl<'a, 'de: 'a> serde::de::Visitor<'de> for Utf8StringVisitor<'a> {
     }
 
     fn visit_borrowed_str<E: serde::de::Error>(self, data: &'de str) -> Result<Self::Value, E> {
+        if data.contains('\0') {
+            return Err(E::custom("NUL in MQTT string"));
+        }
         Ok(Utf8String(data))
     }
 }

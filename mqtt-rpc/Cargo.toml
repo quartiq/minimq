@@ -15,9 +15,10 @@ workspace = true
 
 [features]
 default = []
-defmt = ["minimq/defmt"]
+defmt = ["dep:defmt", "minimq/defmt"]
 
 [dependencies]
+defmt = { version = "1.0.1", optional = true }
 heapless = "0.9.1"
 minimq = { path = "../minimq", version = "0.13", default-features = false }
 

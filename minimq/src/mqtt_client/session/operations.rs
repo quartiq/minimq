@@ -1,14 +1,13 @@
 use embassy_time::Instant;
-use embedded_io_async::Error as _;
 
 use crate::mqtt_client::outbound::{PacketKind, write_all};
 use crate::packets::{Disconnect, PublishHeader, Subscribe, Unsubscribe};
 use crate::properties::{Properties, PropertyContext};
 use crate::publication::{Publication, ToPayload};
-use crate::ser::{MAX_FIXED_HEADER_SIZE, MqttSerializer};
+use crate::ser::MqttSerializer;
 use crate::types::TopicFilter;
 use crate::wire::Utf8String;
-use crate::{Connection, Error, Io, Op, Property, PubError, QoS, ResourceError, debug, info, warn};
+use crate::{Connection, Error, Io, Op, Property, PubError, QoS, ResourceError, debug};
 
 impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     /// Write the `DISCONNECT` over the transport. The caller drops the transport afterwards.
@@ -21,7 +20,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         if !self.live {
             return Ok(());
         }
-        info!("Graceful disconnect requested");
+        debug!("Graceful disconnect requested");
         let disconnect = if self.session.protocol.is_v5() {
             disconnect
         } else {
@@ -35,16 +34,20 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             Disconnect::success()
         };
         if let Some(properties) = disconnect.properties()
-            && !properties.valid_for(PropertyContext::Disconnect)
+            && (!properties.valid_for(PropertyContext::Disconnect)
+                || (self.session.session_expiry_interval.unwrap_or(0) == 0
+                    && properties
+                        .iter()
+                        .any(|p| matches!(p, Ok(Property::SessionExpiryInterval(1..))))))
         {
             return Err(Error::InvalidRequest);
         }
-        let mut buffer = [0u8; MAX_FIXED_HEADER_SIZE + 4];
-        let packet = MqttSerializer::encode(&mut buffer, &disconnect)?;
-        self.session.runtime.require_packet_size(packet.len())?;
         // A cancelled publication can leave a packet prefix or suspended flush.
         // Finish that stream progress before writing the terminal packet.
         self.flush_outbound().await?;
+        let packet =
+            MqttSerializer::encode(self.session.data.outbound.scratch_space(), &disconnect)?;
+        self.session.runtime.require_packet_size(packet.len())?;
         let result = match write_all(&mut self.io, packet).await {
             Ok(()) => self.io.flush().await.map_err(Error::Transport),
             Err(err) => Err(err),
@@ -67,7 +70,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     /// Send a `SUBSCRIBE`.
     ///
     /// Call this after [`Session::connect`](crate::Session::connect). A resumed
-    /// [`ConnectEvent::Reconnected`](crate::ConnectEvent::Reconnected)
+    /// [`ConnectEvent::SessionResumed`](crate::ConnectEvent::SessionResumed)
     /// already kept broker-side subscriptions.
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
     pub async fn subscribe(
@@ -89,6 +92,15 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         if !Properties::from_slice(properties).valid_for(PropertyContext::Subscribe) {
             return Err(Error::InvalidRequest);
         }
+        let capabilities = self.session.runtime.capabilities;
+        if topics.iter().any(|topic| !topic.allowed_by(capabilities))
+            || (!capabilities.subscription_ids
+                && properties
+                    .iter()
+                    .any(|p| matches!(p, Property::SubscriptionIdentifier(_))))
+        {
+            return Err(Error::InvalidRequest);
+        }
         self.flush_outbound().await?;
         self.require_retained_slot()?;
 
@@ -103,10 +115,12 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             topics,
         })?;
         self.session.runtime.require_packet_size(len)?;
-        self.session
-            .data
-            .outbound
-            .retain_packet(PacketKind::Subscribe, packet_id, len)?;
+        self.session.data.outbound.retain_packet(
+            PacketKind::Subscribe,
+            packet_id,
+            len,
+            topics.len(),
+        )?;
         debug!(
             "Enqueued SUBSCRIBE packet_id={=u16} len={=usize} tx_used={=usize}",
             packet_id,
@@ -119,9 +133,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
 
     /// Send an `UNSUBSCRIBE`.
     ///
-    /// Returns an operation handle that can be checked with [`Connection::is_pending`](Self::is_pending),
-    /// [`Connection::is_complete`](Self::is_complete), or
-    /// [`Connection::is_invalidated`](Self::is_invalidated).
+    /// Returns the handle correlated with the eventual [`crate::Event::Completed`].
     ///
     /// Cancel-safe if the underlying transport I/O futures are cancel-safe.
     pub async fn unsubscribe(
@@ -155,10 +167,12 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             topics,
         })?;
         self.session.runtime.require_packet_size(len)?;
-        self.session
-            .data
-            .outbound
-            .retain_packet(PacketKind::Unsubscribe, packet_id, len)?;
+        self.session.data.outbound.retain_packet(
+            PacketKind::Unsubscribe,
+            packet_id,
+            len,
+            topics.len(),
+        )?;
         debug!(
             "Enqueued UNSUBSCRIBE packet_id={=u16} len={=usize} tx_used={=usize}",
             packet_id,
@@ -177,10 +191,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     ///
     /// QoS 1 and 2 retain the encoded packet in the session TX buffer until broker ack and are
     /// cancel-safe if the underlying transport I/O futures are cancel-safe.
-    /// They return `Some(Op)` so the caller can check completion with
-    /// [`Connection::is_pending`](Self::is_pending),
-    /// [`Connection::is_complete`](Self::is_complete), or
-    /// [`Connection::is_invalidated`](Self::is_invalidated).
+    /// They return `Some(Op)`, correlated with the eventual [`crate::Event::Completed`].
     ///
     /// QoS 0 bypasses retained outbound state, encodes into temporary TX scratch space, and writes
     /// directly to the transport. It therefore does not consume replay/in-flight slots and only
@@ -204,7 +215,10 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             payload,
             retain,
         } = publication;
-        if !properties.valid_for(PropertyContext::Publish) {
+        if !properties.valid_for(PropertyContext::Publish)
+            || !crate::wire::valid_topic(topic)
+            || (retain == crate::Retain::Retained && !self.session.runtime.capabilities.retain)
+        {
             return Err(Error::InvalidRequest.into());
         }
         if !self.session.protocol.is_v5() && properties.size() != 0 {
@@ -288,7 +302,7 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
         self.session
             .data
             .outbound
-            .retain_packet(kind, packet_id, len)?;
+            .retain_packet(kind, packet_id, len, 0)?;
         debug!(
             "Enqueued PUBLISH packet_id={=u16} qos={} len={=usize} send_quota={=u16}/{=u16} tx_used={=usize}",
             packet_id,
@@ -310,12 +324,10 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             return Err(Error::Disconnected);
         }
         if let Err(err) = write_all(&mut self.io, packet).await {
-            warn!("QoS0 PUBLISH write failed");
             self.handle_disconnect();
             return Err(err);
         }
         if let Err(err) = self.io.flush().await {
-            warn!("QoS0 PUBLISH flush failed: {}", err.kind());
             self.handle_disconnect();
             return Err(Error::Transport(err));
         }

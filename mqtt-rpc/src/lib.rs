@@ -10,9 +10,9 @@
 
 use heapless::String;
 use minimq::{
-    ConnectEvent, Connection, Error as MqttError, InboundPublish, Io, Op, OwnedResponseTarget,
-    Property, PubError, QoS, ResourceError, RetainHandling, SubscriptionOptions, ToPayload,
-    TopicFilter,
+    ConnectEvent, Connection, Error as MqttError, InboundPublish, Io, Op, Outcome,
+    OwnedResponseTarget, PeerError, Property, Protocol, PubError, QoS, ResourceError,
+    RetainHandling, SubscriptionOptions, ToPayload, TopicFilter,
 };
 
 /// Maximum request and response topic length retained by the service.
@@ -38,6 +38,7 @@ pub type ResponseTarget = OwnedResponseTarget<MAX_TOPIC_LENGTH, MAX_CORRELATION_
 
 /// Invalid service configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ConfigError {
     /// The resulting RPC subscription topic exceeds [`MAX_TOPIC_LENGTH`].
     TopicTooLong,
@@ -45,6 +46,7 @@ pub enum ConfigError {
 
 /// Why an inbound RPC publication was rejected before application dispatch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum RejectReason {
     /// RPC requests must not be retained broker state.
     Retained,
@@ -70,6 +72,7 @@ impl RejectReason {
 
 /// A valid request borrowing its method and payload from the inbound MQTT packet.
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Request<'a> {
     method: &'a str,
     payload: &'a [u8],
@@ -95,6 +98,7 @@ impl<'a> Request<'a> {
 
 /// A rejected request and any response destination that could safely be retained.
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Rejected {
     reason: RejectReason,
     response: Option<ResponseTarget>,
@@ -114,6 +118,7 @@ impl Rejected {
 
 /// Classification of one inbound MQTT publication.
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Handle<'a> {
     /// The publication is outside this service's RPC topic tree.
     Unhandled,
@@ -127,6 +132,7 @@ pub enum Handle<'a> {
 pub struct Service {
     rpc_topic: String<MAX_TOPIC_LENGTH>,
     subscribe: Option<Op>,
+    failure: Option<PeerError>,
     ready: bool,
 }
 
@@ -148,15 +154,20 @@ impl Service {
         Ok(Self {
             rpc_topic,
             subscribe: None,
+            failure: None,
             ready: false,
         })
     }
 
     /// Begin service startup for a newly connected or resumed MQTT session.
     /// A resumed session skips subscription only if startup previously completed.
+    /// This also clears a previous startup rejection so another attempt can be made.
     pub fn begin_connection(&mut self, event: ConnectEvent) {
-        self.subscribe = None;
-        self.ready &= matches!(event, ConnectEvent::Reconnected);
+        if event == ConnectEvent::SessionCreated {
+            self.subscribe = None;
+        }
+        self.failure = None;
+        self.ready &= matches!(event, ConnectEvent::SessionResumed);
     }
 
     /// Return whether the request subscription is active.
@@ -166,13 +177,18 @@ impl Service {
 
     /// Advance subscription startup without consuming inbound publications.
     ///
-    /// Returns `Ok(true)` when the service is ready. The caller must continue driving the MQTT
-    /// connection between calls while this returns `Ok(false)`.
+    /// Returns `Ok(true)` when ready. After `Ok(false)`, poll the connection and route
+    /// completions through [`Self::handle_completion`] before retrying.
+    /// An omitted completion produces [`MqttError::MissingCompletion`].
+    /// A broker rejection is returned until [`Self::begin_connection`] starts another attempt.
     pub async fn step<IO: Io>(
         &mut self,
         connection: &mut Connection<'_, '_, IO>,
     ) -> Result<bool, MqttError<IO::Error>> {
-        if connection.session().protocol() != minimq::Protocol::V5 {
+        if let Some(error) = self.failure {
+            return Err(error.into());
+        }
+        if connection.session().protocol() != Protocol::V5 {
             return Err(MqttError::InvalidRequest);
         }
         if self.ready {
@@ -180,17 +196,17 @@ impl Service {
         }
 
         if let Some(op) = self.subscribe {
-            if connection.is_pending(&op) {
-                return Ok(false);
+            if !connection.is_connected() {
+                return Err(MqttError::Disconnected);
             }
-            if connection.is_complete(&op) {
+            if connection.is_invalidated(&op) {
                 self.subscribe = None;
-                self.ready = true;
-                return Ok(true);
+                return Err(MqttError::Disconnected);
             }
-            debug_assert!(connection.is_invalidated(&op));
-            self.subscribe = None;
-            return Err(MqttError::Disconnected);
+            if !connection.is_pending(&op) {
+                return Err(MqttError::MissingCompletion);
+            }
+            return Ok(false);
         }
 
         let options = SubscriptionOptions::default()
@@ -215,7 +231,21 @@ impl Service {
         Ok(false)
     }
 
-    /// Classify an inbound publication and retain the response destination for valid requests.
+    /// Record a completion, returning whether it belongs to this service.
+    /// The next [`Self::step`] reports any broker rejection.
+    pub fn handle_completion(&mut self, op: Op, outcome: &Outcome<'_>) -> bool {
+        if self.subscribe != Some(op) {
+            return false;
+        }
+        self.subscribe = None;
+        match outcome.check() {
+            Ok(()) => self.ready = true,
+            Err(error) => self.failure = Some(error),
+        }
+        true
+    }
+
+    /// Classify an inbound publication and capture its response destination.
     pub fn handle<'a>(&self, inbound: &InboundPublish<'a>) -> Handle<'a> {
         let Some(method) = self.method(inbound.topic()) else {
             return Handle::Unhandled;
@@ -287,7 +317,7 @@ where
     IO: Io,
     P: ToPayload,
 {
-    if connection.session().protocol() != minimq::Protocol::V5 {
+    if connection.session().protocol() != Protocol::V5 {
         return Err(MqttError::InvalidRequest.into());
     }
     let properties = [
@@ -315,12 +345,12 @@ mod tests {
     #[test]
     fn resume_requires_completed_startup() {
         let mut service = Service::new("device").unwrap();
-        service.begin_connection(ConnectEvent::Reconnected);
+        service.begin_connection(ConnectEvent::SessionResumed);
         assert!(!service.is_ready());
         service.ready = true;
-        service.begin_connection(ConnectEvent::Reconnected);
+        service.begin_connection(ConnectEvent::SessionResumed);
         assert!(service.is_ready());
-        service.begin_connection(ConnectEvent::Connected);
+        service.begin_connection(ConnectEvent::SessionCreated);
         assert!(!service.is_ready());
     }
 

@@ -2,10 +2,9 @@
 
 Minimal `no_std` MQTT 5 request/response transport for embedded services.
 
-`mqtt-rpc` works with a caller-owned Minimq 0.13 session. It subscribes
+`mqtt-rpc` works with a caller-owned Minimq session. It subscribes
 `<device-prefix>/rpc/#`, routes borrowed inbound requests, retains MQTT response-topic and
 correlation data for deferred work, and publishes transient QoS-1 responses.
-Service startup and responses reject MQTT 3.1.1 connections with `InvalidRequest`.
 
 It deliberately does not own the MQTT transport, application method registry, payload schema,
 executor, persistent storage, or retained device status.
@@ -29,9 +28,12 @@ or reject targets outside its allowed response-topic tree.
 
 ## Device use
 
-After every successful `Session::connect`, tell the service whether the broker resumed the MQTT
-session and drive its subscription to completion. Resume skips only previously completed startup.
-Then pass each inbound publication to `handle`:
+Enable the `defmt` feature for embedded error and request diagnostics.
+
+After connecting, call `begin_connection()` with the connect event. Drive `step()` until ready,
+routing completions through `handle_completion()`. It returns whether the operation belongs
+to this service; `step()` reports rejection or `MissingCompletion` for an omitted outcome.
+Resume skips previously completed startup. Pass inbound publications to `handle()`:
 
 ```rust,no_run
 use minimq::{Connection, Io};
@@ -41,11 +43,19 @@ async fn run<IO: Io>(connection: &mut Connection<'_, '_, IO>) {
     let mut rpc = Service::new("dt/device").unwrap();
     rpc.begin_connection(connection.connect_event());
     while !rpc.step(connection).await.unwrap() {
-        let _ = connection.poll().await.unwrap();
+        if let minimq::Event::Completed { op, outcome } = connection.poll().await.unwrap() {
+            rpc.handle_completion(op, &outcome);
+        }
     }
 
     loop {
-        let inbound = connection.recv().await.unwrap();
+        let inbound = match connection.poll().await.unwrap() {
+            minimq::Event::Publish(inbound) => inbound,
+            minimq::Event::Completed { outcome, .. } => {
+                outcome.check().unwrap();
+                continue;
+            }
+        };
         if let Handle::Request(request) = rpc.handle(&inbound) {
             assert_eq!(request.method(), "ping");
             let target = request.into_response_target();

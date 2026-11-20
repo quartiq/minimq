@@ -59,13 +59,19 @@ async fn run() -> Result<(), Box<dyn StdError>> {
         .subscribe(&[TopicFilter::new(&topic)], &[])
         .await?;
     while connection.is_pending(&subscribe) {
-        connection.poll().await?;
+        if let minimq::Event::Completed { op, outcome } = connection.poll().await?
+            && op == subscribe
+        {
+            outcome.check()?;
+        }
     }
     println!("echoing requests on {topic}");
 
     loop {
         let (reply, payload) = {
-            let request = connection.recv().await?;
+            let minimq::Event::Publish(request) = connection.poll().await? else {
+                continue;
+            };
             // Preserve the MQTT v5 response topic and correlation data past this receive borrow.
             let Some(reply) = request.reply_owned::<256, 64>()? else {
                 continue;
@@ -77,7 +83,7 @@ async fn run() -> Result<(), Box<dyn StdError>> {
         drop(connection);
         let tls = connect_tls(BROKER_HOST, BROKER_PORT, &connector).await?;
         connection = session.connect(tls).await?;
-        if connection.connect_event() != ConnectEvent::Reconnected {
+        if connection.connect_event() != ConnectEvent::SessionResumed {
             return Err("broker did not resume the MQTT session".into());
         }
         connection

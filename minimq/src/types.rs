@@ -2,20 +2,27 @@
 use crate::{QoS, wire::Utf8String};
 use serde::Serialize;
 
-const SUBSCRIPTION_QOS_MASK: u8 = 0b11;
 const SUBSCRIPTION_NO_LOCAL_FLAG: u8 = 1 << 2;
 const SUBSCRIPTION_RETAIN_AS_PUBLISHED_FLAG: u8 = 1 << 3;
 const SUBSCRIPTION_RETAIN_HANDLING_SHIFT: u8 = 4;
 const _: () = {
-    assert!((QoS::ExactlyOnce as u8) <= SUBSCRIPTION_QOS_MASK);
-    assert!((RetainHandling::Never as u8) <= SUBSCRIPTION_QOS_MASK);
+    assert!((QoS::ExactlyOnce as u8) <= 0b11);
+    assert!((RetainHandling::Never as u8) <= 0b11);
 };
 
 /// Username/password authentication data used in `CONNECT`.
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 pub(crate) struct Auth<'a> {
     user_name: &'a str,
     password: &'a [u8],
+}
+
+impl core::fmt::Debug for Auth<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Auth")
+            .field("user_name", &self.user_name)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> Auth<'a> {
@@ -41,6 +48,7 @@ impl<'a> Auth<'a> {
 /// Broker retain handling policy for a subscription.
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum RetainHandling {
     /// Send retained messages when the subscription is created.
     Immediately = 0b00,
@@ -52,6 +60,8 @@ pub enum RetainHandling {
 
 /// MQTT subscription options for one topic filter.
 #[derive(Copy, Clone, Debug)]
+#[must_use]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct SubscriptionOptions {
     maximum_qos: QoS,
     no_local: bool,
@@ -112,12 +122,17 @@ impl serde::Serialize for SubscriptionOptions {
 
 /// Topic filter and options for `SUBSCRIBE`.
 #[derive(Serialize, Copy, Clone, Debug)]
+#[must_use]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct TopicFilter<'a> {
     topic: Utf8String<'a>,
     options: SubscriptionOptions,
 }
 
 impl<'a> TopicFilter<'a> {
+    pub(crate) fn allowed_by(&self, capabilities: crate::mqtt_client::Capabilities) -> bool {
+        capabilities.allows_filter(self.topic.0, self.options.no_local)
+    }
     pub(crate) fn valid_for_v3(&self) -> bool {
         !self.options.no_local
             && !self.options.retain_as_published

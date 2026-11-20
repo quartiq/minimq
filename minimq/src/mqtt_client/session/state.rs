@@ -12,17 +12,20 @@ use crate::{Error, QoS, ResourceError};
 /// - how early `minimq` sends a `PINGREQ` before keepalive expiry
 /// - how long it waits for the matching `PINGRESP`
 pub(super) const ROUND_TRIP_TIMEOUT_MS: u64 = 5_000;
-const MAX_INBOUND_QOS2: usize = 8;
+pub(super) const MAX_INBOUND_QOS2: usize = 20;
 
 #[derive(Debug)]
 pub(super) struct RuntimeState {
     pub(super) keepalive_interval: Duration,
     pub(super) send_quota: u16,
     pub(super) max_send_quota: u16,
-    pub(super) maximum_packet_size: Option<u32>,
+    pub(super) maximum_packet_size: u32,
     pub(super) max_qos: Option<QoS>,
     pub(super) next_ping: Option<Instant>,
     pub(super) ping_timeout: Option<Instant>,
+    // Connection-local receive window; persistent duplicate tracking lives in SessionData.
+    pub(super) receiving: Vec<u16, MAX_INBOUND_QOS2>,
+    pub(super) capabilities: crate::mqtt_client::Capabilities,
 }
 
 impl RuntimeState {
@@ -31,10 +34,12 @@ impl RuntimeState {
             keepalive_interval,
             send_quota: u16::MAX,
             max_send_quota: u16::MAX,
-            maximum_packet_size: None,
+            maximum_packet_size: u32::MAX,
             max_qos: None,
             next_ping: None,
             ping_timeout: None,
+            receiving: Vec::new(),
+            capabilities: Default::default(),
         }
     }
 
@@ -45,10 +50,7 @@ impl RuntimeState {
     }
 
     pub(super) fn require_packet_size<E>(&self, len: usize) -> Result<(), Error<E>> {
-        if self
-            .maximum_packet_size
-            .is_some_and(|max| len > max as usize)
-        {
+        if len > self.maximum_packet_size as usize {
             return Err(Error::Resource(ResourceError::PacketTooLarge));
         }
         Ok(())
@@ -132,10 +134,10 @@ mod tests {
         let mut data = SessionData::new(&mut storage);
         data.packet_id = NonZeroU16::new(u16::MAX).unwrap();
         data.outbound
-            .retain_packet(PacketKind::Subscribe, u16::MAX, 5)
+            .retain_packet(PacketKind::Subscribe, u16::MAX, 5, 0)
             .unwrap();
         data.outbound
-            .retain_packet(PacketKind::PublishExactlyOnce, 1, 0)
+            .retain_packet(PacketKind::PublishExactlyOnce, 1, 0, 0)
             .unwrap();
         assert!(data.outbound.release(1));
 

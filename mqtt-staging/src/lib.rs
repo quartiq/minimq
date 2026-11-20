@@ -5,8 +5,9 @@
 use defmt::{debug, info, trace, warn};
 use heapless::String;
 use minimq::{
-    ConnectEvent, Connection, Error as MqttError, InboundPublish, Io, Op, Properties, Property,
-    PubError, Publication, QoS, ResourceError, RetainHandling, SubscriptionOptions, TopicFilter,
+    ConnectEvent, Connection, Error as MqttError, InboundPublish, Io, Op, Outcome, PeerError,
+    Properties, Property, PubError, Publication, QoS, ResourceError, RetainHandling,
+    SubscriptionOptions, TopicFilter,
 };
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +15,6 @@ type TopicString = String<128>;
 
 const MAX_TRANSFER_ID_BYTES: usize = 48;
 const MAX_STATUS_BYTES: usize = 256;
-const INFO_CHUNK_STRIDE: usize = 128;
 const MANIFEST_SUFFIX: &str = "/manifest";
 const STATUS_SUFFIX: &str = "/status";
 const CHUNK_SUFFIX: &str = "/chunk";
@@ -36,7 +36,7 @@ struct Manifest<'a> {
 }
 
 /// Immediate result of one cooperative [`Service::step`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 #[must_use = "inspect whether staging work is still pending"]
 pub enum Step {
     /// No queued or in-flight MQTT work remains. Storage work may still be pending.
@@ -45,8 +45,8 @@ pub enum Step {
     Pending,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Error returned while constructing a staging service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum CreateError {
     /// A derived protocol topic does not fit the fixed topic buffer.
     Topic(ResourceError),
@@ -55,7 +55,7 @@ pub enum CreateError {
 }
 
 /// Storage limits for one staging service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub struct Config {
     /// Maximum staged object size in bytes.
     pub capacity: u32,
@@ -118,8 +118,8 @@ pub enum StatusCode {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 /// Current staging progress and device limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, defmt::Format)]
 pub struct Status<'a> {
     /// Current transfer state.
     pub state: State,
@@ -161,7 +161,7 @@ enum PendingRequest {
 }
 
 /// Storage operation requested by the staging state machine.
-#[derive(Debug)]
+#[derive(Debug, defmt::Format)]
 pub enum StagingRequest<'a> {
     /// Prepare the staging area for one object.
     Prepare {
@@ -173,7 +173,7 @@ pub enum StagingRequest<'a> {
 }
 
 /// One accepted chunk ready for storage.
-#[derive(Debug)]
+#[derive(Debug, defmt::Format)]
 pub struct StagingWrite<'a> {
     /// Object byte offset.
     pub offset: u32,
@@ -189,7 +189,7 @@ pub struct StagingWrite<'a> {
 
 /// Result of handling one inbound MQTT publish.
 #[must_use = "submit storage work or route unhandled traffic"]
-#[derive(Debug)]
+#[derive(Debug, defmt::Format)]
 pub enum Handle<'a> {
     /// The publish is not staging traffic.
     Unhandled,
@@ -204,6 +204,7 @@ pub enum Handle<'a> {
 pub struct Service {
     prefix: TopicString,
     inflight: Option<InFlightAction>,
+    failure: Option<PeerError>,
     pending: Option<Action>,
     startup_publish: Option<StatusCode>,
     subscribed: bool,
@@ -234,6 +235,7 @@ impl Service {
         Ok(Self {
             prefix,
             inflight: None,
+            failure: None,
             pending: None,
             startup_publish: None,
             subscribed: false,
@@ -251,9 +253,11 @@ impl Service {
     ///
     /// Call after each connection, then drive [`Self::step`]. Transfer progress
     /// and outstanding storage requests survive reconnects.
+    /// This clears a previous MQTT rejection and allows the queued work to be attempted again.
     pub fn begin_startup(&mut self, event: ConnectEvent) {
+        self.failure = None;
         let replay = (self.state != State::Idle).then(|| self.current_code());
-        if event == ConnectEvent::Connected {
+        if event == ConnectEvent::SessionCreated {
             self.inflight = None;
             self.subscribed = false;
         }
@@ -327,6 +331,27 @@ impl Service {
         self.state = State::Error;
         self.request = None;
         self.queue(Action::Publish(StatusCode::Error));
+        true
+    }
+
+    /// Return a failed transfer to idle after its status has been sent.
+    ///
+    /// Returns `false` while storage or MQTT work is outstanding, or when the
+    /// transfer has not failed. Finish application-owned storage work before
+    /// calling this after [`Self::abort`]. The next manifest starts a new transfer.
+    pub fn reset(&mut self) -> bool {
+        if self.state != State::Error
+            || self.request.is_some()
+            || self.pending.is_some()
+            || self.inflight.is_some()
+            || self.startup_publish.is_some()
+            || self.failure.is_some()
+        {
+            return false;
+        }
+        self.state = State::Idle;
+        self.transfer = None;
+        self.queue(Action::Publish(StatusCode::Idle));
         true
     }
 
@@ -416,11 +441,31 @@ impl Service {
         self.handle_chunk(chunk.id, chunk.offset, payload)
     }
 
+    /// Record a completion, returning whether it belongs to this service.
+    /// The next [`Self::step`] reports any broker rejection.
+    pub fn handle_completion(&mut self, op: Op, outcome: &Outcome<'_>) -> bool {
+        let Some(inflight) = self.inflight.take_if(|inflight| inflight.op == op) else {
+            return false;
+        };
+        let action = inflight.action;
+        if let Err(error) = outcome.check() {
+            self.queue(action);
+            self.failure = Some(error);
+        } else if action == Action::Subscribe {
+            self.subscribed = true;
+            if let Some(code) = self.startup_publish.take() {
+                self.queue(Action::Publish(code));
+            }
+        }
+        true
+    }
+
     /// Advance one queued MQTT operation.
     ///
-    /// Starts at most one subscribe or status publication, without reading
-    /// inbound packets. On [`Step::Pending`], drive [`Connection::poll`] before
-    /// retrying to allow acknowledgements and incoming traffic to progress.
+    /// Starts at most one subscription or status publication. On [`Step::Pending`],
+    /// poll the connection and route its events before retrying.
+    /// An omitted completion produces [`MqttError::MissingCompletion`].
+    /// A broker rejection is returned until [`Self::begin_startup`] starts another attempt.
     ///
     /// Cancellation preserves the queued action, but retrying may duplicate
     /// an already queued MQTT packet. Requires cancel-safe transport I/O and
@@ -432,23 +477,25 @@ impl Service {
     where
         IO: Io,
     {
+        if let Some(error) = self.failure {
+            return Err(error.into());
+        }
         self.max_rx_packet_size = connection.session().max_rx_packet_size();
 
-        if let Some(inflight) = self.inflight.take() {
-            if connection.is_pending(&inflight.op) {
-                self.inflight = Some(inflight);
-                return Ok(Step::Pending);
-            }
-            if connection.is_invalidated(&inflight.op) {
-                self.queue(inflight.action);
+        if let Some(inflight) = &self.inflight {
+            if !connection.is_connected() {
                 return Err(MqttError::Disconnected);
             }
-            if inflight.action == Action::Subscribe {
-                self.subscribed = true;
-                if let Some(code) = self.startup_publish.take() {
-                    self.queue(Action::Publish(code));
-                }
+            if connection.is_invalidated(&inflight.op) {
+                let action = inflight.action;
+                self.inflight = None;
+                self.queue(action);
+                return Err(MqttError::Disconnected);
             }
+            if !connection.is_pending(&inflight.op) {
+                return Err(MqttError::MissingCompletion);
+            }
+            return Ok(Step::Pending);
         }
 
         let Some(action) = self.pending else {
@@ -649,7 +696,7 @@ impl Service {
     {
         match action {
             Action::Subscribe => {
-                info!("Subscribing staging MQTT topics");
+                debug!("Subscribing staging MQTT topics");
                 let manifest_topic = self.manifest_topic();
                 let chunk_topic = self.chunk_topic();
                 let options = SubscriptionOptions::default()
@@ -700,7 +747,10 @@ impl Service {
             .await
         {
             Ok(Some(op)) => {
-                log_status(code, status);
+                debug!(
+                    "staging status code={} offset={=u32}",
+                    code, status.next_offset
+                );
                 Ok(op)
             }
             Ok(None) => Err(MqttError::InvalidRequest),
@@ -708,57 +758,6 @@ impl Service {
             Err(PubError::Session(err)) => Err(err),
         }
     }
-}
-
-fn log_status(code: StatusCode, status: Status<'_>) {
-    match code {
-        StatusCode::Accepted => {
-            if should_log_chunk_progress(status.next_offset, status.size, status.mtu) {
-                info!(
-                    "staging status code={:?} offset={=u32}",
-                    code, status.next_offset
-                );
-            } else {
-                debug!(
-                    "staging status code={:?} offset={=u32}",
-                    code, status.next_offset
-                );
-            }
-        }
-        StatusCode::Complete => {
-            info!(
-                "staging status code={:?} offset={=u32}",
-                code, status.next_offset
-            );
-        }
-        StatusCode::Idle | StatusCode::Duplicate => {
-            debug!(
-                "staging status code={:?} offset={=u32}",
-                code, status.next_offset
-            );
-        }
-        StatusCode::Offset
-        | StatusCode::Oversize
-        | StatusCode::Mtu
-        | StatusCode::Unaligned
-        | StatusCode::Storage
-        | StatusCode::Error => {
-            warn!(
-                "staging status code={:?} offset={=u32}",
-                code, status.next_offset
-            );
-        }
-    }
-}
-
-fn should_log_chunk_progress(next_offset: u32, size: u32, chunk_size: usize) -> bool {
-    if next_offset == 0 {
-        return true;
-    }
-    if next_offset.saturating_add(chunk_size.try_into().unwrap_or(u32::MAX)) >= size {
-        return true;
-    }
-    (next_offset as usize / chunk_size).is_multiple_of(INFO_CHUNK_STRIDE)
 }
 
 fn validate_chunk(
@@ -893,7 +892,7 @@ mod tests {
     use super::*;
     use embassy_futures::{block_on, poll_once};
     use embedded_io_async::{ErrorType, Read, Write};
-    use minimq::{Buffers, ConfigBuilder, Session};
+    use minimq::{Buffers, ConfigBuilder, Event, Session};
     use std::sync::OnceLock;
 
     const ID: &[u8] = b"7ea690cc8c2cd8ed";
@@ -1037,6 +1036,74 @@ mod tests {
     }
 
     #[test]
+    fn startup_waits_for_a_successful_correlated_outcome() {
+        let mut service = service(128);
+        service.begin_startup(ConnectEvent::SessionCreated);
+        let (mut rx, mut tx) = ([0; 128], [0; 1024]);
+        let mut session = Session::new(ConfigBuilder::new(Buffers::new(&mut rx, &mut tx)));
+        let mut connection = block_on(session.connect(TestIo {
+            rx: &[0x20, 3, 0, 0, 0, 0x90, 5, 0, 1, 0, 1, 0x87],
+            writes: 2,
+        }))
+        .unwrap();
+        assert_eq!(
+            block_on(service.step(&mut connection)).unwrap(),
+            Step::Pending
+        );
+        let minimq::Event::Completed { op, outcome } = block_on(connection.poll()).unwrap() else {
+            panic!("expected completion")
+        };
+        assert!(service.handle_completion(op, &outcome));
+        assert!(!service.subscribed);
+        assert!(matches!(
+            block_on(service.step(&mut connection)),
+            Err(MqttError::Peer(PeerError::Rejected(
+                minimq::ReasonCode::NotAuthorized
+            )))
+        ));
+        assert!(!service.is_complete());
+        service.begin_startup(ConnectEvent::SessionResumed);
+        assert_eq!(
+            block_on(service.step(&mut connection)).unwrap(),
+            Step::Pending
+        );
+        assert!(connection.is_connected());
+    }
+
+    #[test]
+    fn omitted_completion_is_reported_instead_of_waiting() {
+        let mut service = service(128);
+        service.begin_startup(ConnectEvent::SessionCreated);
+        let (mut rx, mut tx) = ([0; 128], [0; 1024]);
+        let mut session = Session::new(ConfigBuilder::new(Buffers::new(&mut rx, &mut tx)));
+        let mut connection = block_on(session.connect(TestIo {
+            rx: &[0x20, 3, 0, 0, 0, 0x90, 5, 0, 1, 0, 1, 1],
+            writes: 2,
+        }))
+        .unwrap();
+        assert_eq!(
+            block_on(service.step(&mut connection)).unwrap(),
+            Step::Pending
+        );
+        assert!(matches!(
+            block_on(connection.poll()).unwrap(),
+            minimq::Event::Completed { .. }
+        ));
+        for _ in 0..2 {
+            assert!(matches!(
+                block_on(service.step(&mut connection)),
+                Err(MqttError::MissingCompletion)
+            ));
+            assert!(!service.subscribed);
+        }
+        block_on(connection.disconnect()).unwrap();
+        assert!(matches!(
+            block_on(service.step(&mut connection)),
+            Err(MqttError::Disconnected)
+        ));
+    }
+
+    #[test]
     fn cancelled_step_retains_action_for_retry() {
         for action in [Action::Subscribe, Action::Publish(StatusCode::Accepted)] {
             let mut service = ready_service();
@@ -1093,7 +1160,7 @@ mod tests {
                 Step::Pending
             );
             assert_eq!(service.pending, Some(action));
-            block_on(connection.poll()).unwrap();
+            let _ = block_on(connection.poll()).unwrap();
             let result = block_on(service.step(&mut connection));
             if fits {
                 assert_eq!(result.unwrap(), Step::Pending);
@@ -1159,7 +1226,7 @@ mod tests {
     #[test]
     fn connected_startup_queues_subscribe_only_for_idle_service() {
         let mut service = service(128);
-        service.begin_startup(ConnectEvent::Connected);
+        service.begin_startup(ConnectEvent::SessionCreated);
         assert_eq!(service.pending, Some(Action::Subscribe));
         assert_eq!(service.startup_publish, None);
     }
@@ -1167,7 +1234,7 @@ mod tests {
     #[test]
     fn connected_startup_defers_status_replay_until_after_subscribe() {
         let mut service = ready_service();
-        service.begin_startup(ConnectEvent::Connected);
+        service.begin_startup(ConnectEvent::SessionCreated);
         assert_eq!(service.pending, Some(Action::Subscribe));
         assert_eq!(service.startup_publish, Some(StatusCode::Accepted));
         assert!(service.abort());
@@ -1178,11 +1245,11 @@ mod tests {
     #[test]
     fn reconnected_startup_replays_current_status_without_subscribe() {
         let mut idle = service(128);
-        idle.begin_startup(ConnectEvent::Reconnected);
+        idle.begin_startup(ConnectEvent::SessionResumed);
         assert_eq!(idle.pending, Some(Action::Subscribe));
 
         let mut service = ready_service();
-        service.begin_startup(ConnectEvent::Reconnected);
+        service.begin_startup(ConnectEvent::SessionResumed);
         assert_eq!(service.pending, Some(Action::Publish(StatusCode::Accepted)));
         assert_eq!(service.startup_publish, None);
     }
@@ -1216,11 +1283,6 @@ mod tests {
     }
 
     #[test]
-    fn chunk_progress_handles_the_u32_limit() {
-        assert!(should_log_chunk_progress(u32::MAX - 1, u32::MAX, 4));
-    }
-
-    #[test]
     fn abort_marks_ready_transfer_failed() {
         let mut service = ready_service();
         assert!(service.abort());
@@ -1241,7 +1303,46 @@ mod tests {
         let mut service = service(128);
         service.state = State::Complete;
         assert!(!service.abort());
+        assert!(!service.reset());
         assert_eq!(service.status().state, State::Complete);
+    }
+
+    #[test]
+    fn reset_waits_for_error_status_then_accepts_another_transfer() {
+        let mut service = service(128);
+        let payload = br#"{"id":"7ea690cc8c2cd8ed","size":8,"fnv1a64":9126140903112366317}"#;
+        assert!(matches!(
+            manifest(&mut service, payload),
+            Handle::Request(_)
+        ));
+        assert!(!service.reset());
+        service.complete_request(false);
+        assert!(!service.reset());
+
+        let (mut rx, mut tx) = ([0; 128], [0; 1024]);
+        let mut session = Session::new(ConfigBuilder::new(Buffers::new(&mut rx, &mut tx)));
+        let mut connection = block_on(session.connect(TestIo {
+            rx: &[0x20, 3, 0, 0, 0, 0x40, 2, 0, 1],
+            writes: 2,
+        }))
+        .unwrap();
+        assert_eq!(
+            block_on(service.step(&mut connection)).unwrap(),
+            Step::Pending
+        );
+        assert!(!service.reset());
+        let Event::Completed { op, outcome } = block_on(connection.poll()).unwrap() else {
+            panic!("expected status completion");
+        };
+        assert!(service.handle_completion(op, &outcome));
+        assert!(service.reset());
+        assert_eq!(service.status().state, State::Idle);
+        assert_eq!(service.status().id, "");
+        assert!(!service.reset());
+        assert!(matches!(
+            manifest(&mut service, payload),
+            Handle::Request(StagingRequest::Prepare { size: 8 })
+        ));
     }
 
     #[test]

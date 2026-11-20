@@ -1,5 +1,4 @@
-use crate::properties::{Properties, Property};
-use crate::{QoS, ResourceError, Retain};
+use crate::{Properties, Property, QoS, ResourceError, Retain};
 use heapless::{String, Vec};
 
 /// Trait for values that can serialize themselves into a publish payload buffer.
@@ -46,6 +45,7 @@ impl<'a> ResponseTarget<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Owned MQTT request/reply target captured from an inbound publish.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct OwnedResponseTarget<const TOPIC: usize, const CORRELATION: usize> {
     topic: String<TOPIC>,
     correlation_data: Option<Vec<u8, CORRELATION>>,
@@ -100,6 +100,7 @@ impl<E, F: FnOnce(&mut [u8]) -> Result<usize, E>> ToPayload for F {
 }
 
 /// Builder for an outbound MQTT `PUBLISH`.
+#[must_use]
 pub struct Publication<'a, P> {
     pub(crate) topic: &'a str,
     pub(crate) properties: Properties<'a>,

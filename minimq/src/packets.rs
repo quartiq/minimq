@@ -274,6 +274,12 @@ impl From<ReasonCode> for Reason<'_> {
 }
 
 impl<'a> Reason<'a> {
+    pub(crate) fn valid_properties(&self) -> bool {
+        self.reason
+            .as_ref()
+            .and_then(|reason| reason._properties.as_ref())
+            .is_none_or(Properties::valid_ack)
+    }
     pub(crate) fn code(&self) -> ReasonCode {
         self.reason
             .as_ref()
