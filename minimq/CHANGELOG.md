@@ -8,14 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [UNRELEASED](https://github.com/quartiq/minimq/compare/minimq-v0.13.6...HEAD) - DATE
 
-## [0.13.6](https://github.com/quartiq/minimq/compare/minimq-v0.13.5...minimq-v0.13.6) - 2026-11-20
-
 ### Added
 
 * Native `defmt` formatting for publish errors, operation events and subscription values.
-
-* Explicit per-session MQTT 3.1.1 support with clean or persistent sessions. MQTT 5 remains
-  the default; unsupported MQTT 5 options are rejected on MQTT 3.1.1 connections.
 * `Error::MissingCompletion` reports an ended operation whose outcome was not routed to
   its owning workflow.
 
@@ -23,10 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * **Breaking:** `poll()` returns publications and correlated operation outcomes;
   `drive()` returns an optional event. Replace `recv()` and `is_complete()` with event
-  handling. `ConnectEvent` variants are now `SessionCreated` and `SessionResumed`.
-* QoS 2 publications count toward the local in-flight limit until `PUBCOMP`.
-  Local capacity can become exhausted earlier while acknowledgements are pending.
-* Reduce linked code size and per-session RAM usage.
+  handling and check `Outcome` for broker rejections and per-filter subscription results.
+* **Breaking:** rename `ConnectEvent::Connected` and `Reconnected` to `SessionCreated`
+  and `SessionResumed`.
 
 ### Fixed
 
@@ -38,10 +32,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tracking capacity to 20 exchanges and report local exhaustion distinctly from invalid peers.
 * Use available TX storage for DISCONNECT properties and validate session-expiry changes.
 * Redact authentication secrets and packet contents from configuration debug output.
+* Suppress application delivery when rejecting an inbound QoS 2 packet-identifier collision.
+
+## [0.13.6](https://github.com/quartiq/minimq/compare/minimq-v0.13.5...minimq-v0.13.6) - 2026-11-20
+
+### Added
+
+* Explicit per-session MQTT 3.1.1 support with clean or persistent sessions. MQTT 5 remains
+  the default; unsupported MQTT 5 options are rejected on MQTT 3.1.1 connections.
+
+### Changed
+
+* QoS 2 publications count toward the local in-flight limit until `PUBCOMP`.
+  Local capacity can become exhausted earlier while acknowledgements are pending.
+* Reduce linked code size and per-session RAM usage.
+
+### Fixed
+
+* Reject incoming QoS 1/2 publications with packet identifier zero.
 * Respect the broker's send quota during reconnect replay and cancelled writes.
 * Apply broker keepalive overrides to the current connection.
 * Deliver inbound QoS 2 publications only after reserving acknowledgement and tracking
-  capacity. Suppress application delivery when rejecting a packet-identifier collision.
+  capacity. Mark the connection disconnected when inbound QoS 2 storage is exhausted.
 
 ## [0.13.5](https://github.com/quartiq/minimq/compare/minimq-v0.13.4...minimq-v0.13.5) - 2026-10-11
 

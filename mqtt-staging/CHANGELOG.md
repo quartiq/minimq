@@ -8,8 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [UNRELEASED](https://github.com/quartiq/minimq/compare/mqtt-staging-v0.1.5...HEAD) - DATE
 
-## [0.1.5](https://github.com/quartiq/minimq/compare/mqtt-staging-v0.1.4...mqtt-staging-v0.1.5) - 2026-11-20
-
 ### Added
 
 * `Service::reset()` allows retrying a failed transfer after outstanding MQTT work drains.
@@ -20,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **Breaking:** route completion events through `Service::handle_completion()` before `step()`.
   Rejection stops MQTT work until `begin_startup()` restarts it; omitted outcomes produce
   `MissingCompletion`.
+
+## [0.1.5](https://github.com/quartiq/minimq/compare/mqtt-staging-v0.1.4...mqtt-staging-v0.1.5) - 2026-11-20
 
 ### Fixed
 
