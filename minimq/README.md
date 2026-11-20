@@ -100,8 +100,8 @@ Ordinary lack of inbound data must keep the read future pending; if the transpor
 `TimedOut` or `Interrupted`, [`Connection::poll()`] treats that as transport failure and
 disconnects the connection.
 
-For a TLS MQTT v5 request/reply example that preserves a subscription across reconnects and reuses
-the TLS record buffers, see `examples/tls_public_broker.rs`.
+For a TLS MQTT v5 request/reply example that preserves a subscription across reconnects,
+see `examples/tls_public_broker.rs`.
 
 ## Errors
 

@@ -81,7 +81,8 @@ class MqttClient:
         future = asyncio.get_running_loop().create_future()
         self._subacks[mid] = future
         try:
-            reasons = await asyncio.wait_for(future, 3.0)
+            async with asyncio.timeout(3.0):
+                reasons = await future
         finally:
             self._subacks.pop(mid, None)
         if not reasons or reasons[0] >= 128:

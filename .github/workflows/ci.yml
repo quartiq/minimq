@@ -132,9 +132,7 @@ jobs:
           cache-dependency-path: |
             mqtt-rpc/py/pyproject.toml
             mqtt-staging/py/pyproject.toml
-      - run: cargo package -p minimq
-      - run: cargo package -p mqtt-rpc
-      - run: cargo package -p mqtt-staging
+      - run: cargo package --workspace
       - run: python -m pip install build
       - run: python -m build mqtt-rpc/py
       - run: python -m build mqtt-staging/py
