@@ -1,36 +1,32 @@
-//! MQTT v5 request/reply echo demonstrating session resumption over `embedded-tls`.
+//! MQTT v5 request/reply echo demonstrating session resumption over TLS.
 
 use embedded_io_adapters::tokio_1::FromTokio;
-use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 use minimq::{ConfigBuilder, ConnectEvent, Session, TopicFilter};
 use std::error::Error as StdError;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
+use tokio_rustls::{
+    TlsConnector,
+    client::TlsStream,
+    rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
+};
 
 const BROKER_HOST: &str = "broker.emqx.io";
 const BROKER_PORT: u16 = 8883;
 const USERNAME: &str = "emqx";
 const PASSWORD: &str = "public";
-const TLS_READ_RECORD_BUFFER_LEN: usize = 16_640;
-const TLS_WRITE_RECORD_BUFFER_LEN: usize = 4_096;
 
-async fn connect_tls<'a>(
+async fn connect_tls(
     host: &str,
     port: u16,
-    read_record: &'a mut [u8],
-    write_record: &'a mut [u8],
-) -> Result<TlsConnection<'a, FromTokio<TcpStream>, Aes128GcmSha256>, Box<dyn StdError>> {
-    let config = TlsConfig::new()
-        .with_server_name(host)
-        .enable_rsa_signatures();
-    let mut tls = TlsConnection::new(
-        FromTokio::new(TcpStream::connect((host, port)).await?),
-        read_record,
-        write_record,
-    );
-    let mut provider = UnsecureProvider::new::<Aes128GcmSha256>(rand::rngs::OsRng);
-    tls.open(TlsContext::new(&config, &mut provider)).await?;
-    Ok(tls)
+    connector: &TlsConnector,
+) -> Result<FromTokio<TlsStream<TcpStream>>, Box<dyn StdError>> {
+    let socket = TcpStream::connect((host, port)).await?;
+    let tls = connector
+        .connect(ServerName::try_from(host.to_owned())?, socket)
+        .await?;
+    Ok(FromTokio::new(tls))
 }
 
 fn unique_id(label: &str) -> String {
@@ -44,8 +40,11 @@ fn unique_id(label: &str) -> String {
 async fn run() -> Result<(), Box<dyn StdError>> {
     let client_id = unique_id("client");
     let topic = format!("minimq/examples/echo/{}", unique_id("request"));
-    let mut read_record = vec![0; TLS_READ_RECORD_BUFFER_LEN];
-    let mut write_record = vec![0; TLS_WRITE_RECORD_BUFFER_LEN];
+    let roots = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = TlsConnector::from(Arc::new(config));
     let mut storage = [0u8; 2048];
     let mut session = Session::new(
         ConfigBuilder::from_buffer(&mut storage, 1024)?
@@ -54,13 +53,7 @@ async fn run() -> Result<(), Box<dyn StdError>> {
             .session_expiry_interval(60),
     );
 
-    let tls = connect_tls(
-        BROKER_HOST,
-        BROKER_PORT,
-        &mut read_record,
-        &mut write_record,
-    )
-    .await?;
+    let tls = connect_tls(BROKER_HOST, BROKER_PORT, &connector).await?;
     let mut connection = session.connect(tls).await?;
     let subscribe = connection
         .subscribe(&[TopicFilter::new(&topic)], &[])
@@ -82,13 +75,7 @@ async fn run() -> Result<(), Box<dyn StdError>> {
 
         connection.disconnect().await?;
         drop(connection);
-        let tls = connect_tls(
-            BROKER_HOST,
-            BROKER_PORT,
-            &mut read_record,
-            &mut write_record,
-        )
-        .await?;
+        let tls = connect_tls(BROKER_HOST, BROKER_PORT, &connector).await?;
         connection = session.connect(tls).await?;
         if connection.connect_event() != ConnectEvent::Reconnected {
             return Err("broker did not resume the MQTT session".into());
