@@ -66,6 +66,50 @@ fn session() -> Session<'static> {
     )
 }
 
+#[test]
+fn full_ack_queue_does_not_mark_undelivered_qos2_as_duplicate() {
+    use crate::Protocol;
+    use crate::de::ReceivedPacket;
+    use crate::mqtt_client::outbound::ControlAction;
+
+    for (protocol, wire) in [
+        (Protocol::V5, &b"\x34\x07\x00\x01a\x00\x01\x00x"[..]),
+        (
+            Protocol::V3_1_1 {
+                clean_session: false,
+            },
+            &b"\x34\x06\x00\x01a\x00\x01x"[..],
+        ),
+    ] {
+        let mut session = session();
+        while session
+            .data
+            .outbound
+            .queue_control(ControlAction::PingReq)
+            .is_ok()
+        {}
+        let result = session.data.handle_packet(
+            &mut session.runtime,
+            ReceivedPacket::from_buffer(wire, protocol).unwrap(),
+            protocol,
+        );
+        assert_eq!(
+            result,
+            Err(Error::Resource(ResourceError::InflightExhausted))
+        );
+        assert!(session.data.pending_server_packet_ids.is_empty());
+        session.data.outbound.clear_inflight();
+        assert_eq!(
+            session.data.handle_packet(
+                &mut session.runtime,
+                ReceivedPacket::from_buffer(wire, protocol).unwrap(),
+                protocol
+            ),
+            Ok(true)
+        );
+    }
+}
+
 /// Build a live [`Connection`] over a mock transport, bypassing the `connect` handshake, for the
 /// white-box tests below that drive the internal connection methods directly. Kept separate from
 /// `session()` so that helper still models the genuinely-disconnected `Session::new` default that
@@ -89,6 +133,32 @@ fn session_exposes_local_packet_capacities() {
 
     assert_eq!(session.max_rx_packet_size(), 128);
     assert_eq!(session.max_tx_packet_size(), 1152);
+}
+
+#[test]
+fn v3_keepalive_roundtrip() {
+    let mut rx = [0; 4];
+    let mut tx = [0; 64];
+    let mut session = Session::new(
+        ConfigBuilder::new(Buffers::new(&mut rx, &mut tx))
+            .protocol(crate::Protocol::V3_1_1 {
+                clean_session: true,
+            })
+            .keepalive_interval(1),
+    );
+    let mut io = MockConnection::default();
+    io.push_rx(&[0x20, 2, 0, 0]);
+    let mut conn = block_on(session.connect(io)).unwrap();
+    let now = Instant::now();
+    conn.session.runtime.next_ping = Some(now);
+    block_on(conn.service(now)).unwrap();
+    block_on(conn.service(now)).unwrap();
+    assert_eq!(conn.io.tx.last().unwrap(), &[0xc0, 0]);
+    assert!(conn.session.runtime.ping_timeout.is_some());
+    conn.io.push_rx(&[0xd0, 0]);
+    block_on(conn.read_packet()).unwrap();
+    assert!(conn.process_received_packet().unwrap().is_none());
+    assert!(conn.session.runtime.ping_timeout.is_none());
 }
 
 #[test]
@@ -391,6 +461,28 @@ fn timed_out_read_disconnects_session() {
 }
 
 #[test]
+fn reconnect_discards_partial_input_and_expired_keepalive() {
+    let mut session = session();
+    let mut io = MockConnection::default();
+    io.push_rx(&[0x30, 7, 0]); // Incomplete PUBLISH followed by a transport timeout.
+    let mut conn = live_connection(&mut session, io);
+    conn.session.runtime.ping_timeout = Some(Instant::now());
+    assert!(matches!(
+        block_on(conn.read_packet()),
+        Err(Error::Transport(ErrorKind::TimedOut))
+    ));
+    assert!(!conn.is_connected());
+    drop(conn);
+
+    let mut io = MockConnection::default();
+    io.push_rx(&[0x20, 3, 0, 0, 0]);
+    let mut conn = block_on(session.connect(io)).unwrap();
+    assert!(block_on(conn.drive()).unwrap().is_none());
+    assert!(conn.is_connected());
+    assert_eq!(conn.io.tx.len(), 1); // CONNECT only; no stale keepalive traffic.
+}
+
+#[test]
 fn can_publish_false_after_disconnect() {
     let mut session = session();
     let mut conn = live_connection(&mut session, MockConnection::default());
@@ -424,7 +516,11 @@ fn can_publish_qos1_false_when_retained_slots_full() {
         conn.session
             .data
             .outbound
-            .retain_packet(crate::mqtt_client::OpKind::PublishAtLeastOnce, packet_id, 4)
+            .retain_packet(
+                crate::mqtt_client::outbound::PacketKind::PublishAtLeastOnce,
+                packet_id,
+                4,
+            )
             .unwrap();
     }
 
@@ -438,7 +534,7 @@ fn can_publish_qos1_false_when_retained_slots_full() {
 #[test]
 fn ack_removing_packet_does_not_erase_stream_flush_state() {
     use super::FlushState;
-    use crate::mqtt_client::OpKind;
+    use crate::mqtt_client::outbound::PacketKind;
     let mut session = session();
     let mut conn = live_connection(&mut session, MockConnection::default());
     let op = block_on(conn.publish(Publication::bytes("a", b"x").qos(QoS::AtLeastOnce)))
@@ -451,10 +547,10 @@ fn ack_removing_packet_does_not_erase_stream_flush_state() {
         conn.session
             .data
             .outbound
-            .ack_packet(OpKind::PublishAtLeastOnce, op.packet_id)
+            .ack_packet(PacketKind::PublishAtLeastOnce, op.packet_id)
     );
     // There is no longer a per-packet Flush state to discover.
-    assert!(conn.session.data.outbound.next_step().is_none());
+    assert!(conn.session.data.outbound.next_step(true).is_none());
     assert!(block_on(conn.drive()).unwrap().is_none());
     assert!(matches!(conn.flush_state, FlushState::Clean));
 }
@@ -481,7 +577,7 @@ fn partial_packet_finishes_before_new_control_packet() {
         })
         .unwrap();
     block_on(conn.drive()).unwrap();
-    expected.extend_from_slice(&[0x40, 3, 0, 9, 0]);
+    expected.extend_from_slice(&[0x40, 2, 0, 9]);
     assert_eq!(conn.io.tx.concat(), expected);
 }
 
@@ -502,8 +598,8 @@ fn duplicate_control_actions_advance_separate_queue_entries() {
     }
     // Check finite progress before draining: updating the first matching action repeatedly
     // would leave the second entry writable forever.
-    assert!(conn.session.data.outbound.next_step().is_none());
-    assert_eq!(conn.io.tx.concat(), [0x40, 3, 0, 9, 0, 0x40, 3, 0, 9, 0]);
+    assert!(conn.session.data.outbound.next_step(true).is_none());
+    assert_eq!(conn.io.tx.concat(), [0x40, 2, 0, 9, 0x40, 2, 0, 9]);
     block_on(conn.drive()).unwrap();
     assert_eq!(conn.session.data.outbound.pending_control_len(), 0);
 }

@@ -1,10 +1,8 @@
 use crate::{
     QoS, ReasonCode,
     de::{PacketReader, ReceivedPacket},
-    packets::{
-        Connect, Disconnect, PingReq, PubAck, PubComp, PubRec, PubRel, PublishHeader, Reason,
-        Subscribe, Unsubscribe,
-    },
+    mqtt_client::outbound::{ControlAction, serialize_control_packet},
+    packets::{Connect, Disconnect, PublishHeader, Subscribe, Unsubscribe},
     properties::{Properties, Property},
     publication::Publication,
     ser::MqttSerializer,
@@ -14,7 +12,13 @@ use crate::{
 
 /// Parse one inbound packet buffer.
 pub fn parse_received_packet(buf: &[u8]) {
-    let _ = ReceivedPacket::from_buffer(buf);
+    let _ = ReceivedPacket::from_buffer(buf, crate::Protocol::V5);
+    let _ = ReceivedPacket::from_buffer(
+        buf,
+        crate::Protocol::V3_1_1 {
+            clean_session: false,
+        },
+    );
 }
 
 /// Drive `PacketReader` with fragmented input bytes.
@@ -36,7 +40,7 @@ pub fn drive_packet_reader(storage: &mut [u8], input: &[u8], fragments: &[u8]) {
         offset += count;
 
         if reader.packet_available() {
-            let _ = reader.received_packet();
+            let _ = reader.received_packet(crate::Protocol::V5);
         }
     }
 }
@@ -95,15 +99,6 @@ fn connect_properties(sel: u8) -> &'static [Property<'static>] {
     }
 }
 
-fn reason(sel: u8) -> Reason<'static> {
-    let code = ReasonCode::from(sel);
-    match (sel >> 4) & 0b11 {
-        0 => code.into(),
-        1 => Reason::with_properties(code, &REASON_STRING),
-        _ => Reason::with_properties(code, &REASON_USER_PROPERTY),
-    }
-}
-
 /// Encode one bounded packet shape into the provided buffer.
 pub fn encode_packet(
     buf: &mut [u8],
@@ -114,10 +109,14 @@ pub fn encode_packet(
     retain: bool,
     aux: u8,
 ) {
-    match tag % 10 {
-        0 => {
-            let _ = MqttSerializer::encode(buf, &PingReq);
+    let protocol = if tag & 0x80 == 0 {
+        crate::Protocol::V5
+    } else {
+        crate::Protocol::V3_1_1 {
+            clean_session: false,
         }
+    };
+    match (tag & 0x7f) % 10 {
         1 => {
             let mut publication = Publication::new(topic, payload).qos(fuzz_qos(qos));
             if retain {
@@ -131,7 +130,7 @@ pub fn encode_packet(
             let header = PublishHeader {
                 topic: Utf8String(publication.topic),
                 packet_id: (publication.qos > QoS::AtMostOnce).then_some(1),
-                properties: publication.properties,
+                properties: protocol.is_v5().then_some(publication.properties),
                 retain: publication.retain,
                 qos: publication.qos,
                 dup: false,
@@ -144,7 +143,9 @@ pub fn encode_packet(
                 buf,
                 &Subscribe {
                     packet_id: 1,
-                    properties: Properties::from_slice(subscribe_properties(aux)),
+                    properties: protocol
+                        .is_v5()
+                        .then(|| Properties::from_slice(subscribe_properties(aux))),
                     topics: &topics,
                 },
             );
@@ -155,7 +156,9 @@ pub fn encode_packet(
                 buf,
                 &Unsubscribe {
                     packet_id: 1,
-                    properties: Properties::from_slice(generic_properties(aux)),
+                    properties: protocol
+                        .is_v5()
+                        .then(|| Properties::from_slice(generic_properties(aux))),
                     topics: &topics,
                 },
             );
@@ -164,6 +167,7 @@ pub fn encode_packet(
             let _ = MqttSerializer::encode(
                 buf,
                 &Connect {
+                    protocol,
                     keepalive: u16::from(aux),
                     properties: Properties::from_slice(connect_properties(aux >> 4)),
                     client_id: Utf8String(topic),
@@ -173,44 +177,38 @@ pub fn encode_packet(
                 },
             );
         }
-        5 => {
-            let _ = MqttSerializer::encode(
-                buf,
-                &PubRel {
-                    packet_id: 1,
-                    reason: reason(aux),
+        0 | 5..=8 => {
+            let packet_id = u16::from(aux) + 1;
+            let action = match (tag & 0x7f) % 10 {
+                0 => ControlAction::PingReq,
+                5 => ControlAction::PubRel { packet_id },
+                6 => ControlAction::PubAck {
+                    packet_id,
+                    reason: ReasonCode::from(aux),
                 },
-            );
-        }
-        6 => {
-            let _ = MqttSerializer::encode(
-                buf,
-                &PubAck {
-                    packet_id: 1,
-                    reason: reason(aux),
+                7 => ControlAction::PubRec { packet_id },
+                _ => ControlAction::PubComp {
+                    packet_id,
+                    reason: ReasonCode::from(aux),
                 },
-            );
-        }
-        7 => {
-            let _ = MqttSerializer::encode(
-                buf,
-                &PubRec {
-                    packet_id: 1,
-                    reason: reason(aux),
-                },
-            );
-        }
-        8 => {
-            let _ = MqttSerializer::encode(
-                buf,
-                &PubComp {
-                    packet_id: 1,
-                    reason: reason(aux),
-                },
+            };
+            let mut storage = [0; 5];
+            let _ = serialize_control_packet::<core::convert::Infallible>(
+                &mut storage,
+                action,
+                Some(buf.len() as u32),
+                protocol,
             );
         }
         _ => {
-            let _ = MqttSerializer::encode(buf, &Disconnect::success());
+            let disconnect = Disconnect::with_reason(ReasonCode::from(aux));
+            let disconnect = match aux & 3 {
+                0 => Disconnect::success(),
+                1 => disconnect,
+                2 => disconnect.with_properties(&REASON_STRING),
+                _ => disconnect.with_properties(&REASON_USER_PROPERTY),
+            };
+            let _ = MqttSerializer::encode(buf, &disconnect);
         }
     }
 }

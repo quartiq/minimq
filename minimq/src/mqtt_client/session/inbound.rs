@@ -1,8 +1,7 @@
 use core::convert::Infallible;
 
 use crate::de::ReceivedPacket;
-use crate::mqtt_client::OpKind;
-use crate::mqtt_client::outbound::{ControlAction, check_control_packet_size, check_pubrel_size};
+use crate::mqtt_client::outbound::{ControlAction, PacketKind, check_control_packet_size};
 use crate::{
     Connection, Error, InboundPublish, Io, PeerError, ProtocolError, QoS, ReasonCode,
     ResourceError, debug, info, trace, warn,
@@ -15,11 +14,15 @@ impl<'a> SessionData<'a> {
         &mut self,
         runtime: &mut RuntimeState,
         packet: ReceivedPacket<'_>,
+        protocol: crate::Protocol,
     ) -> Result<bool, Error<Infallible>> {
         match packet {
             ReceivedPacket::ConnAck(_) => return Err(ProtocolError::UnexpectedPacket.into()),
             ReceivedPacket::SubAck(ack) => {
-                if !self.outbound.ack_packet(OpKind::Subscribe, ack.packet_id) {
+                if !self
+                    .outbound
+                    .ack_packet(PacketKind::Subscribe, ack.packet_id)
+                {
                     debug!("Ignoring stale SUBACK for packet id {=u16}", ack.packet_id);
                     return Ok(false);
                 }
@@ -29,7 +32,10 @@ impl<'a> SessionData<'a> {
                 }
             }
             ReceivedPacket::UnsubAck(ack) => {
-                if !self.outbound.ack_packet(OpKind::Unsubscribe, ack.packet_id) {
+                if !self
+                    .outbound
+                    .ack_packet(PacketKind::Unsubscribe, ack.packet_id)
+                {
                     debug!(
                         "Ignoring stale UNSUBACK for packet id {=u16}",
                         ack.packet_id
@@ -48,7 +54,7 @@ impl<'a> SessionData<'a> {
             ReceivedPacket::PubAck(ack) => {
                 if !self
                     .outbound
-                    .ack_packet(OpKind::PublishAtLeastOnce, ack.packet_id)
+                    .ack_packet(PacketKind::PublishAtLeastOnce, ack.packet_id)
                 {
                     debug!("Ignoring stale PUBACK for packet id {=u16}", ack.packet_id);
                     return Ok(false);
@@ -64,47 +70,31 @@ impl<'a> SessionData<'a> {
                 ack.reason.code().as_result()?;
             }
             ReceivedPacket::PubRec(rec) => {
-                let queue_release = match self
-                    .outbound
-                    .ack_packet(OpKind::PublishExactlyOnce, rec.packet_id)
-                {
-                    true => {
+                if !rec.reason.code().success() {
+                    if self
+                        .outbound
+                        .ack_packet(PacketKind::PublishExactlyOnce, rec.packet_id)
+                    {
                         runtime.send_quota = runtime
                             .send_quota
                             .saturating_add(1)
                             .min(runtime.max_send_quota);
-                        debug!(
-                            "Processed PUBREC packet_id={=u16} send_quota={=u16}",
-                            rec.packet_id, runtime.send_quota
-                        );
-                        true
+                        rec.reason.code().as_result()?;
                     }
-                    false if self.outbound.has_pending_release(rec.packet_id) => {
-                        debug!(
-                            "Replaying PUBREL after stale PUBREC for packet id {=u16}",
-                            rec.packet_id
-                        );
-                        false
-                    }
-                    false => {
-                        debug!("Ignoring stale PUBREC for packet id {=u16}", rec.packet_id);
-                        return Ok(false);
-                    }
-                };
-                rec.reason.code().as_result()?;
-                if queue_release {
-                    check_pubrel_size(
+                } else {
+                    check_control_packet_size(
                         runtime.maximum_packet_size,
-                        rec.packet_id,
-                        ReasonCode::Success,
+                        ControlAction::PubRel {
+                            packet_id: rec.packet_id,
+                        },
+                        protocol,
                     )?;
-                    self.outbound
-                        .queue_release(rec.packet_id, ReasonCode::Success)?;
+                    self.outbound.release(rec.packet_id);
                     debug!("Queued PUBREL for packet_id={=u16}", rec.packet_id);
                 }
             }
             ReceivedPacket::PubComp(comp) => {
-                if !self.outbound.ack_release(comp.packet_id) {
+                if !self.outbound.ack_packet(PacketKind::PubRel, comp.packet_id) {
                     debug!(
                         "Ignoring stale PUBCOMP for packet id {=u16}",
                         comp.packet_id
@@ -112,6 +102,10 @@ impl<'a> SessionData<'a> {
                     return Ok(false);
                 }
                 debug!("Processed PUBCOMP packet_id={=u16}", comp.packet_id);
+                runtime.send_quota = runtime
+                    .send_quota
+                    .saturating_add(1)
+                    .min(runtime.max_send_quota);
                 comp.reason.code().as_result()?;
             }
             ReceivedPacket::PubRel(rel) => {
@@ -135,7 +129,7 @@ impl<'a> SessionData<'a> {
                     packet_id: rel.packet_id,
                     reason,
                 };
-                check_control_packet_size(runtime.maximum_packet_size, action)?;
+                check_control_packet_size(runtime.maximum_packet_size, action, protocol)?;
                 self.outbound.queue_control(action)?;
             }
             ReceivedPacket::Publish(info) => {
@@ -161,34 +155,35 @@ impl<'a> SessionData<'a> {
                             packet_id, reason
                         );
                         let action = ControlAction::PubAck { packet_id, reason };
-                        check_control_packet_size(runtime.maximum_packet_size, action)?;
+                        if !protocol.is_v5() && !reason.success() {
+                            return Err(PeerError::InvalidPacket.into());
+                        }
+                        check_control_packet_size(runtime.maximum_packet_size, action, protocol)?;
                         self.outbound.queue_control(action)?;
                     }
                     QoS::ExactlyOnce => {
                         let packet_id = info.packet_id.ok_or(ProtocolError::MalformedPacket)?;
                         let duplicate = self.pending_server_packet_ids.contains(&packet_id);
-                        let reason = if !duplicate {
-                            self.pending_server_packet_ids
-                                .push(packet_id)
-                                .map(|_| ReasonCode::Success)
-                                .unwrap_or(ReasonCode::ReceiveMaxExceeded)
-                        } else {
-                            ReasonCode::Success
-                        };
+                        // Exceeding our receive capacity is fatal in either version.
+                        // 0x93 is a DISCONNECT reason, not a PUBREC reason.
+                        if !duplicate && self.pending_server_packet_ids.is_full() {
+                            return Err(PeerError::InvalidPacket.into());
+                        }
                         trace!(
-                            "Queueing PUBREC for inbound QoS2 PUBLISH packet_id={=u16} duplicate={=bool} {}",
-                            packet_id, duplicate, reason
+                            "Queueing PUBREC for inbound QoS2 PUBLISH packet_id={=u16} duplicate={=bool}",
+                            packet_id, duplicate
                         );
-                        let action = ControlAction::PubRec { packet_id, reason };
-                        check_control_packet_size(runtime.maximum_packet_size, action)?;
+                        let action = ControlAction::PubRec { packet_id };
+                        check_control_packet_size(runtime.maximum_packet_size, action, protocol)?;
                         self.outbound.queue_control(action)?;
-                        if duplicate || !reason.success() {
-                            debug!(
-                                "Ignoring inbound QoS2 PUBLISH after PUBREC packet_id={=u16} duplicate={=bool} reason={}",
-                                packet_id, duplicate, reason
-                            );
+                        if duplicate {
                             return Ok(false);
                         }
+                        // Capacity was checked above. Commit duplicate suppression only
+                        // after acknowledgement admission succeeds, just before delivery.
+                        self.pending_server_packet_ids
+                            .push(packet_id)
+                            .map_err(|_| PeerError::InvalidPacket)?;
                     }
                 }
                 return Ok(true);
@@ -212,7 +207,11 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             return Ok(None);
         }
 
-        let (packet_length, packet) = match self.session.packet_reader.take_packet() {
+        let (packet_length, packet) = match self
+            .session
+            .packet_reader
+            .take_packet(self.session.protocol)
+        {
             Ok(packet) => packet,
             Err(err) => {
                 warn!("Failed to decode inbound packet: {}", err);
@@ -220,11 +219,11 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
                 return Err(err.into());
             }
         };
-        match self
-            .session
-            .data
-            .handle_packet(&mut self.session.runtime, packet)
-        {
+        match self.session.data.handle_packet(
+            &mut self.session.runtime,
+            packet,
+            self.session.protocol,
+        ) {
             Ok(true) => Ok(Some(packet_length)),
             Ok(false) => Ok(None),
             Err(Error::Disconnected) => {
@@ -261,7 +260,9 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
             .buffer
             .get(..packet_length)
             .ok_or(ProtocolError::MalformedPacket)?;
-        let ReceivedPacket::Publish(info) = ReceivedPacket::from_buffer(buffer)? else {
+        let ReceivedPacket::Publish(info) =
+            ReceivedPacket::from_buffer(buffer, self.session.protocol)?
+        else {
             return Err(ProtocolError::UnexpectedPacket);
         };
         Ok(InboundPublish::new(

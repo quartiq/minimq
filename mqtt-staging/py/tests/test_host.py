@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from unittest.mock import Mock
 
 from mqtt_staging import (
+    MqttClient,
     Status,
     Transfer,
     aligned_chunk_size,
@@ -16,6 +18,21 @@ from mqtt_staging import (
 
 PREFIX = "devices/example/staging"
 TRANSFER_ID = "85944171f73967e8"
+
+
+class SubscriptionCancellation(unittest.IsolatedAsyncioTestCase):
+    async def test_cancelled_subscription_ignores_late_suback(self):
+        client = MqttClient("localhost")
+        client._client.subscribe = Mock(return_value=1)
+        task = asyncio.create_task(client.subscribe("status", qos=1))
+        await asyncio.sleep(0)
+        task.cancel()
+        # The callback can race with cancellation before subscribe() unwinds.
+        client._on_subscribe(client._client, 1, (1,), {})
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertFalse(client._subacks)
+        client._on_subscribe(client._client, 1, (1,), {})
 
 
 class Message:

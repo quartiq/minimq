@@ -1,4 +1,4 @@
-mod outbound;
+pub(crate) mod outbound;
 mod session;
 
 pub use session::{Connection, Session};
@@ -23,26 +23,25 @@ pub trait Io: Read + Write + ErrorType {}
 
 impl<T> Io for T where T: Read + Write + ErrorType {}
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum OpKind {
-    PublishAtLeastOnce,
-    PublishExactlyOnce,
-    Subscribe,
-    Unsubscribe,
-}
-
 /// Handle for one outbound MQTT operation accepted into local session state.
+///
+/// Query this handle on its originating [`Session`] (or a [`Connection`] borrowing
+/// it), and discard it after completion or invalidation. Completion means the
+/// operation has left local pending state; driving the connection reports broker errors.
+///
+/// Handles use MQTT packet identifiers, which cycle through 1..=65535 and can be
+/// reused after an operation ends. Check completion before its identifier is reused:
+/// an old handle can then refer to a different operation. Failed requests can also
+/// advance identifier allocation.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Op {
-    kind: OpKind,
     packet_id: u16,
     generation: u32,
 }
 
 impl Op {
-    pub(crate) fn new(kind: OpKind, packet_id: u16, generation: u32) -> Self {
+    pub(crate) fn new(packet_id: u16, generation: u32) -> Self {
         Self {
-            kind,
             packet_id,
             generation,
         }

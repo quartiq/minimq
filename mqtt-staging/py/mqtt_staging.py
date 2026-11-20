@@ -80,7 +80,11 @@ class MqttClient:
             return
         future = asyncio.get_running_loop().create_future()
         self._subacks[mid] = future
-        reasons = await asyncio.wait_for(future, 3.0)
+        try:
+            async with asyncio.timeout(3.0):
+                reasons = await future
+        finally:
+            self._subacks.pop(mid, None)
         if not reasons or reasons[0] >= 128:
             raise MQTTError(f"SUBACK failed for {topic}: {reasons}")
 
@@ -112,7 +116,7 @@ class MqttClient:
         reasons: tuple[int, ...],
         _properties: MqttProperties,
     ) -> None:
-        if future := self._subacks.pop(mid, None):
+        if (future := self._subacks.get(mid)) is not None and not future.done():
             future.set_result(reasons)
 
 
@@ -243,7 +247,6 @@ async def wait_status(
                 continue
             status.raise_for_error()
             return status
-    raise TimeoutError(f"timed out waiting for {topic}")
 
 
 async def stage(
@@ -350,25 +353,19 @@ async def stage(
             raw_len = len(chunk)
             if offset + len(chunk) >= len(data):
                 chunk += b"\xff" * ((-len(chunk)) % status.write_size)
-            if should_log_chunk_progress(
+            progress = should_log_chunk_progress(
                 offset=offset,
                 payload_len=raw_len,
                 size=len(data),
                 chunk_size=max(size, 1),
-            ):
-                LOGGER.info(
-                    "publishing chunk offset=%s raw=%sB payload=%sB",
-                    offset,
-                    raw_len,
-                    len(chunk),
-                )
-            else:
-                LOGGER.debug(
-                    "publishing chunk offset=%s raw=%sB payload=%sB",
-                    offset,
-                    raw_len,
-                    len(chunk),
-                )
+            )
+            LOGGER.log(
+                logging.INFO if progress else logging.DEBUG,
+                "publishing chunk offset=%s raw=%sB payload=%sB",
+                offset,
+                raw_len,
+                len(chunk),
+            )
             await client.publish(
                 status.response_topic,
                 chunk,

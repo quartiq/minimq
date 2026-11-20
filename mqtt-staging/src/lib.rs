@@ -157,7 +157,7 @@ struct InFlightAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PendingRequest {
     Prepare,
-    Write { next_offset: u32, final_chunk: bool },
+    Write { next_offset: u32 },
 }
 
 /// Storage operation requested by the staging state machine.
@@ -252,7 +252,7 @@ impl Service {
     /// Call after each connection, then drive [`Self::step`]. Transfer progress
     /// and outstanding storage requests survive reconnects.
     pub fn begin_startup(&mut self, event: ConnectEvent) {
-        let replay = self.replay_status();
+        let replay = (self.state != State::Idle).then(|| self.current_code());
         if event == ConnectEvent::Connected {
             self.inflight = None;
             self.subscribed = false;
@@ -373,13 +373,9 @@ impl Service {
                 info!("Accepted staging manifest size={=u32}", transfer.size);
                 self.queue(Action::Publish(StatusCode::Accepted));
             }
-            PendingRequest::Write {
-                next_offset,
-                final_chunk,
-                ..
-            } => {
-                if final_chunk {
-                    transfer.next_offset = transfer.size;
+            PendingRequest::Write { next_offset } => {
+                transfer.next_offset = next_offset;
+                if next_offset == transfer.size {
                     self.state = State::Complete;
                     info!("Completed staging object size={=u32}", transfer.size);
                     self.queue(Action::Publish(StatusCode::Complete));
@@ -388,7 +384,6 @@ impl Service {
                         "staging chunk write completed next_offset={=u32} size={=u32}",
                         next_offset, transfer.size
                     );
-                    transfer.next_offset = next_offset;
                     self.state = State::Ready;
                     self.queue(Action::Publish(StatusCode::Accepted));
                 }
@@ -605,10 +600,7 @@ impl Service {
         let final_chunk = next_offset == transfer.size;
         let fnv1a64 = final_chunk.then_some(transfer.fnv1a64);
         self.state = State::Writing;
-        self.request = Some(PendingRequest::Write {
-            next_offset,
-            final_chunk,
-        });
+        self.request = Some(PendingRequest::Write { next_offset });
         debug!(
             "Queueing staging write offset={=u32} len={=usize} final={=bool}",
             offset,
@@ -621,10 +613,6 @@ impl Service {
             size: transfer.size,
             fnv1a64,
         }))
-    }
-
-    fn replay_status(&self) -> Option<StatusCode> {
-        (self.state != State::Idle).then(|| self.current_code())
     }
 
     fn queue(&mut self, action: Action) {
@@ -664,21 +652,14 @@ impl Service {
                 info!("Subscribing staging MQTT topics");
                 let manifest_topic = self.manifest_topic();
                 let chunk_topic = self.chunk_topic();
+                let options = SubscriptionOptions::default()
+                    .maximum_qos(QoS::AtLeastOnce)
+                    .retain_behavior(RetainHandling::Never)
+                    .retain_as_published()
+                    .ignore_local_messages();
                 let filters = [
-                    TopicFilter::new(manifest_topic.as_str()).options(
-                        SubscriptionOptions::default()
-                            .maximum_qos(QoS::AtLeastOnce)
-                            .retain_behavior(RetainHandling::Never)
-                            .retain_as_published()
-                            .ignore_local_messages(),
-                    ),
-                    TopicFilter::new(chunk_topic.as_str()).options(
-                        SubscriptionOptions::default()
-                            .maximum_qos(QoS::AtLeastOnce)
-                            .retain_behavior(RetainHandling::Never)
-                            .retain_as_published()
-                            .ignore_local_messages(),
-                    ),
+                    TopicFilter::new(manifest_topic.as_str()).options(options),
+                    TopicFilter::new(chunk_topic.as_str()).options(options),
                 ];
                 connection.subscribe(&filters, &[]).await
             }

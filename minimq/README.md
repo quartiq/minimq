@@ -3,7 +3,7 @@
 
 # Minimq
 
-`minimq` is an opinionated `no_std`, no-alloc, `async` MQTT 5 client for embedded systems.
+`minimq` is an opinionated `no_std`, no-alloc, `async` MQTT 5 and MQTT 3.1.1 client for embedded systems.
 
 It manages one broker session over caller-provided packet buffers and an
 [`embedded_io_async`] byte stream. Keepalive, QoS 0/1/2 handshakes, in-flight replay, and resumed
@@ -101,8 +101,8 @@ Ordinary lack of inbound data must keep the read future pending; if the transpor
 `TimedOut` or `Interrupted`, [`Connection::poll()`] treats that as transport failure and
 disconnects the connection.
 
-For a TLS MQTT v5 request/reply example that preserves a subscription across reconnects and reuses
-the TLS record buffers, see `examples/tls_public_broker.rs`.
+For a TLS MQTT v5 request/reply example that preserves a subscription across reconnects,
+see `examples/tls_public_broker.rs`.
 
 ## Errors
 
@@ -113,6 +113,39 @@ Connected session operations report [`Error`]:
 - transport failures surface as [`Error::Transport`]
 
 ## Session Model
+
+MQTT 5 is the default. To use MQTT 3.1.1, select it on the builder:
+
+```rust
+# use minimq::{Buffers, ConfigBuilder, Protocol, Session};
+# let mut rx = [0; 256];
+# let mut tx = [0; 1024];
+let config = ConfigBuilder::new(Buffers::new(&mut rx, &mut tx))
+    .client_id("traffic-map")?
+    .protocol(Protocol::V3_1_1 { clean_session: true });
+let session = Session::new(config);
+# Ok::<(), minimq::ConfigError>(())
+```
+
+Every connection uses the session's selected protocol. Separate sessions can use different
+versions simultaneously.
+
+- MQTT 3.1.1 `clean_session: true` starts fresh on every connection.
+- MQTT 3.1.1 `clean_session: false` requests persistent broker state on every connection,
+  including the first. It requires a nonempty, stable client ID. Local in-flight messages
+  live in the `Session` and are replayed when the broker resumes the session. A fresh
+  broker session clears local in-flight state.
+- MQTT 5 starts clean on the first connection and requests resumption on reconnect.
+  `session_expiry_interval()` controls broker state lifetime after disconnect (default zero).
+
+For MQTT 3.1.1, `connect()` rejects explicitly configured session expiry, automatic QoS downgrade,
+or Will properties before writing. Publish/subscribe/unsubscribe properties, MQTT 5 subscription
+options, and non-success disconnect reasons are rejected with `Error::InvalidRequest`.
+Empty property slices and default subscription options work with either version. Both versions
+support username/password authentication.
+
+MQTT 3.1.1 supports QoS 0/1/2 within the configured buffers and local in-flight limits.
+Miniconf and MQTT RPC require MQTT 5.
 
 You provide packet buffers plus an already-established transport, and a loop that explicitly
 passes that transport into [`Session::connect()`] to establish or resume the broker session.
@@ -131,18 +164,16 @@ Dropping the connection releases the session for a later reconnect. Call
   here.
 - [`ConnectEvent::Reconnected`] means the broker resumed the existing MQTT session. Existing
   subscriptions and in-flight QoS state were kept.
-- [`Connection::recv()`] yields one inbound publish.
 
-If [`Connection::recv()`] or [`Connection::poll()`] returns [`Error::Disconnected`], the caller
-discards the handle and decides
-when to call
-[`Session::connect()`] with a fresh transport again.
-Other transport/protocol errors mark the handle dead; callers should handle the error and reconnect
-rather than retrying network operations on that handle.
+After a disconnect or transport/protocol error, drop the connection and call
+[`Session::connect()`] with a fresh transport when ready to reconnect.
 
-A transport write returning `Ok(0)` for a non-empty buffer produces [`Error::WriteZero`] and also
-marks the connection dead. This is intentionally conservative: an earlier write may already have
-sent a packet prefix, so restarting that packet on the same byte stream is not safe.
+Track each operation handle ([`Op`]) on its originating session until completion or
+invalidation, within the packet-identifier reuse window described in its rustdoc.
+Handle broker errors reported while driving the connection.
+
+A transport write returning `Ok(0)` for a non-empty buffer produces [`Error::WriteZero`]
+and marks the connection disconnected. Drop it to release the transport.
 
 For cooperative driving:
 - use [`Connection::drive()`] for immediate local progress without waiting for future inbound reads
@@ -163,9 +194,13 @@ You supply two buffers.
   plus the larger of the `CONNECT` workspace and the largest temporary packet-encoding workspace.
   Minimq keeps enough TX capacity free to reconnect without discarding admitted state.
 
+QoS 2 publications occupy an in-flight slot until `PUBCOMP`; their encoded payload
+space is freed on `PUBREC`.
+
+An oversized inbound packet or exhausted inbound QoS 2 storage marks the connection
+disconnected. Drop it to release the transport.
+
 If `tx` is exhausted, `publish()` and other outbound operations can return [`Error::NotReady`].
-Malformed broker varints and undersized local encode buffers are rejected with errors rather than
-causing panics.
 
 Use [`Buffers::split()`] if you prefer one contiguous slab.
 

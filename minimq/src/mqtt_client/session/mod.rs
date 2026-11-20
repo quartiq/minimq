@@ -13,7 +13,7 @@ use crate::{ConfigBuilder, Op, QoS, Will};
 use crate::{config::CLIENT_ID_CAPACITY, ser::MAX_FIXED_HEADER_SIZE};
 use heapless::String;
 
-use super::{ConnectEvent, Io, OpKind, OpStatus};
+use super::{ConnectEvent, Io, OpStatus};
 
 use state::{RuntimeState, SessionData};
 
@@ -26,19 +26,22 @@ use state::{RuntimeState, SessionData};
 /// Cancelling `connect()` drops the supplied transport and leaves the session available for a
 /// clean retry.
 pub struct Session<'buf> {
+    protocol: crate::Protocol,
     client_id: String<CLIENT_ID_CAPACITY>,
     packet_reader: PacketReader<'buf>,
     data: SessionData<'buf>,
     runtime: RuntimeState,
+    keepalive_interval: embassy_time::Duration,
     will: Option<Will<'buf>>,
     auth: Option<Auth<'buf>>,
-    session_expiry_interval: u32,
+    session_expiry_interval: Option<u32>,
     downgrade_qos: bool,
 }
 
 impl<'buf> Session<'buf> {
     /// Construct a session from a setup builder.
     pub fn new(config: ConfigBuilder<'buf>) -> Self {
+        let protocol = config.protocol;
         let (
             buffers,
             will,
@@ -51,15 +54,22 @@ impl<'buf> Session<'buf> {
         let (rx, tx) = buffers.into_parts();
 
         Self {
+            protocol,
             client_id,
             packet_reader: PacketReader::new(rx),
             data: SessionData::new(tx),
             runtime: RuntimeState::new(keepalive_interval),
+            keepalive_interval,
             will,
             auth,
             session_expiry_interval,
             downgrade_qos,
         }
+    }
+
+    /// Return the immutable protocol and session semantics.
+    pub fn protocol(&self) -> crate::Protocol {
+        self.protocol
     }
 
     /// Return the maximum inbound MQTT packet size accepted by this session.
@@ -81,7 +91,8 @@ impl<'buf> Session<'buf> {
         if qos == QoS::AtMostOnce {
             self.data.outbound.scratch_len() >= MAX_FIXED_HEADER_SIZE
         } else {
-            self.runtime.send_quota != 0 && self.data.outbound.can_retain()
+            self.runtime.send_quota > self.data.outbound.queued_publishes()
+                && self.data.outbound.can_retain()
         }
     }
 
@@ -96,17 +107,7 @@ impl<'buf> Session<'buf> {
             return OpStatus::Invalidated;
         }
 
-        let pending = match op.kind {
-            OpKind::PublishAtLeastOnce | OpKind::Subscribe | OpKind::Unsubscribe => {
-                self.data.outbound.has_retained(op.packet_id)
-            }
-            OpKind::PublishExactlyOnce => {
-                self.data.outbound.has_retained(op.packet_id)
-                    || self.data.outbound.has_pending_release(op.packet_id)
-            }
-        };
-
-        if pending {
+        if self.data.outbound.has_retained(op.packet_id) {
             OpStatus::Pending
         } else {
             OpStatus::Complete
@@ -201,16 +202,16 @@ impl<'buf, IO: Io> Connection<'_, 'buf, IO> {
     }
 
     /// Return the underlying transport, consuming this handle.
-    pub fn into_inner(mut self) -> IO {
-        self.handle_disconnect();
+    pub fn into_inner(self) -> IO {
         self.io
     }
 
     /// Mark this connection dead without sending MQTT `DISCONNECT`.
     ///
     /// Use this when the application knows the transport can no longer be used.
+    /// Drop the handle and transport afterwards. The next [`Session::connect`]
+    /// prepares session state for a new connection.
     pub fn handle_disconnect(&mut self) {
         self.live = false;
-        self.session.handle_disconnect();
     }
 }

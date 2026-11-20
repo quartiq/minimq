@@ -292,59 +292,8 @@ impl<'de> serde::de::Deserializer<'de> for &'_ mut MqttDeserializer<'de> {
         visitor.visit_enum(self)
     }
 
-    fn deserialize_unit_struct<V: Visitor<'de>>(
-        self,
-        _name: &'static str,
-        _visitor: V,
-    ) -> Result<V::Value, Self::Error> {
-        Err(Error::Custom)
-    }
-
-    fn deserialize_newtype_struct<V: Visitor<'de>>(
-        self,
-        _name: &'static str,
-        _visitor: V,
-    ) -> Result<V::Value, Self::Error> {
-        Err(Error::Custom)
-    }
-
-    fn deserialize_map<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::Custom)
-    }
-
-    fn deserialize_identifier<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::Custom)
-    }
-
-    fn deserialize_unit<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::Custom)
-    }
-
-    fn deserialize_ignored_any<V: Visitor<'de>>(
-        self,
-        _visitor: V,
-    ) -> Result<V::Value, Self::Error> {
-        Err(Error::Custom)
-    }
-
-    fn deserialize_f32<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::Custom)
-    }
-
-    fn deserialize_f64<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::Custom)
-    }
-
-    fn deserialize_char<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::Custom)
-    }
-
-    fn deserialize_i64<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::Custom)
-    }
-
-    fn deserialize_u64<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(Error::Custom)
+    serde::forward_to_deserialize_any! {
+        unit_struct newtype_struct map identifier unit ignored_any f32 f64 char i64 u64
     }
 
     fn deserialize_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {

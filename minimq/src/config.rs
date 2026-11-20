@@ -2,6 +2,27 @@ use crate::{ConfigError, Will, types::Auth};
 use embassy_time::Duration;
 use heapless::String;
 
+/// Wire protocol and session semantics, fixed for the lifetime of a session.
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Protocol {
+    /// MQTT 5, with the configured session expiry interval.
+    #[default]
+    V5,
+    /// MQTT 3.1.1. A clean session discards broker state on every connection;
+    /// a persistent session requires a nonempty, stable client identifier.
+    V3_1_1 {
+        /// Discard broker session state on every connection and disconnection.
+        clean_session: bool,
+    },
+}
+
+impl Protocol {
+    pub(crate) fn is_v5(self) -> bool {
+        self == Self::V5
+    }
+}
+
 /// Storage for the configured or broker-assigned client identifier.
 pub(crate) const CLIENT_ID_CAPACITY: usize = 64;
 
@@ -73,11 +94,12 @@ impl<'a> Buffers<'a> {
 /// The builder only covers application-facing settings. Runtime MQTT state lives in [`Session`](crate::Session).
 #[derive(Debug)]
 pub struct ConfigBuilder<'a> {
+    pub(crate) protocol: Protocol,
     buffers: Buffers<'a>,
     will: Option<Will<'a>>,
     client_id: String<CLIENT_ID_CAPACITY>,
     keepalive_interval: Duration,
-    session_expiry_interval: u32,
+    session_expiry_interval: Option<u32>,
     downgrade_qos: bool,
     auth: Option<Auth<'a>>,
 }
@@ -91,12 +113,13 @@ impl<'a> ConfigBuilder<'a> {
     /// session.
     pub fn new(buffers: Buffers<'a>) -> Self {
         Self {
+            protocol: Protocol::V5,
             buffers,
             will: None,
             client_id: String::new(),
             auth: None,
             keepalive_interval: Duration::from_secs(60),
-            session_expiry_interval: 0,
+            session_expiry_interval: None,
             downgrade_qos: false,
         }
     }
@@ -138,7 +161,16 @@ impl<'a> ConfigBuilder<'a> {
     ///
     /// The default is `0`, which requests a clean session that expires on disconnect.
     pub fn session_expiry_interval(mut self, seconds: u32) -> Self {
-        self.session_expiry_interval = seconds;
+        self.session_expiry_interval = Some(seconds);
+        self
+    }
+
+    /// Select the protocol. MQTT 5 is the default.
+    ///
+    /// MQTT 3.1.1 rejects an explicitly configured MQTT 5 session expiry, automatic QoS
+    /// downgrade, or Will properties at `connect()`, before writing to the transport.
+    pub fn protocol(mut self, protocol: Protocol) -> Self {
+        self.protocol = protocol;
         self
     }
 
@@ -176,7 +208,7 @@ impl<'a> ConfigBuilder<'a> {
         Option<Will<'a>>,
         String<CLIENT_ID_CAPACITY>,
         Duration,
-        u32,
+        Option<u32>,
         bool,
         Option<Auth<'a>>,
     ) {

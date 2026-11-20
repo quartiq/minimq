@@ -16,7 +16,6 @@ const MAX_INBOUND_QOS2: usize = 8;
 
 #[derive(Debug)]
 pub(super) struct RuntimeState {
-    pub(super) session_resumed: bool,
     pub(super) keepalive_interval: Duration,
     pub(super) send_quota: u16,
     pub(super) max_send_quota: u16,
@@ -29,7 +28,6 @@ pub(super) struct RuntimeState {
 impl RuntimeState {
     pub(super) fn new(keepalive_interval: Duration) -> Self {
         Self {
-            session_resumed: false,
             keepalive_interval,
             send_quota: u16::MAX,
             max_send_quota: u16::MAX,
@@ -38,12 +36,6 @@ impl RuntimeState {
             next_ping: None,
             ping_timeout: None,
         }
-    }
-
-    pub(super) fn reset_transport(&mut self) {
-        self.session_resumed = false;
-        self.next_ping = None;
-        self.ping_timeout = None;
     }
 
     pub(super) fn note_outbound_activity(&mut self, now: Instant) {
@@ -122,9 +114,7 @@ impl<'a> SessionData<'a> {
         loop {
             let packet_id = self.packet_id.get();
             self.packet_id = NonZeroU16::new(packet_id.wrapping_add(1)).unwrap_or(NonZeroU16::MIN);
-            if !self.outbound.has_retained(packet_id)
-                && !self.outbound.has_pending_release(packet_id)
-            {
+            if !self.outbound.has_retained(packet_id) {
                 return packet_id;
             }
         }
@@ -134,8 +124,7 @@ impl<'a> SessionData<'a> {
 #[cfg(test)]
 mod tests {
     use super::{NonZeroU16, SessionData};
-    use crate::ReasonCode;
-    use crate::mqtt_client::OpKind;
+    use crate::mqtt_client::outbound::PacketKind;
 
     #[test]
     fn packet_identifier_wrap_skips_live_operations() {
@@ -143,9 +132,12 @@ mod tests {
         let mut data = SessionData::new(&mut storage);
         data.packet_id = NonZeroU16::new(u16::MAX).unwrap();
         data.outbound
-            .retain_packet(OpKind::Subscribe, u16::MAX, 5)
+            .retain_packet(PacketKind::Subscribe, u16::MAX, 5)
             .unwrap();
-        data.outbound.queue_release(1, ReasonCode::Success).unwrap();
+        data.outbound
+            .retain_packet(PacketKind::PublishExactlyOnce, 1, 0)
+            .unwrap();
+        assert!(data.outbound.release(1));
 
         assert_eq!(data.next_packet_id(), 2);
     }

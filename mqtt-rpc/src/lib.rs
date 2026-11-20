@@ -172,6 +172,9 @@ impl Service {
         &mut self,
         connection: &mut Connection<'_, '_, IO>,
     ) -> Result<bool, MqttError<IO::Error>> {
+        if connection.session().protocol() != minimq::Protocol::V5 {
+            return Err(MqttError::InvalidRequest);
+        }
         if self.ready {
             return Ok(true);
         }
@@ -284,6 +287,9 @@ where
     IO: Io,
     P: ToPayload,
 {
+    if connection.session().protocol() != minimq::Protocol::V5 {
+        return Err(MqttError::InvalidRequest.into());
+    }
     let properties = [
         Property::MessageExpiryInterval(RESPONSE_EXPIRY_SECS),
         Property::UserProperty(RESPONSE_CODE_PROPERTY, code),

@@ -11,6 +11,7 @@ use serde::ser::SerializeStruct;
 
 #[derive(Debug)]
 pub(crate) struct Connect<'a> {
+    pub(crate) protocol: crate::Protocol,
     pub(crate) keepalive: u16,
     pub(crate) properties: Properties<'a>,
     pub(crate) client_id: Utf8String<'a>,
@@ -23,13 +24,23 @@ impl serde::Serialize for Connect<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut item = serializer.serialize_struct("Connect", 0)?;
         item.serialize_field("protocol_name", &Utf8String("MQTT"))?;
-        item.serialize_field("protocol_version", &5u8)?;
+        item.serialize_field(
+            "protocol_version",
+            &if self.protocol.is_v5() { 5u8 } else { 4 },
+        )?;
         item.serialize_field("flags", &self.flags())?;
         item.serialize_field("keep_alive", &self.keepalive)?;
-        item.serialize_field("properties", &self.properties)?;
+        if self.protocol.is_v5() {
+            item.serialize_field("properties", &self.properties)?;
+        }
         item.serialize_field("client_id", &self.client_id)?;
         if let Some(will) = &self.will {
-            item.serialize_field("will", will)?;
+            if self.protocol.is_v5() {
+                item.serialize_field("will", will)?;
+            } else {
+                item.serialize_field("will_topic", &Utf8String(will.topic.as_str()))?;
+                item.serialize_field("will_payload", &BinaryData(will.data))?;
+            }
         }
 
         if let Some(auth) = &self.auth {
@@ -53,7 +64,7 @@ pub(crate) struct ConnAck<'a> {
 pub(crate) struct PublishHeader<'a> {
     pub(crate) topic: Utf8String<'a>,
     pub(crate) packet_id: Option<u16>,
-    pub(crate) properties: Properties<'a>,
+    pub(crate) properties: Option<Properties<'a>>,
     #[serde(skip)]
     pub(crate) retain: Retain,
     #[serde(skip)]
@@ -89,14 +100,14 @@ impl<P> core::fmt::Debug for Publish<'_, P> {
 #[derive(Debug, Serialize)]
 pub(crate) struct Subscribe<'a> {
     pub(crate) packet_id: u16,
-    pub(crate) properties: Properties<'a>,
+    pub(crate) properties: Option<Properties<'a>>,
     pub(crate) topics: &'a [TopicFilter<'a>],
 }
 
 #[derive(Debug)]
 pub(crate) struct Unsubscribe<'a> {
     pub(crate) packet_id: u16,
-    pub(crate) properties: Properties<'a>,
+    pub(crate) properties: Option<Properties<'a>>,
     pub(crate) topics: &'a [&'a str],
 }
 
@@ -124,10 +135,7 @@ impl serde::Serialize for TopicFilters<'_> {
     }
 }
 
-#[derive(Debug, Serialize)]
-pub(crate) struct PingReq;
-
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct PubAck<'a> {
     pub(crate) packet_id: u16,
     #[serde(borrow)]
@@ -152,21 +160,21 @@ pub(crate) struct UnsubAck<'a> {
     pub(crate) codes: &'a [u8],
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct PubRec<'a> {
     pub(crate) packet_id: u16,
     #[serde(borrow)]
     pub(crate) reason: Reason<'a>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct PubRel<'a> {
     pub(crate) packet_id: u16,
-    #[serde(borrow)]
-    pub(crate) reason: Reason<'a>,
+    #[serde(borrow, rename = "reason")]
+    pub(crate) _reason: Reason<'a>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct PubComp<'a> {
     pub(crate) packet_id: u16,
     #[serde(borrow)]
@@ -248,7 +256,7 @@ impl<'a, 'de: 'a> Deserialize<'de> for Disconnect<'a> {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct Reason<'a> {
     #[serde(borrow)]
     reason: Option<ReasonData<'a>>,
@@ -266,16 +274,6 @@ impl From<ReasonCode> for Reason<'_> {
 }
 
 impl<'a> Reason<'a> {
-    #[cfg_attr(not(feature = "fuzzing"), allow(dead_code))]
-    pub(crate) fn with_properties(code: ReasonCode, properties: &'a [Property<'a>]) -> Self {
-        Self {
-            reason: Some(ReasonData {
-                code,
-                _properties: Some(Properties::from_slice(properties)),
-            }),
-        }
-    }
-
     pub(crate) fn code(&self) -> ReasonCode {
         self.reason
             .as_ref()
@@ -284,7 +282,7 @@ impl<'a> Reason<'a> {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 struct ReasonData<'a> {
     pub code: ReasonCode,
     #[serde(borrow, rename = "properties")]
@@ -293,10 +291,7 @@ struct ReasonData<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Connect, Disconnect, PingReq, PubAck, PubComp, PubRel, PublishHeader, Reason, ReasonData,
-        Subscribe, Unsubscribe,
-    };
+    use super::{Connect, Disconnect, PublishHeader, Subscribe, Unsubscribe};
     use crate::properties::{Properties, Property};
     use crate::reason_codes::ReasonCode;
     use crate::ser::MqttSerializer;
@@ -318,7 +313,7 @@ mod tests {
             qos: QoS::AtMostOnce,
             packet_id: None,
             dup: false,
-            properties: Properties::from_slice(&[]),
+            properties: Some(Properties::from_slice(&[])),
             retain: Retain::NotRetained,
             topic: Utf8String("ABC"),
         };
@@ -346,7 +341,7 @@ mod tests {
             topic: Utf8String("ABC"),
             packet_id: Some(0xBEEF),
             dup: false,
-            properties: Properties::from_slice(&[]),
+            properties: Some(Properties::from_slice(&[])),
             retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
@@ -373,7 +368,7 @@ mod tests {
             topic: Utf8String("ABC"),
             packet_id: Some(0xBEEF),
             dup: true,
-            properties: Properties::from_slice(&[]),
+            properties: Some(Properties::from_slice(&[])),
             retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
@@ -397,7 +392,7 @@ mod tests {
 
         let subscribe = Subscribe {
             packet_id: 16,
-            properties: Properties::from_slice(&[]),
+            properties: Some(Properties::from_slice(&[])),
             topics: &[TopicFilter::new("ABC")],
         };
 
@@ -419,7 +414,7 @@ mod tests {
 
         let unsubscribe = Unsubscribe {
             packet_id: 16,
-            properties: Properties::from_slice(&[]),
+            properties: Some(Properties::from_slice(&[])),
             topics: &["ABC"],
         };
 
@@ -445,7 +440,7 @@ mod tests {
             topic: Utf8String("ABC"),
             packet_id: None,
             dup: false,
-            properties: Properties::from_slice(&[Property::ResponseTopic("A")]),
+            properties: Some(Properties::from_slice(&[Property::ResponseTopic("A")])),
             retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
@@ -472,7 +467,7 @@ mod tests {
             topic: Utf8String("ABC"),
             packet_id: None,
             dup: false,
-            properties: Properties::from_slice(&[Property::UserProperty("A", "B")]),
+            properties: Some(Properties::from_slice(&[Property::UserProperty("A", "B")])),
             retain: Retain::NotRetained,
         };
         let payload = &[0xAB, 0xCD][..];
@@ -497,6 +492,7 @@ mod tests {
 
         let mut buffer: [u8; 900] = [0; 900];
         let connect: Connect<'_> = Connect {
+            protocol: crate::Protocol::V5,
             client_id: Utf8String("ABC"),
             auth: None,
             will: None,
@@ -544,6 +540,7 @@ mod tests {
             .qos(QoS::AtMostOnce);
 
         let connect = Connect {
+            protocol: crate::Protocol::V5,
             clean_start: true,
             keepalive: 10,
             properties: Properties::from_slice(&[]),
@@ -555,18 +552,6 @@ mod tests {
         let message = MqttSerializer::encode(&mut buffer, &connect).unwrap();
 
         assert_eq!(message, good_serialized_connect)
-    }
-
-    #[test]
-    fn serialize_ping_req() {
-        let good_ping_req: [u8; 2] = [
-            0xc0, // Ping
-            0x00, // Remaining length (0)
-        ];
-
-        let mut buffer: [u8; 1024] = [0; 1024];
-        let message = MqttSerializer::encode(&mut buffer, &PingReq {}).unwrap();
-        assert_eq!(message, good_ping_req);
     }
 
     #[test]
@@ -589,78 +574,5 @@ mod tests {
         let disconnect = Disconnect::with_reason(ReasonCode::Success).with_properties(&[]);
         let message = MqttSerializer::encode(&mut buffer, &disconnect).unwrap();
         assert_eq!(message, [0xe0, 0x02, ReasonCode::Success as u8, 0x00]);
-    }
-
-    #[test]
-    fn serialize_pubrel() {
-        let good_pubrel: [u8; 5] = [
-            0x62, // PUBREL fixed header
-            0x03, // Remaining length
-            0x00, 0x05, // Identifier
-            0x10, // Response Code
-        ];
-
-        let pubrel = PubRel {
-            packet_id: 5,
-            reason: ReasonCode::NoMatchingSubscribers.into(),
-        };
-
-        let mut buffer: [u8; 1024] = [0; 1024];
-        assert_eq!(
-            MqttSerializer::encode(&mut buffer, &pubrel).unwrap(),
-            good_pubrel
-        );
-    }
-
-    #[test]
-    fn serialize_puback() {
-        let good_puback: [u8; 5] = [
-            0x40, // PUBACK fixed header
-            0x03, // Remaining length
-            0x00, 0x15, // Identifier
-            0x00, // Response Code
-        ];
-
-        let pubrel = PubAck {
-            packet_id: 0x15,
-            reason: Reason {
-                reason: Some(ReasonData {
-                    code: ReasonCode::Success,
-                    _properties: None,
-                }),
-            },
-        };
-
-        let mut buffer: [u8; 1024] = [0; 1024];
-        assert_eq!(
-            MqttSerializer::encode(&mut buffer, &pubrel).unwrap(),
-            good_puback
-        );
-    }
-
-    #[test]
-    fn serialize_pubcomp() {
-        let good_pubcomp: [u8; 5] = [
-            0x70, // PUBCOMP fixed header
-            0x03, // Remaining length
-            0x00, 0x15, // Identifier
-            0x00, // Response Code
-        ];
-
-        let pubrel = PubComp {
-            packet_id: 0x15,
-            reason: Reason {
-                reason: Some(ReasonData {
-                    code: ReasonCode::Success,
-                    _properties: None,
-                }),
-            },
-        };
-
-        let mut buffer: [u8; 1024] = [0; 1024];
-        assert_eq!(
-            MqttSerializer::encode(&mut buffer, &pubrel).unwrap(),
-            good_pubcomp
-        );
     }
 }

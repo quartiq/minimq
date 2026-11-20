@@ -120,8 +120,8 @@ class Client:
         }
         topic = f"{self._topic_prefix}rpc/{method}"
         LOGGER.debug("Publishing request to %s", topic)
-        self._mqtt.publish(topic, payload, qos=1, retain=False, **properties)
         try:
+            self._mqtt.publish(topic, payload, qos=1, retain=False, **properties)
             return await asyncio.wait_for(future, timeout)
         finally:
             self._inflight.pop(correlation, None)

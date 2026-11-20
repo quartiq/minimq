@@ -2,10 +2,7 @@
 
 use crate::{
     QoS, Retain,
-    packets::{
-        ConnAck, Connect, Disconnect, PingReq, PubAck, PubComp, PubRec, PubRel, PublishHeader,
-        SubAck, Subscribe, UnsubAck, Unsubscribe,
-    },
+    packets::{Connect, Disconnect, PublishHeader, Subscribe, Unsubscribe},
 };
 use num_enum::TryFromPrimitive;
 use serde::ser::SerializeStruct;
@@ -202,10 +199,6 @@ impl ControlPacket for Connect<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::Connect;
 }
 
-impl ControlPacket for ConnAck<'_> {
-    const MESSAGE_TYPE: MessageType = MessageType::ConnAck;
-}
-
 impl PublishHeader<'_> {
     pub(crate) fn fixed_header(&self) -> FixedHeader {
         let mut flags = (self.qos as u8) << PUBLISH_QOS_SHIFT;
@@ -245,40 +238,12 @@ pub(crate) fn mark_publish_duplicate(fixed_header: &mut u8) {
     *fixed_header = header.with_publish_duplicate().byte();
 }
 
-impl ControlPacket for PubAck<'_> {
-    const MESSAGE_TYPE: MessageType = MessageType::PubAck;
-}
-
-impl ControlPacket for PubRec<'_> {
-    const MESSAGE_TYPE: MessageType = MessageType::PubRec;
-}
-
-impl ControlPacket for PubRel<'_> {
-    const MESSAGE_TYPE: MessageType = MessageType::PubRel;
-}
-
-impl ControlPacket for PubComp<'_> {
-    const MESSAGE_TYPE: MessageType = MessageType::PubComp;
-}
-
 impl ControlPacket for Subscribe<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::Subscribe;
 }
 
-impl ControlPacket for SubAck<'_> {
-    const MESSAGE_TYPE: MessageType = MessageType::SubAck;
-}
-
 impl ControlPacket for Unsubscribe<'_> {
     const MESSAGE_TYPE: MessageType = MessageType::Unsubscribe;
-}
-
-impl ControlPacket for UnsubAck<'_> {
-    const MESSAGE_TYPE: MessageType = MessageType::UnsubAck;
-}
-
-impl ControlPacket for PingReq {
-    const MESSAGE_TYPE: MessageType = MessageType::PingReq;
 }
 
 impl ControlPacket for Disconnect<'_> {
